@@ -565,6 +565,13 @@ watch(slashCandidates, (items) => {
   }
 });
 
+watch(slashActiveIndex, async () => {
+  if (!slashModeOpen.value || slashCandidates.value.length === 0) return;
+  await nextTick();
+  const active = document.getElementById(`slash-item-${slashActiveIndex.value}`);
+  active?.scrollIntoView?.({ block: "nearest" });
+});
+
 watch(tableFindKeyword, () => {
   runTableFind().catch(() => {});
 });
@@ -1785,6 +1792,7 @@ function escapeRegExp(str) {
           <button
             v-for="(item, idx) in slashCandidates"
             :key="item.table_name"
+            :id="`slash-item-${idx}`"
             :class="['slash-item', { active: idx === slashActiveIndex }]"
             @click="selectSlashCandidate(item)"
           >
@@ -1979,7 +1987,7 @@ function escapeRegExp(str) {
 
   <div v-if="tableOpen" class="dialog-mask" @click.self="closeTableDialog">
     <section :class="['modal-card', 'wide', 'table-modal', { fullscreen: tableFullscreen }]">
-      <header class="modal-header">
+      <header class="modal-header" @pointerdown="panelHeaderPointerDown">
         <h3
           data-schema-key="table_name"
           :class="{ 'find-active-schema': tableFindFocus.type === 'schema' && tableFindFocus.schemaKey === 'table_name' }"
@@ -2002,7 +2010,7 @@ function escapeRegExp(str) {
       <div class="table-content">
       <template v-if="tableDetailView === 'full'">
         <section class="schema-box">
-          <h4>Schema 信息（命中 {{ detailHitContext.externalHitCount }}）</h4>
+          <h4>Schema 信息</h4>
           <div
             v-if="tableView.tableComment"
             class="table-comment"
