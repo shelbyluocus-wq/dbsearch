@@ -15,6 +15,8 @@ const isPanelWindow = computed(() => !isPetWindow.value && !isMenuWindow.value);
 const settingsOpen = ref(false);
 const tableOpen = ref(false);
 const historyOpen = ref(false);
+const resultZoomOpen = ref(false);
+const resultZoomType = ref("table");
 const settingsMsg = ref("");
 
 const keyword = ref("");
@@ -64,6 +66,7 @@ const config = reactive({
     auto_start: false,
     pet_locked: false,
     pet_position: null,
+    idle_states: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
   },
 });
 
@@ -76,11 +79,19 @@ let unlistenPetLockChanged = null;
 let unlistenMenuOpened = null;
 let unlistenPetMoved = null;
 let unlistenSearchFound = null;
+let unlistenPetIdleStatesChanged = null;
+let unlistenPetIdlePreview = null;
 
-const petSleeping = ref(false);
+const petIdleActive = ref(false);
+const currentIdleState = ref("float_breathe");
+const petIdlePreviewing = ref(false);
 const petFound = ref(false);
 let idleTimer = null;
+let idleStateTimer = null;
+let resetIdleHandler = null;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
+const IDLE_STATE_CHANGE_MS = 7 * 1000;
+const ALLOWED_IDLE_STATES = ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"];
 
 const tableView = reactive({
   tableName: "",
@@ -94,15 +105,21 @@ const tableView = reactive({
   hitColumn: null,
 });
 
+const detailHitContext = reactive({
+  source: "none",
+  terms: [],
+  columns: [],
+});
+
 const settingsDraft = reactive({
   host: "",
   port: 3306,
   username: "",
   password: "",
   database: "",
-  widgetMode: "tray",
   hotkey: "Ctrl+Shift+F",
   autoStart: false,
+  idleStates: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
   excludeTables: "^t_log_.*,^tmp_.*",
   perTableTimeoutSec: 10,
   perTableMaxRows: 50,
@@ -112,7 +129,88 @@ const totalMetaCount = computed(() => results.table.length + results.column.leng
 const canSearchData = computed(() => keyword.value.trim().length > 0);
 const totalPages = computed(() => Math.max(1, Math.ceil(tableView.totalRows / tableView.pageSize)));
 const lockActionText = computed(() => (config.personal.pet_locked ? "📌 解锁位置" : "📌 锁定位置"));
+const resultZoomTitle = computed(() => {
+  if (resultZoomType.value === "table") return "表名匹配";
+  if (resultZoomType.value === "column") return "字段名匹配";
+  if (resultZoomType.value === "comment") return "备注匹配";
+  if (resultZoomType.value === "data") return "数据值匹配";
+  return "";
+});
+const resultZoomItems = computed(() => results[resultZoomType.value] || []);
+const petSpriteClasses = computed(() => ({
+  searching: progress.show,
+  found: petFound.value,
+  sleeping: petIdleActive.value && currentIdleState.value === "sleep_zzz",
+  "idle-float": petIdleActive.value && currentIdleState.value === "float_breathe",
+  "idle-look": petIdleActive.value && currentIdleState.value === "look_around",
+  "idle-ghost": petIdleActive.value && currentIdleState.value === "ghost_fade",
+}));
 const hotkeyPlaceholder = "点击后按下快捷键";
+
+function sanitizeIdleStates(states) {
+  const values = Array.isArray(states) ? states : [];
+  const normalized = [...new Set(values.filter((item) => ALLOWED_IDLE_STATES.includes(item)))];
+  return normalized.length > 0 ? normalized : ["float_breathe"];
+}
+
+function getDetailTerms() {
+  const contextTerms = sanitizeTerms(detailHitContext.terms);
+  if (contextTerms.length > 0) return contextTerms;
+  return sanitizeTerms(splitKeywordTerms(keyword.value));
+}
+
+function pickNextIdleState() {
+  const enabled = sanitizeIdleStates(config.personal.idle_states);
+  if (enabled.length === 1) return enabled[0];
+  const pool = enabled.filter((state) => state !== currentIdleState.value);
+  const candidates = pool.length > 0 ? pool : enabled;
+  const index = Math.floor(Math.random() * candidates.length);
+  return candidates[index];
+}
+
+function scheduleIdleStateSwitch() {
+  clearTimeout(idleStateTimer);
+  if (!petIdleActive.value || petIdlePreviewing.value) return;
+  idleStateTimer = setTimeout(() => {
+    currentIdleState.value = pickNextIdleState();
+    scheduleIdleStateSwitch();
+  }, IDLE_STATE_CHANGE_MS);
+}
+
+function enterIdleMode() {
+  petIdleActive.value = true;
+  currentIdleState.value = pickNextIdleState();
+  scheduleIdleStateSwitch();
+}
+
+function exitIdleMode() {
+  petIdleActive.value = false;
+  petIdlePreviewing.value = false;
+  currentIdleState.value = "float_breathe";
+  clearTimeout(idleStateTimer);
+}
+
+function previewIdleState(state) {
+  if (!isTauriWindow) return;
+  emit("pet-idle-preview", { state }).catch(() => {});
+}
+
+function clearIdlePreview() {
+  if (!isTauriWindow) return;
+  emit("pet-idle-preview", { state: null }).catch(() => {});
+}
+
+function ensureDbConnectedForSearch() {
+  if (dbConnected.value) return true;
+  summaryText.value = "当前数据库未连接";
+  return false;
+}
+
+function setDetailHitContext({ source = "none", columns = [], terms = [] } = {}) {
+  detailHitContext.source = source;
+  detailHitContext.columns = [...new Set((Array.isArray(columns) ? columns : []).filter(Boolean))];
+  detailHitContext.terms = sanitizeTerms(terms);
+}
 
 onMounted(async () => {
   if (isTauriWindow) {
@@ -152,6 +250,8 @@ onMounted(async () => {
   }
 
   if (isPetWindow.value) {
+    config.personal.idle_states = sanitizeIdleStates(config.personal.idle_states);
+
     if (isTauriWindow) {
       const appWindow = getCurrentWindow();
       unlistenPetMoved = await appWindow.onMoved((event) => {
@@ -175,14 +275,42 @@ onMounted(async () => {
       setTimeout(() => { petFound.value = false; }, 800);
     });
 
-    function resetIdle() {
-      petSleeping.value = false;
+    unlistenPetIdleStatesChanged = await listen("pet-idle-states-changed", (event) => {
+      const payload = event.payload;
+      config.personal.idle_states = sanitizeIdleStates(payload?.idleStates);
+      if (petIdleActive.value && !petIdlePreviewing.value) {
+        currentIdleState.value = pickNextIdleState();
+        scheduleIdleStateSwitch();
+      }
+    });
+
+    unlistenPetIdlePreview = await listen("pet-idle-preview", (event) => {
+      const payload = event.payload;
+      const state = payload?.state;
+      if (typeof state === "string" && ALLOWED_IDLE_STATES.includes(state)) {
+        petIdlePreviewing.value = true;
+        petIdleActive.value = true;
+        currentIdleState.value = state;
+        clearTimeout(idleTimer);
+        clearTimeout(idleStateTimer);
+        return;
+      }
+      petIdlePreviewing.value = false;
+      if (resetIdleHandler) {
+        resetIdleHandler();
+      } else {
+        exitIdleMode();
+      }
+    });
+
+    resetIdleHandler = () => {
+      exitIdleMode();
       clearTimeout(idleTimer);
-      idleTimer = setTimeout(() => { petSleeping.value = true; }, IDLE_TIMEOUT_MS);
-    }
-    document.addEventListener("mousemove", resetIdle);
-    document.addEventListener("click", resetIdle);
-    resetIdle();
+      idleTimer = setTimeout(() => { enterIdleMode(); }, IDLE_TIMEOUT_MS);
+    };
+    document.addEventListener("mousemove", resetIdleHandler);
+    document.addEventListener("click", resetIdleHandler);
+    resetIdleHandler();
     return;
   }
 
@@ -199,6 +327,7 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   if (isPanelWindow.value) {
     detachPanelListeners();
+    clearIdlePreview();
   }
 
   if (unlistenProgress) {
@@ -225,7 +354,21 @@ onBeforeUnmount(() => {
     unlistenSearchFound();
     unlistenSearchFound = null;
   }
+  if (unlistenPetIdleStatesChanged) {
+    unlistenPetIdleStatesChanged();
+    unlistenPetIdleStatesChanged = null;
+  }
+  if (unlistenPetIdlePreview) {
+    unlistenPetIdlePreview();
+    unlistenPetIdlePreview = null;
+  }
+  if (resetIdleHandler) {
+    document.removeEventListener("mousemove", resetIdleHandler);
+    document.removeEventListener("click", resetIdleHandler);
+    resetIdleHandler = null;
+  }
   clearTimeout(idleTimer);
+  clearTimeout(idleStateTimer);
 });
 
 watch(keyword, () => {
@@ -277,13 +420,18 @@ function onWindowClick(event) {
 function onWindowKeydown(event) {
   if (event.key !== "Escape") return;
 
+  if (resultZoomOpen.value) {
+    resultZoomOpen.value = false;
+    return;
+  }
+
   if (tableOpen.value) {
-    tableOpen.value = false;
+    closeTableDialog();
     return;
   }
 
   if (settingsOpen.value) {
-    settingsOpen.value = false;
+    closeSettings();
     return;
   }
 
@@ -444,6 +592,7 @@ function onHotkeyInputKeydown(event) {
 
 async function panelClose() {
   if (!isTauriWindow) return;
+  clearIdlePreview();
   await invoke("hide_panel_window").catch(() => {});
 }
 
@@ -478,9 +627,9 @@ function openSettings() {
   settingsDraft.username = config.shared.db.username;
   settingsDraft.password = config.shared.db.password;
   settingsDraft.database = config.shared.db.database;
-  settingsDraft.widgetMode = config.personal.widget_mode;
   settingsDraft.hotkey = normalizeHotkeyDisplay(config.personal.hotkey);
   settingsDraft.autoStart = config.personal.auto_start;
+  settingsDraft.idleStates = [...sanitizeIdleStates(config.personal.idle_states)];
   settingsDraft.excludeTables = (config.shared.search.exclude_tables || []).join(",");
   settingsDraft.perTableTimeoutSec = config.shared.search.per_table_timeout_sec;
   settingsDraft.perTableMaxRows = config.shared.search.per_table_max_rows;
@@ -489,6 +638,7 @@ function openSettings() {
 }
 
 function closeSettings() {
+  clearIdlePreview();
   settingsOpen.value = false;
 }
 
@@ -519,8 +669,8 @@ async function saveSettings() {
   config.shared.db.password = settingsDraft.password;
   config.shared.db.database = settingsDraft.database.trim();
 
-  config.personal.widget_mode = settingsDraft.widgetMode;
   config.personal.hotkey = normalizeHotkeyDisplay(settingsDraft.hotkey.trim() || "Ctrl+Shift+F");
+  config.personal.idle_states = sanitizeIdleStates(settingsDraft.idleStates);
   if (isModifierOnlyHotkey(config.personal.hotkey)) {
     settingsMsg.value = "✗ 快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F";
     return;
@@ -544,6 +694,11 @@ async function saveSettings() {
 
   config.personal.auto_start = !!settingsDraft.autoStart;
   await persistConfig();
+  if (isTauriWindow) {
+    emit("pet-idle-states-changed", {
+      idleStates: config.personal.idle_states,
+    }).catch(() => {});
+  }
   await invoke("set_autostart", { enable: config.personal.auto_start }).catch(() => {});
 
   try {
@@ -561,6 +716,7 @@ async function saveSettings() {
   }
 
   await refreshConnectionStatus();
+  clearIdlePreview();
   settingsOpen.value = false;
 }
 
@@ -568,10 +724,24 @@ function toggleHistory() {
   historyOpen.value = !historyOpen.value;
 }
 
+function openResultZoom(type) {
+  resultZoomType.value = type;
+  resultZoomOpen.value = true;
+}
+
+function closeResultZoom() {
+  resultZoomOpen.value = false;
+}
+
 function chooseHistory(item) {
   keyword.value = item;
   historyOpen.value = false;
   runMetaSearch();
+}
+
+function removeHistory(item) {
+  history.value = history.value.filter((value) => value !== item);
+  localStorage.setItem("db_scout_history_v1", JSON.stringify(history.value));
 }
 
 function addHistory(item) {
@@ -599,6 +769,14 @@ async function runMetaSearch() {
     results.comment = [];
     results.data = [];
     summaryText.value = "输入关键词开始搜索";
+    return;
+  }
+
+  if (!ensureDbConnectedForSearch()) {
+    results.table = [];
+    results.column = [];
+    results.comment = [];
+    results.data = [];
     return;
   }
 
@@ -632,6 +810,12 @@ async function runMetaSearch() {
 
 async function runDataSearch() {
   if (!canSearchData.value) return;
+  if (!ensureDbConnectedForSearch()) {
+    results.data = [];
+    progress.show = false;
+    progress.percent = 0;
+    return;
+  }
 
   const value = keyword.value.trim();
   const token = ++currentSearchToken;
@@ -675,38 +859,121 @@ function cancelDataSearch() {
   }, 500);
 }
 
-async function refreshSchema() {
-  try {
-    const info = await invoke("refresh_schema");
-    summaryText.value = `Schema 已刷新：${info.table_count} 张表`;
-  } catch (error) {
-    summaryText.value = `刷新失败：${String(error)}`;
-  }
+function renderHighlighted(text) {
+  return renderHighlightedWithTerms(text, splitKeywordTerms(keyword.value));
 }
 
-function renderHighlighted(text) {
-  const term = escapeHtml(keyword.value.trim());
-  if (!term) return escapeHtml(text || "");
+function renderDetailHighlighted(text) {
+  return renderHighlightedWithTerms(text, getDetailTerms());
+}
 
-  const raw = escapeHtml(String(text || ""));
-  const regex = new RegExp(`(${escapeRegExp(term)})`, "ig");
-  return raw.replace(regex, "<mark>$1</mark>");
+function renderTableColumnHeader(columnName) {
+  return renderDetailHighlighted(columnName);
+}
+
+function renderDataCell(row, columnName) {
+  return renderDetailHighlighted(row?.[columnName] || "");
+}
+
+function splitKeywordTerms(value) {
+  return String(value || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function sanitizeTerms(terms) {
+  return [...new Set((Array.isArray(terms) ? terms : []).map((term) => String(term).trim()).filter(Boolean))];
+}
+
+function renderHighlightedWithTerms(text, termsInput) {
+  const content = String(text || "");
+  const terms = sanitizeTerms(termsInput).sort((a, b) => b.length - a.length);
+  if (terms.length === 0) return escapeHtml(content);
+
+  const regex = new RegExp(`(${terms.map((term) => escapeRegExp(term)).join("|")})`, "ig");
+  const parts = content.split(regex);
+  return parts
+    .map((part, index) => (index % 2 === 1 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part)))
+    .join("");
+}
+
+function containsAllTerms(text, terms) {
+  const normalizedTerms = sanitizeTerms(terms).map((item) => item.toLowerCase());
+  if (normalizedTerms.length === 0) return false;
+  const value = String(text || "").toLowerCase();
+  return normalizedTerms.every((term) => value.includes(term));
+}
+
+function containsAnyTerms(text, terms) {
+  const normalizedTerms = sanitizeTerms(terms).map((item) => item.toLowerCase());
+  if (normalizedTerms.length === 0) return false;
+  const value = String(text || "").toLowerCase();
+  return normalizedTerms.some((term) => value.includes(term));
+}
+
+function isDataColumnHit(columnName) {
+  return detailHitContext.columns.includes(columnName);
+}
+
+function isSchemaColumnHit(column) {
+  if (!column) return false;
+  if (detailHitContext.columns.includes(column.column_name)) return true;
+  const terms = getDetailTerms();
+  if (terms.length === 0) return false;
+  return containsAnyTerms(column.column_name, terms) || containsAnyTerms(column.column_comment, terms);
+}
+
+function isDataRowHit(row, idx) {
+  const indexHit =
+    tableView.hitRowIndex !== null &&
+    tableView.hitRowIndex >= (tableView.page - 1) * tableView.pageSize &&
+    tableView.hitRowIndex < tableView.page * tableView.pageSize &&
+    idx === tableView.hitRowIndex - (tableView.page - 1) * tableView.pageSize;
+
+  const terms = getDetailTerms();
+  if (terms.length === 0) return indexHit;
+
+  const targetColumns = detailHitContext.columns.length > 0
+    ? detailHitContext.columns
+    : tableView.columns.map((column) => column.column_name);
+
+  const contentHit = targetColumns.some((columnName) => containsAllTerms(row?.[columnName], terms));
+  return indexHit || contentHit;
+}
+
+function isDataCellHit(row, columnName) {
+  const terms = getDetailTerms();
+  if (terms.length === 0) return false;
+  const inScope = detailHitContext.columns.length === 0 || detailHitContext.columns.includes(columnName);
+  return inScope && containsAnyTerms(row?.[columnName], terms);
 }
 
 async function openFromMeta(item) {
-  await openTable(item.table_name, null, item.column_name || null);
+  await openTable(item.table_name, null, item.column_name || null, {
+    source: "meta",
+    columns: item.column_name ? [item.column_name] : [],
+    terms: splitKeywordTerms(keyword.value),
+  });
 }
 
 async function openFromData(item) {
   const rowIndex = item.first_row_index ?? null;
-  const col = (item.matched_columns && item.matched_columns[0]) || null;
-  await openTable(item.table_name, rowIndex, col);
+  const columns = Array.isArray(item.matched_columns) ? item.matched_columns.filter(Boolean) : [];
+  const col = columns[0] || null;
+  await openTable(item.table_name, rowIndex, col, {
+    source: "data",
+    columns,
+    terms: splitKeywordTerms(keyword.value),
+  });
 }
 
-async function openTable(tableName, rowIndex = null, columnName = null) {
+async function openTable(tableName, rowIndex = null, columnName = null, hitContext = {}) {
+  resultZoomOpen.value = false;
   tableView.tableName = tableName;
   tableView.hitRowIndex = rowIndex;
   tableView.hitColumn = columnName;
+  setDetailHitContext(hitContext);
   tableView.page = rowIndex !== null && rowIndex >= 0 ? Math.floor(rowIndex / tableView.pageSize) + 1 : 1;
   await loadTablePage();
   tableOpen.value = true;
@@ -744,6 +1011,7 @@ async function nextPage() {
 
 function closeTableDialog() {
   tableOpen.value = false;
+  setDetailHitContext();
 }
 
 async function loadConfig() {
@@ -755,6 +1023,7 @@ async function loadConfig() {
   } catch {
     // keep default
   }
+  config.personal.idle_states = sanitizeIdleStates(config.personal.idle_states);
 }
 
 async function persistConfig() {
@@ -811,23 +1080,47 @@ function petPointerDown(event) {
   getCurrentWindow().startDragging().catch(() => {});
 }
 
-function exportConfig() {
-  const payload = {
-    db: config.shared.db,
-    search: config.shared.search,
-  };
-  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = "db_config.json";
-  a.click();
-  URL.revokeObjectURL(url);
-}
-
 function triggerImport() {
   const file = document.getElementById("importFile");
   file?.click();
+}
+
+function applyDbJsonToSettingsDraft(parsed) {
+  const dbConfig = parsed?.db && typeof parsed.db === "object" ? parsed.db : parsed;
+  if (!dbConfig || typeof dbConfig !== "object") return false;
+
+  const host = String(dbConfig.host || "").trim();
+  const database = String(dbConfig.database || "").trim();
+  if (!host || !database) return false;
+
+  settingsDraft.host = host;
+  settingsDraft.database = database;
+
+  if (dbConfig.port !== undefined && dbConfig.port !== null && dbConfig.port !== "") {
+    const port = Number(dbConfig.port);
+    settingsDraft.port = Number.isFinite(port) && port > 0 ? port : 3306;
+  }
+  if (dbConfig.username !== undefined && dbConfig.username !== null) {
+    settingsDraft.username = String(dbConfig.username);
+  } else if (dbConfig.user !== undefined && dbConfig.user !== null) {
+    settingsDraft.username = String(dbConfig.user);
+  }
+  if (dbConfig.password !== undefined && dbConfig.password !== null) {
+    settingsDraft.password = String(dbConfig.password);
+  }
+  return true;
+}
+
+async function importDbConfigFile(file) {
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    const applied = applyDbJsonToSettingsDraft(parsed);
+    settingsMsg.value = applied ? "✓ 配置已填入，请测试连接" : "✗ JSON 解析失败或缺少数据库字段";
+  } catch {
+    settingsMsg.value = "✗ JSON 解析失败或缺少数据库字段";
+  }
 }
 
 async function onImportConfig(event) {
@@ -835,14 +1128,7 @@ async function onImportConfig(event) {
   if (!file) return;
 
   try {
-    const text = await file.text();
-    const parsed = JSON.parse(text);
-    if (parsed.db) Object.assign(config.shared.db, parsed.db);
-    if (parsed.search) Object.assign(config.shared.search, parsed.search);
-    await persistConfig();
-    summaryText.value = "共享配置导入成功";
-  } catch {
-    summaryText.value = "共享配置导入失败";
+    await importDbConfigFile(file);
   } finally {
     event.target.value = "";
   }
@@ -851,19 +1137,7 @@ async function onImportConfig(event) {
 async function onDropConfig(event) {
   const file = event.dataTransfer?.files?.[0];
   if (!file) return;
-  try {
-    const text = await file.text();
-    const parsed = JSON.parse(text);
-    if (parsed.host) settingsDraft.host = String(parsed.host);
-    if (parsed.port) settingsDraft.port = Number(parsed.port);
-    if (parsed.database) settingsDraft.database = String(parsed.database);
-    if (parsed.username) settingsDraft.username = String(parsed.username);
-    else if (parsed.user) settingsDraft.username = String(parsed.user);
-    if (parsed.password !== undefined) settingsDraft.password = String(parsed.password);
-    settingsMsg.value = "✓ 配置已填入，请测试连接";
-  } catch {
-    settingsMsg.value = "✗ JSON 解析失败";
-  }
+  await importDbConfigFile(file);
 }
 
 async function copyText(text) {
@@ -920,7 +1194,10 @@ function escapeRegExp(str) {
         </div>
 
         <div v-if="historyOpen" id="historyDropdown" class="history-dropdown">
-          <button v-for="item in history" :key="item" class="history-item" @click="chooseHistory(item)">{{ item }}</button>
+          <div v-for="item in history" :key="item" class="history-row">
+            <button class="history-item" @click="chooseHistory(item)">{{ item }}</button>
+            <button class="history-delete" title="删除该记录" @click.stop="removeHistory(item)">✕</button>
+          </div>
           <div v-if="history.length === 0" class="muted p-12">暂无历史</div>
         </div>
 
@@ -929,11 +1206,9 @@ function escapeRegExp(str) {
           <label><input v-model="options.column" type="checkbox" />字段名</label>
           <label><input v-model="options.comment" type="checkbox" />备注</label>
           <label><input v-model="options.data" type="checkbox" />数据值</label>
-          <button class="small-btn" @click="refreshSchema">刷新 Schema</button>
         </div>
 
         <div class="actions-row">
-          <button class="primary-btn" :disabled="!canSearchData" @click="runDataSearch">在数据值中搜索</button>
           <span class="muted">{{ summaryText }}</span>
         </div>
 
@@ -948,8 +1223,14 @@ function escapeRegExp(str) {
 
       <section class="results" id="resultsWrap">
         <article class="result-group">
-          <header><h3>表名匹配</h3><span>{{ results.table.length }}</span></header>
-          <div class="list">
+          <header @click="openResultZoom('table')">
+            <div class="group-title-row">
+              <h3>表名匹配</h3>
+              <button class="group-expand-btn" title="放大查看" @click.stop="openResultZoom('table')">⤢</button>
+            </div>
+            <span>{{ results.table.length }}</span>
+          </header>
+          <div class="list list-scrollable">
             <button v-for="item in results.table" :key="`${item.table_name}-${item.match_type}-${item.matched_text}`" class="list-item" @click="openFromMeta(item)">
               <div class="main" v-html="renderHighlighted(item.table_name)"></div>
               <span class="badge">TABLE</span>
@@ -960,8 +1241,14 @@ function escapeRegExp(str) {
         </article>
 
         <article class="result-group">
-          <header><h3>字段名匹配</h3><span>{{ results.column.length }}</span></header>
-          <div class="list">
+          <header @click="openResultZoom('column')">
+            <div class="group-title-row">
+              <h3>字段名匹配</h3>
+              <button class="group-expand-btn" title="放大查看" @click.stop="openResultZoom('column')">⤢</button>
+            </div>
+            <span>{{ results.column.length }}</span>
+          </header>
+          <div class="list list-scrollable">
             <button v-for="item in results.column" :key="`${item.table_name}-${item.column_name}-${item.match_type}`" class="list-item" @click="openFromMeta(item)">
               <div class="main" v-html="`${item.table_name}.` + renderHighlighted(item.column_name || '')"></div>
               <span class="badge">FIELD</span>
@@ -972,8 +1259,14 @@ function escapeRegExp(str) {
         </article>
 
         <article class="result-group">
-          <header><h3>备注匹配</h3><span>{{ results.comment.length }}</span></header>
-          <div class="list">
+          <header @click="openResultZoom('comment')">
+            <div class="group-title-row">
+              <h3>备注匹配</h3>
+              <button class="group-expand-btn" title="放大查看" @click.stop="openResultZoom('comment')">⤢</button>
+            </div>
+            <span>{{ results.comment.length }}</span>
+          </header>
+          <div class="list list-scrollable">
             <button v-for="item in results.comment" :key="`${item.table_name}-${item.column_name || ''}-${item.match_type}-${item.matched_text}`" class="list-item" @click="openFromMeta(item)">
               <div class="main">{{ item.table_name }}<span v-if="item.column_name">.{{ item.column_name }}</span></div>
               <div class="sub" v-html="renderHighlighted(item.matched_text)"></div>
@@ -985,8 +1278,14 @@ function escapeRegExp(str) {
         </article>
 
         <article class="result-group">
-          <header><h3>数据值匹配</h3><span>{{ results.data.length }}</span></header>
-          <div class="list">
+          <header @click="openResultZoom('data')">
+            <div class="group-title-row">
+              <h3>数据值匹配</h3>
+              <button class="group-expand-btn" title="放大查看" @click.stop="openResultZoom('data')">⤢</button>
+            </div>
+            <span>{{ results.data.length }}</span>
+          </header>
+          <div class="list list-scrollable">
             <button v-for="item in results.data" :key="`${item.table_name}-${item.total_matches}`" class="list-item" @click="openFromData(item)">
               <div class="main">{{ item.table_name }} · {{ item.total_matches }} 条命中</div>
               <div class="sub">{{ (item.matched_columns || []).join(' · ') }}</div>
@@ -1011,9 +1310,9 @@ function escapeRegExp(str) {
       @pointerdown="petPointerDown"
     >
       <div class="eagle-container">
-        <div id="eagleSprite" class="eagle-sprite" :class="{ searching: progress.show, sleeping: petSleeping, found: petFound }">
+        <div id="eagleSprite" class="eagle-sprite" :class="petSpriteClasses">
           <div class="blink-overlay"></div>
-          <template v-if="petSleeping">
+          <template v-if="petIdleActive && currentIdleState === 'sleep_zzz'">
             <div class="pixel-zzz">z</div>
             <div class="pixel-zzz">z</div>
           </template>
@@ -1034,6 +1333,49 @@ function escapeRegExp(str) {
     </section>
   </div>
 
+  <div v-if="resultZoomOpen" class="dialog-mask" @click.self="closeResultZoom">
+    <section class="modal-card wide result-zoom-modal">
+      <header class="modal-header">
+        <h3>{{ resultZoomTitle }}（{{ resultZoomItems.length }}）</h3>
+        <button class="icon-btn" @click="closeResultZoom">✕</button>
+      </header>
+      <section class="result-zoom-body">
+        <div class="list list-zoom">
+          <template v-if="resultZoomType === 'table'">
+            <button v-for="item in resultZoomItems" :key="`${item.table_name}-${item.match_type}-${item.matched_text}`" class="list-item" @click="openFromMeta(item)">
+              <div class="main" v-html="renderHighlighted(item.table_name)"></div>
+              <span class="badge">TABLE</span>
+              <span class="copy-icon-btn" role="button" tabindex="0" @click.stop="copyText(item.table_name)" title="复制">⎘</span>
+            </button>
+          </template>
+          <template v-else-if="resultZoomType === 'column'">
+            <button v-for="item in resultZoomItems" :key="`${item.table_name}-${item.column_name}-${item.match_type}`" class="list-item" @click="openFromMeta(item)">
+              <div class="main" v-html="`${item.table_name}.` + renderHighlighted(item.column_name || '')"></div>
+              <span class="badge">FIELD</span>
+              <span class="copy-icon-btn" role="button" tabindex="0" @click.stop="copyText(item.column_name || item.table_name)" title="复制">⎘</span>
+            </button>
+          </template>
+          <template v-else-if="resultZoomType === 'comment'">
+            <button v-for="item in resultZoomItems" :key="`${item.table_name}-${item.column_name || ''}-${item.match_type}-${item.matched_text}`" class="list-item" @click="openFromMeta(item)">
+              <div class="main">{{ item.table_name }}<span v-if="item.column_name">.{{ item.column_name }}</span></div>
+              <div class="sub" v-html="renderHighlighted(item.matched_text)"></div>
+              <span class="badge">{{ item.match_type === 'TableComment' ? '表备注' : '列备注' }}</span>
+              <span class="copy-icon-btn" role="button" tabindex="0" @click.stop="copyText(item.column_name || item.table_name)" title="复制">⎘</span>
+            </button>
+          </template>
+          <template v-else>
+            <button v-for="item in resultZoomItems" :key="`${item.table_name}-${item.total_matches}`" class="list-item" @click="openFromData(item)">
+              <div class="main">{{ item.table_name }} · {{ item.total_matches }} 条命中</div>
+              <div class="sub">{{ (item.matched_columns || []).join(' · ') }}</div>
+              <span class="badge">DATA</span>
+            </button>
+          </template>
+          <div v-if="resultZoomItems.length === 0" class="muted p-12">暂无结果</div>
+        </div>
+      </section>
+    </section>
+  </div>
+
   <div v-if="tableOpen" class="dialog-mask" @click.self="closeTableDialog">
     <section class="modal-card wide">
       <header class="modal-header">
@@ -1043,15 +1385,16 @@ function escapeRegExp(str) {
 
       <section class="schema-box">
         <h4>Schema 信息</h4>
+        <div v-if="tableView.tableComment" class="table-comment" v-html="renderDetailHighlighted(tableView.tableComment)"></div>
         <table class="schema-table">
           <thead>
             <tr><th>字段名</th><th>类型</th><th>备注</th></tr>
           </thead>
           <tbody>
-            <tr v-for="col in tableView.columns" :key="col.column_name">
-              <td>{{ col.column_name }}</td>
+            <tr v-for="col in tableView.columns" :key="col.column_name" :class="{ hit: isSchemaColumnHit(col) }">
+              <td v-html="renderDetailHighlighted(col.column_name)"></td>
               <td>{{ col.column_type }}</td>
-              <td>{{ col.column_comment || '-' }}</td>
+              <td v-html="renderDetailHighlighted(col.column_comment || '-')"></td>
             </tr>
           </tbody>
         </table>
@@ -1071,22 +1414,26 @@ function escapeRegExp(str) {
           <table class="data-table">
             <thead>
               <tr>
-                <th v-for="col in tableView.columns" :key="col.column_name">{{ col.column_name }}</th>
+                <th
+                  v-for="col in tableView.columns"
+                  :key="col.column_name"
+                  :class="{ 'hit-col': isDataColumnHit(col.column_name) }"
+                  v-html="renderTableColumnHeader(col.column_name)"
+                ></th>
               </tr>
             </thead>
             <tbody>
               <tr
                 v-for="(row, idx) in tableView.rows"
                 :key="idx"
-                :class="{
-                  hit:
-                    tableView.hitRowIndex !== null &&
-                    tableView.hitRowIndex >= (tableView.page - 1) * tableView.pageSize &&
-                    tableView.hitRowIndex < tableView.page * tableView.pageSize &&
-                    idx === tableView.hitRowIndex - (tableView.page - 1) * tableView.pageSize,
-                }"
+                :class="{ hit: isDataRowHit(row, idx) }"
               >
-                <td v-for="col in tableView.columns" :key="col.column_name">{{ row[col.column_name] }}</td>
+                <td
+                  v-for="col in tableView.columns"
+                  :key="col.column_name"
+                  :class="{ 'hit-cell': isDataCellHit(row, col.column_name) }"
+                  v-html="renderDataCell(row, col.column_name)"
+                ></td>
               </tr>
             </tbody>
           </table>
@@ -1114,14 +1461,20 @@ function escapeRegExp(str) {
       </section>
 
       <section class="form-group">
-        <h4>挂件模式</h4>
-        <div class="mode-row">
-          <label><input v-model="settingsDraft.widgetMode" type="radio" value="tray" />托盘常驻 + 快捷键</label>
-          <label><input v-model="settingsDraft.widgetMode" type="radio" value="floating" />桌面悬浮小窗</label>
-        </div>
+        <h4>系统设置</h4>
         <div class="form-grid">
           <label>快捷键<input v-model="settingsDraft.hotkey" type="text" readonly :placeholder="hotkeyPlaceholder" @keydown="onHotkeyInputKeydown" /></label>
           <label><input v-model="settingsDraft.autoStart" type="checkbox" />开机自启</label>
+        </div>
+      </section>
+
+      <section class="form-group">
+        <h4>挂件待机状态</h4>
+        <div class="idle-state-grid">
+          <label><input v-model="settingsDraft.idleStates" type="checkbox" value="float_breathe" @change="previewIdleState('float_breathe')" />漂浮呼吸</label>
+          <label><input v-model="settingsDraft.idleStates" type="checkbox" value="sleep_zzz" @change="previewIdleState('sleep_zzz')" />打盹(zzz)</label>
+          <label><input v-model="settingsDraft.idleStates" type="checkbox" value="look_around" @change="previewIdleState('look_around')" />左右张望</label>
+          <label><input v-model="settingsDraft.idleStates" type="checkbox" value="ghost_fade" @change="previewIdleState('ghost_fade')" />半透明潜行</label>
         </div>
       </section>
 
@@ -1137,7 +1490,6 @@ function escapeRegExp(str) {
       <footer class="modal-footer">
         <span v-if="settingsMsg" class="settings-msg" :class="{ ok: settingsMsg.startsWith('✓'), err: settingsMsg.startsWith('✗') }">{{ settingsMsg }}</span>
         <button class="small-btn" @click="triggerImport">导入共享配置</button>
-        <button class="small-btn" @click="exportConfig">导出共享配置</button>
         <button class="small-btn" @click="testConnect">测试连接</button>
         <button class="primary-btn" @click="saveSettings">保存设置</button>
       </footer>

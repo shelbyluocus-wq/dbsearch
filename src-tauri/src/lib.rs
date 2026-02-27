@@ -90,6 +90,7 @@ struct PersonalConfig {
     auto_start: bool,
     pet_locked: bool,
     pet_position: Option<WindowPosition>,
+    idle_states: Vec<String>,
 }
 impl Default for PersonalConfig {
     fn default() -> Self {
@@ -100,6 +101,12 @@ impl Default for PersonalConfig {
             auto_start: false,
             pet_locked: false,
             pet_position: None,
+            idle_states: vec![
+                "float_breathe".into(),
+                "sleep_zzz".into(),
+                "look_around".into(),
+                "ghost_fade".into(),
+            ],
         }
     }
 }
