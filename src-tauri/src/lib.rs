@@ -172,6 +172,7 @@ struct SearchParams {
     keyword: String,
     scope: SearchScope,
     target_table: Option<String>,
+    target_tables: Option<Vec<String>>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 enum SearchScope {
@@ -219,6 +220,11 @@ struct TableData {
     total_rows: u64,
     page: u32,
     page_size: u32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct TableOption {
+    table_name: String,
+    table_comment: String,
 }
 #[derive(Debug, Clone, Serialize)]
 struct SearchProgress {
@@ -337,19 +343,37 @@ async fn search(
             rt.config.clone(),
         )
     };
+    let mut targets = params.target_tables.clone().unwrap_or_default();
+    if let Some(single) = params.target_table.clone() {
+        targets.push(single);
+    }
+    let target_tables: Vec<String> = targets
+        .into_iter()
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect();
+    let target_filter: Option<Vec<String>> = if target_tables.is_empty() {
+        None
+    } else {
+        Some(target_tables)
+    };
+
     let mut meta_results = if params.scope != SearchScope::DataOnly {
         meta_search(&schema, &terms)
     } else {
         vec![]
     };
+    if let Some(targets) = &target_filter {
+        meta_results.retain(|item| targets.iter().any(|target| item.table_name.eq_ignore_ascii_case(target)));
+    }
     if params.scope == SearchScope::DataOnly {
         meta_results.clear();
     }
     let mut data_results = vec![];
     if params.scope != SearchScope::MetaOnly {
         let mut tables = schema.tables.clone();
-        if let Some(target) = &params.target_table {
-            tables.retain(|t| t.table_name.eq_ignore_ascii_case(target));
+        if let Some(targets) = &target_filter {
+            tables.retain(|t| targets.iter().any(|target| t.table_name.eq_ignore_ascii_case(target)));
         }
         let patterns = compile_patterns(&cfg.shared.search.exclude_tables);
         tables.retain(|t| !patterns.iter().any(|p| p.is_match(&t.table_name)));
@@ -510,6 +534,27 @@ async fn get_table_data(
         page,
         page_size,
     })
+}
+#[tauri::command]
+async fn list_tables(state: State<'_, AppState>) -> Result<Vec<TableOption>, String> {
+    let schema = {
+        let rt = state.runtime.lock().await;
+        if rt.schema_cache.tables.is_empty() {
+            mock_schema_cache()
+        } else {
+            rt.schema_cache.clone()
+        }
+    };
+    let mut out = schema
+        .tables
+        .iter()
+        .map(|item| TableOption {
+            table_name: item.table_name.clone(),
+            table_comment: item.table_comment.clone(),
+        })
+        .collect::<Vec<_>>();
+    out.sort_by(|a, b| a.table_name.cmp(&b.table_name));
+    Ok(out)
 }
 #[tauri::command]
 async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
@@ -1329,6 +1374,7 @@ pub fn run() {
             search,
             cancel_search,
             get_table_data,
+            list_tables,
             get_config,
             save_config,
             register_hotkey,

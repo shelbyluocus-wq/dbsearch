@@ -75,9 +75,23 @@ const config = reactive({
 const history = ref([]);
 const allHitRows = ref([]);
 const allHitRowsLoading = ref(false);
+const tableFindOpen = ref(false);
+const tableFindKeyword = ref("");
+const tableFindIndexing = ref(false);
+const tableFindMatches = ref([]);
+const tableFindCursor = ref(-1);
+const tableFindIndex = ref([]);
+const tableFindTable = ref("");
+const tableFindCacheVersion = ref(0);
+const tableOptions = ref([]);
+const selectedTables = ref([]);
+const slashModeOpen = ref(false);
+const slashQuery = ref("");
+const slashActiveIndex = ref(0);
 let debounceTimer = null;
 let currentSearchToken = 0;
 let hitCollectToken = 0;
+let tableFindIndexPromise = null;
 let unlistenProgress = null;
 let unlistenPanelOpenSettings = null;
 let unlistenPetLockChanged = null;
@@ -94,6 +108,8 @@ const petFound = ref(false);
 let idleTimer = null;
 let idleStateTimer = null;
 let resetIdleHandler = null;
+const columnWidthMap = reactive({});
+let columnResizeState = null;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const IDLE_STATE_CHANGE_MS = 7 * 1000;
 const ALLOWED_IDLE_STATES = ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"];
@@ -110,6 +126,13 @@ const tableView = reactive({
   hitColumn: null,
   hitNavCursor: -1,
   focusedHitLocalIndex: null,
+});
+const tableFindFocus = reactive({
+  type: "none",
+  schemaKey: "",
+  page: 0,
+  localIndex: null,
+  columnName: "",
 });
 
 const detailHitContext = reactive({
@@ -165,6 +188,21 @@ const hitOnlyDisplayColumns = computed(() => {
   return inferred.length > 0 ? inferred : allColumnNames;
 });
 const hitOnlyRows = computed(() => allHitRows.value);
+const slashCandidates = computed(() => {
+  const query = slashQuery.value.trim().toLowerCase();
+  const selectedSet = new Set(selectedTables.value.map((item) => item.toLowerCase()));
+  const base = tableOptions.value.filter((item) => !selectedSet.has(item.table_name.toLowerCase()));
+  if (!query) return base.slice(0, 12);
+  const starts = base.filter((item) => item.table_name.toLowerCase().startsWith(query));
+  const includes = base.filter((item) => !item.table_name.toLowerCase().startsWith(query) && item.table_name.toLowerCase().includes(query));
+  const comments = base.filter((item) => !item.table_name.toLowerCase().includes(query) && String(item.table_comment || "").toLowerCase().includes(query));
+  return [...starts, ...includes, ...comments].slice(0, 12);
+});
+const tableFindCounterText = computed(() => {
+  if (tableFindIndexing.value) return "索引中...";
+  if (tableFindMatches.value.length === 0 || tableFindCursor.value < 0) return "0/0";
+  return `${tableFindCursor.value + 1}/${tableFindMatches.value.length}`;
+});
 
 function sanitizeIdleStates(states) {
   const values = Array.isArray(states) ? states : [];
@@ -225,6 +263,111 @@ function ensureDbConnectedForSearch() {
   return false;
 }
 
+function currentSearchTargets() {
+  return selectedTables.value.length > 0 ? [...selectedTables.value] : null;
+}
+
+async function loadTableOptions() {
+  if (!isPanelWindow.value) return;
+  try {
+    const list = await invoke("list_tables");
+    tableOptions.value = Array.isArray(list) ? list : [];
+  } catch {
+    tableOptions.value = [];
+  }
+}
+
+function openSlashMode() {
+  slashModeOpen.value = true;
+  slashQuery.value = "";
+  slashActiveIndex.value = 0;
+  historyOpen.value = false;
+}
+
+function closeSlashMode() {
+  slashModeOpen.value = false;
+  slashQuery.value = "";
+  slashActiveIndex.value = 0;
+}
+
+function selectSlashCandidate(item) {
+  if (!item?.table_name) return;
+  if (!selectedTables.value.includes(item.table_name)) {
+    selectedTables.value.push(item.table_name);
+  }
+  closeSlashMode();
+  focusKeyword();
+}
+
+function removeSelectedTable(tableName) {
+  selectedTables.value = selectedTables.value.filter((item) => item !== tableName);
+}
+
+function onKeywordInputKeydown(event) {
+  if (!slashModeOpen.value && event.key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    event.preventDefault();
+    openSlashMode();
+    return;
+  }
+
+  if (slashModeOpen.value) {
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      if (slashCandidates.value.length > 0) {
+        slashActiveIndex.value = (slashActiveIndex.value + 1) % slashCandidates.value.length;
+      }
+      return;
+    }
+    if (event.key === "ArrowUp") {
+      event.preventDefault();
+      if (slashCandidates.value.length > 0) {
+        slashActiveIndex.value = (slashActiveIndex.value - 1 + slashCandidates.value.length) % slashCandidates.value.length;
+      }
+      return;
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      const candidate = slashCandidates.value[slashActiveIndex.value];
+      if (candidate) {
+        selectSlashCandidate(candidate);
+      } else {
+        closeSlashMode();
+      }
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeSlashMode();
+      return;
+    }
+    if (event.key === "Backspace") {
+      event.preventDefault();
+      if (slashQuery.value.length > 0) {
+        slashQuery.value = slashQuery.value.slice(0, -1);
+      } else {
+        closeSlashMode();
+      }
+      return;
+    }
+    if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      event.preventDefault();
+      slashQuery.value += event.key;
+      return;
+    }
+    return;
+  }
+
+  if (event.key === "Backspace" && !keyword.value && selectedTables.value.length > 0) {
+    removeSelectedTable(selectedTables.value[selectedTables.value.length - 1]);
+    return;
+  }
+
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    runDataSearch();
+  }
+}
+
 function setDetailHitContext({ source = "none", columns = [], terms = [], externalHitCount = 0 } = {}) {
   detailHitContext.source = source;
   detailHitContext.columns = [...new Set((Array.isArray(columns) ? columns : []).filter(Boolean))];
@@ -254,6 +397,7 @@ onMounted(async () => {
     }
     await refreshConnectionStatus();
     await attachProgressListener();
+    await loadTableOptions();
     loadHistory();
     bindPanelListeners();
     if (isTauriWindow) {
@@ -389,6 +533,7 @@ onBeforeUnmount(() => {
   }
   clearTimeout(idleTimer);
   clearTimeout(idleStateTimer);
+  stopColumnResize();
 });
 
 watch(keyword, () => {
@@ -411,6 +556,24 @@ watch(tableDetailView, (view) => {
     collectAllHitRows().catch(() => {});
   }
 });
+
+watch(slashCandidates, (items) => {
+  if (items.length === 0) {
+    slashActiveIndex.value = 0;
+  } else if (slashActiveIndex.value >= items.length) {
+    slashActiveIndex.value = 0;
+  }
+});
+
+watch(tableFindKeyword, () => {
+  runTableFind().catch(() => {});
+});
+
+watch(selectedTables, () => {
+  if (!isPanelWindow.value) return;
+  if (!keyword.value.trim()) return;
+  runMetaSearch();
+}, { deep: true });
 
 function onDocDragover(e) { e.preventDefault(); }
 
@@ -438,6 +601,11 @@ function detachPanelListeners() {
 }
 
 function onWindowClick(event) {
+  const slashPanel = document.getElementById("slashDropdown");
+  if (slashPanel && !slashPanel.contains(event.target) && !event.target?.closest?.("#keywordInput")) {
+    slashModeOpen.value = false;
+  }
+
   const historyPanel = document.getElementById("historyDropdown");
   if (historyPanel && !historyPanel.contains(event.target) && event.target.id !== "historyBtn") {
     historyOpen.value = false;
@@ -445,6 +613,22 @@ function onWindowClick(event) {
 }
 
 function onWindowKeydown(event) {
+  if (tableOpen.value && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
+    event.preventDefault();
+    openTableFind();
+    return;
+  }
+
+  if (!tableOpen.value && event.key === "Escape" && slashModeOpen.value) {
+    closeSlashMode();
+    return;
+  }
+
+  if (tableOpen.value && tableFindOpen.value && event.key === "Escape") {
+    closeTableFind();
+    return;
+  }
+
   if (tableOpen.value && event.key === "Tab") {
     event.preventDefault();
     toggleTableDetailView();
@@ -754,6 +938,7 @@ async function saveSettings() {
 }
 
 function toggleHistory() {
+  closeSlashMode();
   historyOpen.value = !historyOpen.value;
 }
 
@@ -868,7 +1053,183 @@ async function jumpToNextHitRow() {
   }
 }
 
+function clearTableFindFocus() {
+  tableFindFocus.type = "none";
+  tableFindFocus.schemaKey = "";
+  tableFindFocus.page = 0;
+  tableFindFocus.localIndex = null;
+  tableFindFocus.columnName = "";
+}
+
+function resetTableFindState() {
+  tableFindOpen.value = false;
+  tableFindKeyword.value = "";
+  tableFindIndexing.value = false;
+  tableFindMatches.value = [];
+  tableFindCursor.value = -1;
+  tableFindIndex.value = [];
+  tableFindTable.value = "";
+  tableFindCacheVersion.value += 1;
+  tableFindIndexPromise = null;
+  clearTableFindFocus();
+}
+
+function openTableFind() {
+  tableFindOpen.value = true;
+  nextTick(() => {
+    const input = document.getElementById("tableFindInput");
+    input?.focus();
+    input?.select?.();
+  });
+}
+
+function closeTableFind() {
+  tableFindOpen.value = false;
+  tableFindKeyword.value = "";
+  tableFindMatches.value = [];
+  tableFindCursor.value = -1;
+  clearTableFindFocus();
+}
+
+async function ensureTableFindIndex() {
+  if (!tableView.tableName) return;
+  if (tableFindTable.value === tableView.tableName && tableFindIndex.value.length > 0) return;
+  if (tableFindIndexPromise) {
+    await tableFindIndexPromise;
+    return;
+  }
+
+  const version = tableFindCacheVersion.value + 1;
+  tableFindCacheVersion.value = version;
+  tableFindIndexing.value = true;
+  tableFindIndexPromise = (async () => {
+    try {
+      const entries = [];
+      entries.push({ type: "schema", schemaKey: "table_name", text: tableView.tableName });
+      if (tableView.tableComment) {
+        entries.push({ type: "schema", schemaKey: "table_comment", text: tableView.tableComment });
+      }
+      tableView.columns.forEach((column) => {
+        entries.push({ type: "schema", schemaKey: `col-${column.column_name}`, text: column.column_name });
+        if (column.column_comment) {
+          entries.push({ type: "schema", schemaKey: `col-${column.column_name}`, text: column.column_comment });
+        }
+      });
+
+      for (let page = 1; page <= totalPages.value; page += 1) {
+        let columns = tableView.columns;
+        let rows = [];
+        if (page === tableView.page) {
+          rows = tableView.rows;
+        } else {
+          const payload = await invoke("get_table_data", {
+            tableName: tableView.tableName,
+            page,
+            pageSize: tableView.pageSize,
+          });
+          columns = payload.columns || [];
+          rows = payload.rows || [];
+        }
+        if (version !== tableFindCacheVersion.value) return;
+
+        const columnNames = (columns || []).map((column) => column.column_name);
+        rows.forEach((row, localIndex) => {
+          columnNames.forEach((columnName) => {
+            const value = String(row?.[columnName] ?? "");
+            if (!value) return;
+            entries.push({
+              type: "data",
+              page,
+              localIndex,
+              columnName,
+              text: value,
+            });
+          });
+        });
+      }
+
+      if (version !== tableFindCacheVersion.value) return;
+      tableFindIndex.value = entries;
+      tableFindTable.value = tableView.tableName;
+    } finally {
+      if (version === tableFindCacheVersion.value) {
+        tableFindIndexing.value = false;
+      }
+      tableFindIndexPromise = null;
+    }
+  })();
+  await tableFindIndexPromise;
+}
+
+async function focusTableFindMatch(match) {
+  if (!match) return;
+  clearTableFindFocus();
+  tableDetailView.value = "full";
+
+  if (match.type === "data") {
+    if (tableView.page !== match.page) {
+      tableView.page = match.page;
+      await loadTablePage({ resetFocus: false, clearHitCache: false });
+    }
+    tableFindFocus.type = "data";
+    tableFindFocus.page = match.page;
+    tableFindFocus.localIndex = match.localIndex;
+    tableFindFocus.columnName = match.columnName;
+    await nextTick();
+    const escaped = typeof CSS !== "undefined" && typeof CSS.escape === "function"
+      ? CSS.escape(match.columnName)
+      : String(match.columnName);
+    const selector = `[data-find-page="${match.page}"][data-find-row="${match.localIndex}"][data-find-col="${escaped}"]`;
+    const target = document.querySelector(selector);
+    target?.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    return;
+  }
+
+  tableFindFocus.type = "schema";
+  tableFindFocus.schemaKey = String(match.schemaKey || "");
+  await nextTick();
+  const target = document.querySelector(`[data-schema-key="${tableFindFocus.schemaKey}"]`);
+  target?.scrollIntoView({ behavior: "smooth", block: "center" });
+}
+
+async function runTableFind() {
+  if (!tableFindOpen.value) return;
+  const query = tableFindKeyword.value.trim().toLowerCase();
+  if (!query) {
+    tableFindMatches.value = [];
+    tableFindCursor.value = -1;
+    clearTableFindFocus();
+    return;
+  }
+
+  await ensureTableFindIndex();
+  const matches = tableFindIndex.value.filter((item) => String(item.text || "").toLowerCase().includes(query));
+  tableFindMatches.value = matches;
+  if (matches.length === 0) {
+    tableFindCursor.value = -1;
+    clearTableFindFocus();
+    return;
+  }
+  tableFindCursor.value = 0;
+  await focusTableFindMatch(matches[0]);
+}
+
+async function jumpTableFind(step) {
+  if (tableFindMatches.value.length === 0) return;
+  const total = tableFindMatches.value.length;
+  tableFindCursor.value = (tableFindCursor.value + step + total) % total;
+  await focusTableFindMatch(tableFindMatches.value[tableFindCursor.value]);
+}
+
+function onTableFindInputKeydown(event) {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    jumpTableFind(event.shiftKey ? -1 : 1);
+  }
+}
+
 function chooseHistory(item) {
+  closeSlashMode();
   keyword.value = item;
   historyOpen.value = false;
   runMetaSearch();
@@ -923,6 +1284,7 @@ async function runMetaSearch() {
         keyword: value,
         scope: "MetaOnly",
         targetTable: null,
+        targetTables: currentSearchTargets(),
       },
     });
 
@@ -965,6 +1327,7 @@ async function runDataSearch() {
         keyword: value,
         scope: "DataOnly",
         targetTable: null,
+        targetTables: currentSearchTargets(),
       },
     });
 
@@ -1008,6 +1371,56 @@ function renderTableColumnHeader(columnName) {
 
 function renderDataCell(row, columnName) {
   return renderDetailHighlighted(row?.[columnName] || "");
+}
+
+function getColumnStyle(columnName) {
+  const width = Number(columnWidthMap[columnName] || 0);
+  if (width <= 0) return null;
+  return {
+    width: `${width}px`,
+    minWidth: `${width}px`,
+    maxWidth: `${width}px`,
+  };
+}
+
+function seedColumnWidth(columnName, width) {
+  if (!columnName || Number(columnWidthMap[columnName]) > 0) return;
+  const numeric = Math.max(80, Math.round(Number(width) || 0));
+  if (numeric > 0) {
+    columnWidthMap[columnName] = numeric;
+  }
+}
+
+function clearColumnWidths() {
+  Object.keys(columnWidthMap).forEach((key) => { delete columnWidthMap[key]; });
+}
+
+function onColumnResizeMove(event) {
+  if (!columnResizeState) return;
+  const delta = event.clientX - columnResizeState.startX;
+  const width = Math.max(80, Math.round(columnResizeState.startWidth + delta));
+  columnWidthMap[columnResizeState.columnName] = width;
+}
+
+function stopColumnResize() {
+  window.removeEventListener("pointermove", onColumnResizeMove);
+  window.removeEventListener("pointerup", stopColumnResize);
+  columnResizeState = null;
+}
+
+function startColumnResize(event, columnName) {
+  event.preventDefault();
+  event.stopPropagation();
+  const th = event.currentTarget?.closest?.("th");
+  const rect = th?.getBoundingClientRect?.();
+  const startWidth = Number(columnWidthMap[columnName] || rect?.width || 120);
+  columnResizeState = {
+    columnName,
+    startX: event.clientX,
+    startWidth,
+  };
+  window.addEventListener("pointermove", onColumnResizeMove);
+  window.addEventListener("pointerup", stopColumnResize);
 }
 
 function splitKeywordTerms(value) {
@@ -1103,6 +1516,8 @@ async function openFromData(item) {
 }
 
 async function openTable(tableName, rowIndex = null, columnName = null, hitContext = {}) {
+  resetTableFindState();
+  clearColumnWidths();
   resultZoomOpen.value = false;
   tableDetailView.value = "full";
   hitCollectToken += 1;
@@ -1164,6 +1579,8 @@ async function nextPage() {
 }
 
 function closeTableDialog() {
+  resetTableFindState();
+  clearColumnWidths();
   if (tableFullscreen.value && isTauriWindow && isPanelWindow.value) {
     getCurrentWindow().setFullscreen(false).catch(() => {});
   }
@@ -1353,11 +1770,31 @@ function escapeRegExp(str) {
       <section class="search-panel">
         <div class="search-input-wrap">
           <span class="search-icon">🔍</span>
-          <input id="keywordInput" v-model="keyword" type="text" placeholder="输入关键词搜索表名、字段名、备注..." autocomplete="off" @keydown.enter.exact="runDataSearch" />
+          <div v-if="selectedTables.length > 0" class="selected-table-chips">
+            <span v-for="tableName in selectedTables" :key="tableName" class="selected-table-chip">
+              <code>{{ tableName }}</code>
+              <button title="移除表范围" @click.stop="removeSelectedTable(tableName)">✕</button>
+            </span>
+          </div>
+          <input id="keywordInput" v-model="keyword" type="text" placeholder="输入关键词搜索表名、字段名、备注..." autocomplete="off" @keydown="onKeywordInputKeydown" />
           <button id="historyBtn" class="ghost-btn" @click="toggleHistory">历史</button>
         </div>
 
-        <div v-if="historyOpen" id="historyDropdown" class="history-dropdown">
+        <div v-if="slashModeOpen" id="slashDropdown" class="slash-dropdown">
+          <div class="slash-query">选择表范围 / {{ slashQuery || "..." }}</div>
+          <button
+            v-for="(item, idx) in slashCandidates"
+            :key="item.table_name"
+            :class="['slash-item', { active: idx === slashActiveIndex }]"
+            @click="selectSlashCandidate(item)"
+          >
+            <div class="main">{{ item.table_name }}</div>
+            <div class="sub">{{ item.table_comment || "-" }}</div>
+          </button>
+          <div v-if="slashCandidates.length === 0" class="muted p-12">暂无可选表</div>
+        </div>
+
+        <div v-if="historyOpen && !slashModeOpen" id="historyDropdown" class="history-dropdown">
           <div v-for="item in history" :key="item" class="history-row">
             <button class="history-item" @click="chooseHistory(item)">{{ item }}</button>
             <button class="history-delete" title="删除该记录" @click.stop="removeHistory(item)">✕</button>
@@ -1543,25 +1980,50 @@ function escapeRegExp(str) {
   <div v-if="tableOpen" class="dialog-mask" @click.self="closeTableDialog">
     <section :class="['modal-card', 'wide', 'table-modal', { fullscreen: tableFullscreen }]">
       <header class="modal-header">
-        <h3 v-html="renderDetailHighlighted(tableView.tableName)"></h3>
+        <h3
+          data-schema-key="table_name"
+          :class="{ 'find-active-schema': tableFindFocus.type === 'schema' && tableFindFocus.schemaKey === 'table_name' }"
+          v-html="renderDetailHighlighted(tableView.tableName)"
+        ></h3>
         <div class="table-header-actions">
           <button class="small-btn" @click="toggleTableDetailView">{{ tableDetailView === 'full' ? '只看命中(Tab)' : '返回原页(Tab)' }}</button>
           <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏' : '全屏查看' }}</button>
           <button class="icon-btn" @click="closeTableDialog">✕</button>
         </div>
       </header>
+      <section v-if="tableFindOpen" class="table-find-bar">
+        <input id="tableFindInput" v-model="tableFindKeyword" type="text" placeholder="检索当前表的全部分页文本..." @keydown="onTableFindInputKeydown" />
+        <span class="find-counter">{{ tableFindCounterText }}</span>
+        <button class="small-btn" :disabled="tableFindMatches.length === 0" @click="jumpTableFind(-1)">上一条</button>
+        <button class="small-btn" :disabled="tableFindMatches.length === 0" @click="jumpTableFind(1)">下一条</button>
+        <button class="small-btn" @click="closeTableFind">关闭</button>
+      </section>
 
       <div class="table-content">
       <template v-if="tableDetailView === 'full'">
         <section class="schema-box">
           <h4>Schema 信息（命中 {{ detailHitContext.externalHitCount }}）</h4>
-          <div v-if="tableView.tableComment" class="table-comment" v-html="renderDetailHighlighted(tableView.tableComment)"></div>
+          <div
+            v-if="tableView.tableComment"
+            class="table-comment"
+            data-schema-key="table_comment"
+            :class="{ 'find-active-schema': tableFindFocus.type === 'schema' && tableFindFocus.schemaKey === 'table_comment' }"
+            v-html="renderDetailHighlighted(tableView.tableComment)"
+          ></div>
           <table class="schema-table">
             <thead>
               <tr><th>字段名</th><th>类型</th><th>备注</th></tr>
             </thead>
             <tbody>
-              <tr v-for="col in tableView.columns" :key="col.column_name" :class="{ hit: isSchemaColumnHit(col) }">
+              <tr
+                v-for="col in tableView.columns"
+                :key="col.column_name"
+                :data-schema-key="`col-${col.column_name}`"
+                :class="{
+                  hit: isSchemaColumnHit(col),
+                  'find-active-schema': tableFindFocus.type === 'schema' && tableFindFocus.schemaKey === `col-${col.column_name}`,
+                }"
+              >
                 <td v-html="renderDetailHighlighted(col.column_name)"></td>
                 <td>{{ col.column_type }}</td>
                 <td v-html="renderDetailHighlighted(col.column_comment || '-')"></td>
@@ -1591,8 +2053,11 @@ function escapeRegExp(str) {
                     v-for="col in tableView.columns"
                     :key="col.column_name"
                     :class="{ 'hit-col': isDataColumnHit(col.column_name) }"
-                    v-html="renderTableColumnHeader(col.column_name)"
-                  ></th>
+                    :style="getColumnStyle(col.column_name)"
+                  >
+                    <div class="th-content" v-html="renderTableColumnHeader(col.column_name)"></div>
+                    <span class="col-resize-handle" @pointerdown="startColumnResize($event, col.column_name)"></span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -1600,12 +2065,27 @@ function escapeRegExp(str) {
                   v-for="(row, idx) in tableView.rows"
                   :key="idx"
                   :data-hit-row-index="idx"
-                  :class="{ hit: isDataRowHit(row, idx), 'hit-active': tableView.focusedHitLocalIndex === idx }"
+                  :class="{
+                    hit: isDataRowHit(row, idx),
+                    'hit-active': tableView.focusedHitLocalIndex === idx,
+                    'find-active-row': tableFindFocus.type === 'data' && tableFindFocus.page === tableView.page && tableFindFocus.localIndex === idx,
+                  }"
                 >
                   <td
                     v-for="col in tableView.columns"
                     :key="col.column_name"
-                    :class="{ 'hit-cell': isDataCellHit(row, col.column_name) }"
+                    :data-find-page="tableView.page"
+                    :data-find-row="idx"
+                    :data-find-col="col.column_name"
+                    :style="getColumnStyle(col.column_name)"
+                    :class="{
+                      'hit-cell': isDataCellHit(row, col.column_name),
+                      'find-active-cell':
+                        tableFindFocus.type === 'data' &&
+                        tableFindFocus.page === tableView.page &&
+                        tableFindFocus.localIndex === idx &&
+                        tableFindFocus.columnName === col.column_name,
+                    }"
                     v-html="renderDataCell(row, col.column_name)"
                   ></td>
                 </tr>
@@ -1645,7 +2125,14 @@ function escapeRegExp(str) {
               <thead>
                 <tr>
                   <th>#</th>
-                  <th v-for="columnName in hitOnlyDisplayColumns" :key="columnName" v-html="renderDetailHighlighted(columnName)"></th>
+                  <th
+                    v-for="columnName in hitOnlyDisplayColumns"
+                    :key="columnName"
+                    :style="getColumnStyle(columnName)"
+                  >
+                    <div class="th-content" v-html="renderDetailHighlighted(columnName)"></div>
+                    <span class="col-resize-handle" @pointerdown="startColumnResize($event, columnName)"></span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -1659,6 +2146,7 @@ function escapeRegExp(str) {
                   <td
                     v-for="columnName in hitOnlyDisplayColumns"
                     :key="columnName"
+                    :style="getColumnStyle(columnName)"
                     :class="{ 'hit-cell': isDataCellHit(item.row, columnName) }"
                     v-html="renderDataCell(item.row, columnName)"
                   ></td>
