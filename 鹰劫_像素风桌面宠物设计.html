@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>鹰劫 — 像素风桌面宠物设计</title>
+<style>
+  @font-face {
+    font-family: 'Pixel';
+    src: url('https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&display=swap');
+  }
+  @import url('https://fonts.googleapis.com/css2?family=Silkscreen:wght@400;700&family=Noto+Sans+SC:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg-deep: #0c0c14;
+    --bg-panel: rgba(16, 16, 26, 0.88);
+    --bg-glass: rgba(255,255,255,0.04);
+    --bg-glass-hover: rgba(255,255,255,0.08);
+    --bg-input: rgba(0,0,0,0.4);
+    --border-glass: rgba(255,255,255,0.07);
+    --accent: #38bdf8;
+    --accent-glow: rgba(56,189,248,0.25);
+    --accent-soft: rgba(56,189,248,0.12);
+    --accent-dim: rgba(56,189,248,0.06);
+    --green: #34d399;
+    --green-soft: rgba(52,211,153,0.15);
+    --orange: #fb923c;
+    --orange-soft: rgba(251,146,60,0.15);
+    --red: #f87171;
+    --purple: #a78bfa;
+    --purple-soft: rgba(167,139,250,0.12);
+    --yellow: #fbbf24;
+    --text-primary: rgba(255,255,255,0.92);
+    --text-secondary: rgba(255,255,255,0.55);
+    --text-tertiary: rgba(255,255,255,0.3);
+
+    /* Pixel grid unit */
+    --px: 5px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Noto Sans SC', sans-serif;
+    background: var(--bg-deep);
+    color: var(--text-primary);
+    min-height: 100vh;
+    image-rendering: pixelated;
+  }
+
+  .page { max-width: 1400px; margin: 0 auto; padding: 50px 40px; }
+
+  .page-header { text-align: center; margin-bottom: 70px; }
+  .page-header h1 {
+    font-family: 'Silkscreen', monospace;
+    font-size: 48px; font-weight: 700;
+    background: linear-gradient(135deg, #fff 0%, var(--yellow) 50%, var(--accent) 100%);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 8px; letter-spacing: 2px;
+  }
+  .page-header p { color: var(--text-secondary); font-size: 15px; font-weight: 400; }
+
+  .section { margin-bottom: 90px; }
+
+  .section-title {
+    font-family: 'Silkscreen', monospace;
+    font-size: 14px; color: var(--text-tertiary);
+    letter-spacing: 2px; margin-bottom: 28px;
+  }
+  .section-title::before {
+    content: '>>'; color: var(--yellow); margin-right: 10px;
+  }
+
+  .demo-row { display: flex; gap: 40px; align-items: flex-start; }
+  .demo-desc { flex: 0 0 300px; padding-top: 10px; }
+  .demo-desc h3 { font-size: 18px; font-weight: 600; margin-bottom: 10px; }
+  .demo-desc p { font-size: 14px; color: var(--text-secondary); line-height: 1.7; margin-bottom: 8px; }
+  .demo-desc .tip {
+    margin-top: 14px; padding: 10px 14px;
+    background: rgba(251,191,36,0.06); border-left: 3px solid var(--yellow);
+    border-radius: 0 8px 8px 0; font-size: 12px; color: var(--yellow); line-height: 1.6;
+  }
+
+  .demo-stage {
+    flex: 1; display: flex; justify-content: center; align-items: center;
+    min-height: 380px; position: relative;
+    background: repeating-conic-gradient(rgba(255,255,255,0.015) 0% 25%, transparent 0% 50%) 0 0 / 20px 20px;
+    border-radius: 16px; border: 1px solid rgba(255,255,255,0.03);
+  }
+
+  /* ======================================================
+     PIXEL ART CHARACTER: 鹰劫 (Eagle Jie)
+     
+     A square, stubby-legged pixel eagle.
+     Built entirely with CSS box-shadow pixel art.
+     Each "pixel" = var(--px) = 5px
+     ====================================================== */
+
+  .eagle-container {
+    position: relative;
+    cursor: pointer;
+    transition: transform 0.15s;
+  }
+
+  .eagle-container:hover { transform: scale(1.05); }
+  .eagle-container:active { transform: scale(0.95); }
+
+  /*
+   * 鹰劫 pixel map (16x18 grid)
+   * Color palette:
+   *   Body dark:  #3b4970  (slate blue)
+   *   Body mid:   #5b6fa3  (medium blue)
+   *   Body light: #8094cc  (light blue)
+   *   Belly:      #c8d5ee  (white-ish)
+   *   Beak:       #fbbf24  (yellow)
+   *   Beak dark:  #d4940a
+   *   Eye white:  #ffffff
+   *   Eye pupil:  #1a1a2e
+   *   Feet:       #d4940a  (dark yellow)
+   *   Wing tip:   #2d3a5c  (dark)
+   *   Highlight:  #a0b4e0  (shine)
+   */
+
+  .eagle-pixel {
+    width: calc(var(--px) * 1);
+    height: calc(var(--px) * 1);
+    position: absolute;
+    top: 0; left: 0;
+    /* The entire sprite is drawn with box-shadow */
+  }
+
+  /* Main eagle sprite - idle frame */
+  .eagle-sprite {
+    position: relative;
+    width: calc(16 * var(--px));
+    height: calc(20 * var(--px));
+    animation: eagle-idle 1.2s steps(2) infinite;
+  }
+
+  .eagle-sprite::before {
+    content: '';
+    position: absolute;
+    width: var(--px);
+    height: var(--px);
+    /* Row by row pixel art using box-shadow */
+    box-shadow:
+      /* === Row 0: Top of head === */
+      calc(5*var(--px)) calc(0*var(--px)) 0 0 #3b4970,
+      calc(6*var(--px)) calc(0*var(--px)) 0 0 #3b4970,
+      calc(7*var(--px)) calc(0*var(--px)) 0 0 #3b4970,
+      calc(8*var(--px)) calc(0*var(--px)) 0 0 #3b4970,
+      calc(9*var(--px)) calc(0*var(--px)) 0 0 #3b4970,
+      calc(10*var(--px)) calc(0*var(--px)) 0 0 #3b4970,
+
+      /* === Row 1 === */
+      calc(4*var(--px)) calc(1*var(--px)) 0 0 #3b4970,
+      calc(5*var(--px)) calc(1*var(--px)) 0 0 #5b6fa3,
+      calc(6*var(--px)) calc(1*var(--px)) 0 0 #5b6fa3,
+      calc(7*var(--px)) calc(1*var(--px)) 0 0 #8094cc,
+      calc(8*var(--px)) calc(1*var(--px)) 0 0 #8094cc,
+      calc(9*var(--px)) calc(1*var(--px)) 0 0 #5b6fa3,
+      calc(10*var(--px)) calc(1*var(--px)) 0 0 #5b6fa3,
+      calc(11*var(--px)) calc(1*var(--px)) 0 0 #3b4970,
+
+      /* === Row 2: Eye row === */
+      calc(3*var(--px)) calc(2*var(--px)) 0 0 #3b4970,
+      calc(4*var(--px)) calc(2*var(--px)) 0 0 #5b6fa3,
+      calc(5*var(--px)) calc(2*var(--px)) 0 0 #ffffff,
+      calc(6*var(--px)) calc(2*var(--px)) 0 0 #1a1a2e,
+      calc(7*var(--px)) calc(2*var(--px)) 0 0 #8094cc,
+      calc(8*var(--px)) calc(2*var(--px)) 0 0 #8094cc,
+      calc(9*var(--px)) calc(2*var(--px)) 0 0 #ffffff,
+      calc(10*var(--px)) calc(2*var(--px)) 0 0 #1a1a2e,
+      calc(11*var(--px)) calc(2*var(--px)) 0 0 #5b6fa3,
+      calc(12*var(--px)) calc(2*var(--px)) 0 0 #3b4970,
+
+      /* === Row 3: Below eyes / beak === */
+      calc(3*var(--px)) calc(3*var(--px)) 0 0 #3b4970,
+      calc(4*var(--px)) calc(3*var(--px)) 0 0 #5b6fa3,
+      calc(5*var(--px)) calc(3*var(--px)) 0 0 #5b6fa3,
+      calc(6*var(--px)) calc(3*var(--px)) 0 0 #5b6fa3,
+      calc(7*var(--px)) calc(3*var(--px)) 0 0 #fbbf24,
+      calc(8*var(--px)) calc(3*var(--px)) 0 0 #fbbf24,
+      calc(9*var(--px)) calc(3*var(--px)) 0 0 #5b6fa3,
+      calc(10*var(--px)) calc(3*var(--px)) 0 0 #5b6fa3,
+      calc(11*var(--px)) calc(3*var(--px)) 0 0 #5b6fa3,
+      calc(12*var(--px)) calc(3*var(--px)) 0 0 #3b4970,
+
+      /* === Row 4: Beak tip === */
+      calc(3*var(--px)) calc(4*var(--px)) 0 0 #3b4970,
+      calc(4*var(--px)) calc(4*var(--px)) 0 0 #5b6fa3,
+      calc(5*var(--px)) calc(4*var(--px)) 0 0 #5b6fa3,
+      calc(6*var(--px)) calc(4*var(--px)) 0 0 #fbbf24,
+      calc(7*var(--px)) calc(4*var(--px)) 0 0 #d4940a,
+      calc(8*var(--px)) calc(4*var(--px)) 0 0 #d4940a,
+      calc(9*var(--px)) calc(4*var(--px)) 0 0 #fbbf24,
+      calc(10*var(--px)) calc(4*var(--px)) 0 0 #5b6fa3,
+      calc(11*var(--px)) calc(4*var(--px)) 0 0 #5b6fa3,
+      calc(12*var(--px)) calc(4*var(--px)) 0 0 #3b4970,
+
+      /* === Row 5: Neck === */
+      calc(4*var(--px)) calc(5*var(--px)) 0 0 #3b4970,
+      calc(5*var(--px)) calc(5*var(--px)) 0 0 #5b6fa3,
+      calc(6*var(--px)) calc(5*var(--px)) 0 0 #5b6fa3,
+      calc(7*var(--px)) calc(5*var(--px)) 0 0 #8094cc,
+      calc(8*var(--px)) calc(5*var(--px)) 0 0 #8094cc,
+      calc(9*var(--px)) calc(5*var(--px)) 0 0 #5b6fa3,
+      calc(10*var(--px)) calc(5*var(--px)) 0 0 #5b6fa3,
+      calc(11*var(--px)) calc(5*var(--px)) 0 0 #3b4970,
+
+      /* === Row 6-7: Body with wings start === */
+      calc(2*var(--px)) calc(6*var(--px)) 0 0 #2d3a5c,
+      calc(3*var(--px)) calc(6*var(--px)) 0 0 #3b4970,
+      calc(4*var(--px)) calc(6*var(--px)) 0 0 #5b6fa3,
+      calc(5*var(--px)) calc(6*var(--px)) 0 0 #5b6fa3,
+      calc(6*var(--px)) calc(6*var(--px)) 0 0 #c8d5ee,
+      calc(7*var(--px)) calc(6*var(--px)) 0 0 #c8d5ee,
+      calc(8*var(--px)) calc(6*var(--px)) 0 0 #c8d5ee,
+      calc(9*var(--px)) calc(6*var(--px)) 0 0 #c8d5ee,
+      calc(10*var(--px)) calc(6*var(--px)) 0 0 #5b6fa3,
+      calc(11*var(--px)) calc(6*var(--px)) 0 0 #5b6fa3,
+      calc(12*var(--px)) calc(6*var(--px)) 0 0 #3b4970,
+      calc(13*var(--px)) calc(6*var(--px)) 0 0 #2d3a5c,
+
+      calc(1*var(--px)) calc(7*var(--px)) 0 0 #2d3a5c,
+      calc(2*var(--px)) calc(7*var(--px)) 0 0 #3b4970,
+      calc(3*var(--px)) calc(7*var(--px)) 0 0 #5b6fa3,
+      calc(4*var(--px)) calc(7*var(--px)) 0 0 #5b6fa3,
+      calc(5*var(--px)) calc(7*var(--px)) 0 0 #c8d5ee,
+      calc(6*var(--px)) calc(7*var(--px)) 0 0 #c8d5ee,
+      calc(7*var(--px)) calc(7*var(--px)) 0 0 #e0e8f5,
+      calc(8*var(--px)) calc(7*var(--px)) 0 0 #e0e8f5,
+      calc(9*var(--px)) calc(7*var(--px)) 0 0 #c8d5ee,
+      calc(10*var(--px)) calc(7*var(--px)) 0 0 #c8d5ee,
+      calc(11*var(--px)) calc(7*var(--px)) 0 0 #5b6fa3,
+      calc(12*var(--px)) calc(7*var(--px)) 0 0 #5b6fa3,
+      calc(13*var(--px)) calc(7*var(--px)) 0 0 #3b4970,
+      calc(14*var(--px)) calc(7*var(--px)) 0 0 #2d3a5c,
+
+      /* === Row 8-9: Body mid === */
+      calc(1*var(--px)) calc(8*var(--px)) 0 0 #2d3a5c,
+      calc(2*var(--px)) calc(8*var(--px)) 0 0 #3b4970,
+      calc(3*var(--px)) calc(8*var(--px)) 0 0 #5b6fa3,
+      calc(4*var(--px)) calc(8*var(--px)) 0 0 #5b6fa3,
+      calc(5*var(--px)) calc(8*var(--px)) 0 0 #c8d5ee,
+      calc(6*var(--px)) calc(8*var(--px)) 0 0 #c8d5ee,
+      calc(7*var(--px)) calc(8*var(--px)) 0 0 #c8d5ee,
+      calc(8*var(--px)) calc(8*var(--px)) 0 0 #c8d5ee,
+      calc(9*var(--px)) calc(8*var(--px)) 0 0 #c8d5ee,
+      calc(10*var(--px)) calc(8*var(--px)) 0 0 #c8d5ee,
+      calc(11*var(--px)) calc(8*var(--px)) 0 0 #5b6fa3,
+      calc(12*var(--px)) calc(8*var(--px)) 0 0 #5b6fa3,
+      calc(13*var(--px)) calc(8*var(--px)) 0 0 #3b4970,
+      calc(14*var(--px)) calc(8*var(--px)) 0 0 #2d3a5c,
+
+      calc(2*var(--px)) calc(9*var(--px)) 0 0 #2d3a5c,
+      calc(3*var(--px)) calc(9*var(--px)) 0 0 #3b4970,
+      calc(4*var(--px)) calc(9*var(--px)) 0 0 #5b6fa3,
+      calc(5*var(--px)) calc(9*var(--px)) 0 0 #5b6fa3,
+      calc(6*var(--px)) calc(9*var(--px)) 0 0 #c8d5ee,
+      calc(7*var(--px)) calc(9*var(--px)) 0 0 #c8d5ee,
+      calc(8*var(--px)) calc(9*var(--px)) 0 0 #c8d5ee,
+      calc(9*var(--px)) calc(9*var(--px)) 0 0 #c8d5ee,
+      calc(10*var(--px)) calc(9*var(--px)) 0 0 #5b6fa3,
+      calc(11*var(--px)) calc(9*var(--px)) 0 0 #5b6fa3,
+      calc(12*var(--px)) calc(9*var(--px)) 0 0 #3b4970,
+      calc(13*var(--px)) calc(9*var(--px)) 0 0 #2d3a5c,
+
+      /* === Row 10-11: Lower body === */
+      calc(3*var(--px)) calc(10*var(--px)) 0 0 #3b4970,
+      calc(4*var(--px)) calc(10*var(--px)) 0 0 #5b6fa3,
+      calc(5*var(--px)) calc(10*var(--px)) 0 0 #5b6fa3,
+      calc(6*var(--px)) calc(10*var(--px)) 0 0 #c8d5ee,
+      calc(7*var(--px)) calc(10*var(--px)) 0 0 #c8d5ee,
+      calc(8*var(--px)) calc(10*var(--px)) 0 0 #c8d5ee,
+      calc(9*var(--px)) calc(10*var(--px)) 0 0 #c8d5ee,
+      calc(10*var(--px)) calc(10*var(--px)) 0 0 #5b6fa3,
+      calc(11*var(--px)) calc(10*var(--px)) 0 0 #5b6fa3,
+      calc(12*var(--px)) calc(10*var(--px)) 0 0 #3b4970,
+
+      calc(3*var(--px)) calc(11*var(--px)) 0 0 #3b4970,
+      calc(4*var(--px)) calc(11*var(--px)) 0 0 #3b4970,
+      calc(5*var(--px)) calc(11*var(--px)) 0 0 #5b6fa3,
+      calc(6*var(--px)) calc(11*var(--px)) 0 0 #5b6fa3,
+      calc(7*var(--px)) calc(11*var(--px)) 0 0 #5b6fa3,
+      calc(8*var(--px)) calc(11*var(--px)) 0 0 #5b6fa3,
+      calc(9*var(--px)) calc(11*var(--px)) 0 0 #5b6fa3,
+      calc(10*var(--px)) calc(11*var(--px)) 0 0 #5b6fa3,
+      calc(11*var(--px)) calc(11*var(--px)) 0 0 #3b4970,
+      calc(12*var(--px)) calc(11*var(--px)) 0 0 #3b4970,
+
+      /* === Row 12: Stubby legs === */
+      calc(4*var(--px)) calc(12*var(--px)) 0 0 #d4940a,
+      calc(5*var(--px)) calc(12*var(--px)) 0 0 #d4940a,
+      calc(6*var(--px)) calc(12*var(--px)) 0 0 #d4940a,
+      calc(9*var(--px)) calc(12*var(--px)) 0 0 #d4940a,
+      calc(10*var(--px)) calc(12*var(--px)) 0 0 #d4940a,
+      calc(11*var(--px)) calc(12*var(--px)) 0 0 #d4940a,
+
+      /* === Row 13: Feet === */
+      calc(3*var(--px)) calc(13*var(--px)) 0 0 #d4940a,
+      calc(4*var(--px)) calc(13*var(--px)) 0 0 #fbbf24,
+      calc(5*var(--px)) calc(13*var(--px)) 0 0 #fbbf24,
+      calc(6*var(--px)) calc(13*var(--px)) 0 0 #d4940a,
+      calc(9*var(--px)) calc(13*var(--px)) 0 0 #d4940a,
+      calc(10*var(--px)) calc(13*var(--px)) 0 0 #fbbf24,
+      calc(11*var(--px)) calc(13*var(--px)) 0 0 #fbbf24,
+      calc(12*var(--px)) calc(13*var(--px)) 0 0 #d4940a;
+  }
+
+  /* Magnifying glass held in wing - separate element for animation */
+  .eagle-sprite::after {
+    content: '';
+    position: absolute;
+    width: var(--px);
+    height: var(--px);
+    box-shadow:
+      /* Glass circle */
+      calc(14*var(--px)) calc(5*var(--px)) 0 0 #38bdf8,
+      calc(15*var(--px)) calc(5*var(--px)) 0 0 #38bdf8,
+      calc(13*var(--px)) calc(6*var(--px)) 0 0 #38bdf8,
+      calc(16*var(--px)) calc(6*var(--px)) 0 0 #38bdf8,
+      calc(13*var(--px)) calc(7*var(--px)) 0 0 #38bdf8,
+      calc(16*var(--px)) calc(7*var(--px)) 0 0 #38bdf8,
+      calc(14*var(--px)) calc(8*var(--px)) 0 0 #38bdf8,
+      calc(15*var(--px)) calc(8*var(--px)) 0 0 #38bdf8,
+      /* Glass center highlight */
+      calc(14*var(--px)) calc(6*var(--px)) 0 0 rgba(56,189,248,0.3),
+      calc(15*var(--px)) calc(7*var(--px)) 0 0 rgba(56,189,248,0.3),
+      /* Handle */
+      calc(15*var(--px)) calc(9*var(--px)) 0 0 #8094cc,
+      calc(16*var(--px)) calc(10*var(--px)) 0 0 #8094cc;
+    animation: glass-bob-pixel 1.5s steps(2) infinite;
+  }
+
+  @keyframes eagle-idle {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(calc(-1 * var(--px))); }
+  }
+
+  @keyframes glass-bob-pixel {
+    0%, 100% { transform: translateY(0); }
+    50% { transform: translateY(calc(-1 * var(--px))); }
+  }
+
+  /* Shadow */
+  .eagle-shadow {
+    position: absolute;
+    bottom: calc(-2 * var(--px));
+    left: 50%;
+    transform: translateX(-50%);
+    width: calc(10 * var(--px));
+    height: calc(2 * var(--px));
+    background: rgba(56,189,248,0.08);
+    border-radius: 50%;
+    animation: shadow-pulse 1.2s steps(2) infinite;
+  }
+
+  @keyframes shadow-pulse {
+    0%, 100% { transform: translateX(-50%) scaleX(1); opacity: 0.8; }
+    50% { transform: translateX(-50%) scaleX(1.15); opacity: 0.5; }
+  }
+
+  /* ============= STATES ============= */
+  .state-gallery {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 20px;
+  }
+
+  .state-card {
+    background: rgba(255,255,255,0.02);
+    border: 1px solid rgba(255,255,255,0.04);
+    border-radius: 12px;
+    padding: 28px 16px 20px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 16px;
+    min-height: 200px;
+  }
+
+  .state-card .eagle-container { transform: scale(0.8); }
+
+  .state-label {
+    font-family: 'Silkscreen', monospace;
+    font-size: 12px; color: var(--text-secondary);
+  }
+
+  .state-sub {
+    font-size: 11px; color: var(--text-tertiary);
+    text-align: center; line-height: 1.5;
+  }
+
+  /* Searching state - blink the glass */
+  .state-searching .eagle-sprite::after {
+    animation: glass-search-pixel 0.3s steps(1) infinite !important;
+  }
+
+  @keyframes glass-search-pixel {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* Blink state */
+  .state-blink .eagle-sprite::before {
+    /* Override eye pixels to be closed - horizontal line */
+    /* We layer another shadow on top via a wrapper */
+  }
+
+  .blink-overlay {
+    position: absolute;
+    width: var(--px);
+    height: var(--px);
+    z-index: 2;
+    box-shadow:
+      calc(5*var(--px)) calc(2*var(--px)) 0 0 #5b6fa3,
+      calc(6*var(--px)) calc(2*var(--px)) 0 0 #5b6fa3,
+      calc(9*var(--px)) calc(2*var(--px)) 0 0 #5b6fa3,
+      calc(10*var(--px)) calc(2*var(--px)) 0 0 #5b6fa3;
+    animation: pixel-blink 4s steps(1) infinite;
+  }
+
+  @keyframes pixel-blink {
+    0%, 92%, 96%, 100% { opacity: 0; }
+    93%, 95% { opacity: 1; }
+  }
+
+  /* Sleep state - zzz pixels */
+  .pixel-zzz {
+    position: absolute;
+    top: calc(-3 * var(--px));
+    right: calc(-4 * var(--px));
+    font-family: 'Silkscreen', monospace;
+    font-size: 14px;
+    color: var(--text-tertiary);
+    animation: zzz-pixel 2s steps(3) infinite;
+  }
+
+  .pixel-zzz:nth-child(2) {
+    top: calc(-6 * var(--px));
+    right: calc(-7 * var(--px));
+    font-size: 11px;
+    animation-delay: 0.7s;
+  }
+
+  @keyframes zzz-pixel {
+    0% { opacity: 0; transform: translateY(0); }
+    33% { opacity: 0.6; transform: translateY(calc(-2 * var(--px))); }
+    66% { opacity: 0.3; transform: translateY(calc(-4 * var(--px))); }
+    100% { opacity: 0; transform: translateY(calc(-6 * var(--px))); }
+  }
+
+  /* Found state - happy overlay (^ ^) eyes */
+  .happy-overlay {
+    position: absolute;
+    width: var(--px);
+    height: var(--px);
+    z-index: 2;
+    box-shadow:
+      /* Left eye: ^ shape */
+      calc(5*var(--px)) calc(2*var(--px)) 0 0 #5b6fa3,
+      calc(6*var(--px)) calc(1.5*var(--px)) 0 0 #1a1a2e,
+      calc(5*var(--px)) calc(2*var(--px)) 0 0 #1a1a2e,
+      calc(6*var(--px)) calc(2*var(--px)) 0 0 #5b6fa3,
+      /* Right eye */
+      calc(9*var(--px)) calc(2*var(--px)) 0 0 #1a1a2e,
+      calc(10*var(--px)) calc(1.5*var(--px)) 0 0 #1a1a2e,
+      calc(10*var(--px)) calc(2*var(--px)) 0 0 #5b6fa3,
+      calc(9*var(--px)) calc(2*var(--px)) 0 0 #5b6fa3;
+  }
+
+  /* ============= EXPAND DEMO ============= */
+  .expand-demo {
+    display: flex;
+    align-items: center;
+    gap: 50px;
+  }
+
+  .expand-arrow {
+    font-family: 'Silkscreen', monospace;
+    font-size: 28px; color: var(--yellow); opacity: 0.6;
+    animation: arrow-blink 1s steps(1) infinite;
+  }
+
+  @keyframes arrow-blink {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 0.2; }
+  }
+
+  /* Expanded widget */
+  .morph-widget {
+    width: 440px;
+    background: var(--bg-panel);
+    backdrop-filter: blur(40px) saturate(1.5);
+    border: 1px solid var(--border-glass);
+    border-radius: 16px;
+    box-shadow: 0 20px 50px rgba(0,0,0,0.5);
+    overflow: hidden;
+    position: relative;
+  }
+
+  .morph-widget::before {
+    content: '';
+    position: absolute;
+    top: 0; left: 0; right: 0; height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.1), transparent);
+  }
+
+  /* Mini eagle on widget corner */
+  .mini-eagle {
+    position: absolute;
+    top: -18px; right: 16px;
+    transform: scale(0.45);
+    transform-origin: bottom center;
+    z-index: 10;
+  }
+
+  /* Widget inner content */
+  .w-bar {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px;
+  }
+
+  .w-bar-left { display: flex; align-items: center; gap: 8px; }
+
+  .w-logo {
+    width: 18px; height: 18px; border-radius: 4px;
+    background: linear-gradient(135deg, var(--accent), #818cf8);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px;
+    box-shadow: 0 2px 6px var(--accent-glow);
+  }
+
+  .w-name {
+    font-family: 'Silkscreen', monospace;
+    font-size: 11px; color: var(--text-secondary);
+  }
+
+  .w-bar-right { display: flex; align-items: center; gap: 4px; }
+
+  .w-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--green);
+    box-shadow: 0 0 6px rgba(52,211,153,0.5);
+  }
+
+  .w-db { font-size: 10px; color: var(--text-tertiary); }
+  .w-btn { width: 22px; height: 22px; border-radius: 5px; border: none; background: transparent; color: var(--text-tertiary); font-size: 11px; cursor: pointer; }
+
+  .w-search { padding: 0 12px 8px; }
+
+  .w-sbox {
+    display: flex; align-items: center;
+    background: var(--bg-input);
+    border: 1px solid rgba(56,189,248,0.3);
+    border-radius: 10px;
+    padding: 0 12px; height: 36px;
+    box-shadow: 0 0 0 3px rgba(56,189,248,0.06);
+  }
+
+  .w-sbox .ico { color: var(--accent); font-size: 12px; margin-right: 8px; }
+
+  .w-sbox input {
+    flex: 1; background: none; border: none; outline: none;
+    color: var(--text-primary); font-size: 12px; font-family: inherit;
+  }
+
+  .w-tags { display: flex; gap: 2px; margin-left: 4px; }
+
+  .w-tag {
+    padding: 2px 7px; border-radius: 4px;
+    font-size: 9px; font-weight: 600;
+  }
+
+  .w-tag.on { background: var(--accent-soft); color: var(--accent); }
+  .w-tag.off { color: var(--text-tertiary); }
+
+  .w-res { padding: 0 12px 12px; }
+
+  .w-rg { margin-bottom: 8px; }
+
+  .w-rg-h {
+    display: flex; align-items: center; gap: 5px;
+    padding: 3px 0; margin-bottom: 3px;
+  }
+
+  .w-rg-ico {
+    width: 15px; height: 15px; border-radius: 3px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 8px; font-weight: 700;
+  }
+
+  .w-rg-ico.t { background: var(--purple-soft); color: var(--purple); }
+  .w-rg-ico.f { background: var(--accent-soft); color: var(--accent); }
+
+  .w-rg-label { font-size: 9px; font-weight: 600; color: var(--text-tertiary); letter-spacing: 0.5px; }
+  .w-rg-count { font-size: 8px; color: var(--text-tertiary); background: var(--bg-glass); padding: 1px 5px; border-radius: 6px; }
+
+  .w-ri {
+    display: flex; align-items: center;
+    padding: 7px 10px; border-radius: 6px; gap: 8px;
+  }
+
+  .w-ri:first-of-type { background: var(--bg-glass); }
+  .w-ri-main { flex: 1; }
+
+  .w-ri-t {
+    font-size: 11px; font-weight: 500;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .w-ri-t .hl { color: var(--accent); background: var(--accent-dim); padding: 0 2px; border-radius: 2px; }
+  .w-ri-s { font-size: 10px; color: var(--text-tertiary); margin-top: 1px; }
+
+  .w-badge {
+    padding: 2px 6px; border-radius: 3px;
+    font-size: 8px; font-weight: 700;
+    font-family: 'JetBrains Mono', monospace;
+  }
+
+  .w-badge.tbl { background: var(--purple-soft); color: var(--purple); }
+  .w-badge.fld { background: var(--accent-soft); color: var(--accent); }
+
+  /* ============= RIGHT CLICK MENU ============= */
+  .ctx-demo { display: flex; align-items: flex-start; gap: 16px; }
+
+  .ctx-menu {
+    background: var(--bg-panel);
+    backdrop-filter: blur(40px) saturate(1.5);
+    border: 1px solid var(--border-glass);
+    border-radius: 10px;
+    box-shadow: 0 12px 35px rgba(0,0,0,0.5);
+    padding: 4px; width: 180px;
+  }
+
+  .ctx-item {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px; border-radius: 7px;
+    font-size: 12px; color: var(--text-secondary);
+  }
+
+  .ctx-item:hover { background: var(--bg-glass-hover); }
+  .ctx-item .ci { font-size: 13px; width: 18px; text-align: center; }
+  .ctx-item .ck { margin-left: auto; font-size: 9px; color: var(--text-tertiary); font-family: 'Silkscreen', monospace; }
+  .ctx-sep { height: 1px; background: var(--border-glass); margin: 3px 8px; }
+  .ctx-item.red { color: var(--red); }
+
+  /* ============= STORYBOARD ============= */
+  .storyboard {
+    display: flex; align-items: center; gap: 6px;
+    padding: 18px;
+    background: rgba(255,255,255,0.015);
+    border-radius: 14px;
+    border: 1px solid rgba(255,255,255,0.03);
+    overflow-x: auto;
+  }
+
+  .sf {
+    flex: 0 0 auto;
+    width: 125px; height: 120px;
+    background: rgba(255,255,255,0.02);
+    border-radius: 10px;
+    border: 1px solid rgba(255,255,255,0.04);
+    display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 6px;
+    padding: 10px;
+  }
+
+  .sf .fv { font-size: 32px; }
+  .sf .fl { font-size: 10px; color: var(--text-tertiary); text-align: center; line-height: 1.4; }
+  .sf .ft {
+    font-family: 'Silkscreen', monospace;
+    font-size: 9px; color: var(--yellow);
+    background: rgba(251,191,36,0.08);
+    padding: 2px 6px; border-radius: 4px;
+  }
+
+  .sa {
+    font-family: 'Silkscreen', monospace;
+    color: var(--yellow); opacity: 0.4; flex-shrink: 0;
+  }
+
+  /* ============= SPEC ============= */
+  .spec-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 14px;
+  }
+
+  .spec-card {
+    background: var(--bg-glass);
+    border: 1px solid var(--border-glass);
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+
+  .spec-card h4 {
+    font-family: 'Silkscreen', monospace;
+    font-size: 11px; color: var(--yellow);
+    margin-bottom: 10px;
+  }
+
+  .spec-row {
+    display: flex; justify-content: space-between;
+    padding: 4px 0; font-size: 12px;
+    border-bottom: 1px solid rgba(255,255,255,0.02);
+  }
+
+  .spec-row:last-child { border-bottom: none; }
+  .sk { color: var(--text-tertiary); }
+  .sv { color: var(--text-secondary); font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+
+  /* ============= COLOR PALETTE ============= */
+  .palette {
+    display: flex; gap: 10px; flex-wrap: wrap; margin-top: 20px;
+  }
+
+  .swatch {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 14px;
+    background: rgba(255,255,255,0.02);
+    border-radius: 8px;
+    border: 1px solid rgba(255,255,255,0.04);
+  }
+
+  .swatch-color {
+    width: 24px; height: 24px; border-radius: 4px;
+    image-rendering: pixelated;
+    border: 1px solid rgba(255,255,255,0.08);
+  }
+
+  .swatch-info .swatch-name { font-size: 11px; color: var(--text-secondary); }
+  .swatch-info .swatch-hex { font-size: 10px; color: var(--text-tertiary); font-family: 'JetBrains Mono', monospace; }
+</style>
+</head>
+<body>
+
+<div class="page">
+
+  <header class="page-header">
+    <h1>鹰劫</h1>
+    <p>像素风桌面宠物 · 数据库搜索小鹰 · 方方正正小短腿</p>
+  </header>
+
+  <!-- ========== SECTION 1: CHARACTER ========== -->
+  <section class="section">
+    <div class="section-title">角色设计</div>
+    <div class="demo-row">
+      <div class="demo-desc">
+        <h3>鹰劫 — 像素搜索鹰</h3>
+        <p>
+          方方正正的身体，蓝灰色羽毛配白色肚皮。黄色的尖嘴和小短腿。翅膀微微展开，右翅夹着一个像素放大镜（代表搜索功能）。
+        </p>
+        <p>
+          整体风格是 16×14 像素网格，每像素渲染为 5px，总尺寸约 80×70。全部用 CSS box-shadow 绘制，不需要任何图片资源。
+        </p>
+        <p>
+          配色参考猛禽色调：石板蓝身体 + 亮白胸腹 + 金黄鹰喙和爪子 + 青蓝放大镜。
+        </p>
+        <div class="tip">
+          💡 像素风天然适配 steps() 动画，所有动效都用帧切换而非缓动，保持像素感。
+        </div>
+      </div>
+      <div class="demo-stage">
+        <div class="eagle-container">
+          <div class="eagle-sprite">
+            <div class="blink-overlay"></div>
+          </div>
+          <div class="eagle-shadow"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== SECTION 2: PALETTE ========== -->
+  <section class="section">
+    <div class="section-title">角色色板</div>
+    <div class="palette">
+      <div class="swatch"><div class="swatch-color" style="background:#2d3a5c;"></div><div class="swatch-info"><div class="swatch-name">翼尖深</div><div class="swatch-hex">#2d3a5c</div></div></div>
+      <div class="swatch"><div class="swatch-color" style="background:#3b4970;"></div><div class="swatch-info"><div class="swatch-name">身体暗</div><div class="swatch-hex">#3b4970</div></div></div>
+      <div class="swatch"><div class="swatch-color" style="background:#5b6fa3;"></div><div class="swatch-info"><div class="swatch-name">身体中</div><div class="swatch-hex">#5b6fa3</div></div></div>
+      <div class="swatch"><div class="swatch-color" style="background:#8094cc;"></div><div class="swatch-info"><div class="swatch-name">身体亮</div><div class="swatch-hex">#8094cc</div></div></div>
+      <div class="swatch"><div class="swatch-color" style="background:#c8d5ee;"></div><div class="swatch-info"><div class="swatch-name">胸腹白</div><div class="swatch-hex">#c8d5ee</div></div></div>
+      <div class="swatch"><div class="swatch-color" style="background:#e0e8f5;"></div><div class="swatch-info"><div class="swatch-name">高光</div><div class="swatch-hex">#e0e8f5</div></div></div>
+      <div class="swatch"><div class="swatch-color" style="background:#fbbf24;"></div><div class="swatch-info"><div class="swatch-name">鹰喙/爪亮</div><div class="swatch-hex">#fbbf24</div></div></div>
+      <div class="swatch"><div class="swatch-color" style="background:#d4940a;"></div><div class="swatch-info"><div class="swatch-name">鹰喙/爪暗</div><div class="swatch-hex">#d4940a</div></div></div>
+      <div class="swatch"><div class="swatch-color" style="background:#38bdf8;"></div><div class="swatch-info"><div class="swatch-name">放大镜</div><div class="swatch-hex">#38bdf8</div></div></div>
+      <div class="swatch"><div class="swatch-color" style="background:#1a1a2e;"></div><div class="swatch-info"><div class="swatch-name">瞳孔</div><div class="swatch-hex">#1a1a2e</div></div></div>
+    </div>
+  </section>
+
+  <!-- ========== SECTION 3: STATES ========== -->
+  <section class="section">
+    <div class="section-title">宠物状态</div>
+    <div class="state-gallery">
+      <div class="state-card">
+        <div class="eagle-container" style="pointer-events:none;">
+          <div class="eagle-sprite"><div class="blink-overlay"></div></div>
+          <div class="eagle-shadow"></div>
+        </div>
+        <div class="state-label">待机</div>
+        <div class="state-sub">上下 1px 呼吸<br>偶尔眨眼</div>
+      </div>
+
+      <div class="state-card">
+        <div class="eagle-container" style="pointer-events:none;transform:scale(1.05);">
+          <div class="eagle-sprite" style="animation:eagle-hover 0.4s steps(2) infinite;">
+            <div class="blink-overlay" style="animation:none;opacity:0;"></div>
+          </div>
+          <div class="eagle-shadow"></div>
+        </div>
+        <style>
+          @keyframes eagle-hover {
+            0%,100% { transform: translateY(0); }
+            50% { transform: translateY(calc(-2 * var(--px))); }
+          }
+        </style>
+        <div class="state-label">悬停</div>
+        <div class="state-sub">加速弹跳<br>瞪大眼睛</div>
+      </div>
+
+      <div class="state-card">
+        <div class="eagle-container state-searching" style="pointer-events:none;">
+          <div class="eagle-sprite"><div class="blink-overlay" style="animation:none;opacity:0;"></div></div>
+          <div class="eagle-shadow"></div>
+        </div>
+        <div class="state-label">搜索中</div>
+        <div class="state-sub">放大镜闪烁<br>身体快速抖动</div>
+      </div>
+
+      <div class="state-card">
+        <div class="eagle-container" style="pointer-events:none;">
+          <div class="eagle-sprite">
+            <div class="happy-overlay"></div>
+          </div>
+          <div class="eagle-shadow"></div>
+        </div>
+        <div class="state-label">找到了!</div>
+        <div class="state-sub">眯眼开心<br>原地蹦一下</div>
+      </div>
+
+      <div class="state-card">
+        <div class="eagle-container" style="pointer-events:none;">
+          <div class="eagle-sprite" style="animation: pet-breathe-slow 4s steps(2) infinite; opacity:0.6;">
+            <div class="blink-overlay" style="animation:none;opacity:1;"></div>
+          </div>
+          <div class="eagle-shadow" style="opacity:0.4;"></div>
+          <div class="pixel-zzz">z</div>
+          <div class="pixel-zzz">z</div>
+        </div>
+        <style>
+          @keyframes pet-breathe-slow {
+            0%,100% { transform: translateY(0); }
+            50% { transform: translateY(calc(-0.5 * var(--px))); }
+          }
+        </style>
+        <div class="state-label">休眠</div>
+        <div class="state-sub">闭眼 · 变暗<br>像素 zzz 飘出</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== SECTION 4: EXPAND ========== -->
+  <section class="section">
+    <div class="section-title">点击展开搜索窗口</div>
+    <div class="demo-row">
+      <div class="demo-desc">
+        <h3>鹰劫 → 搜索面板</h3>
+        <p>
+          点击鹰劫，它"变形"展开成搜索窗口：
+        </p>
+        <p>
+          1. 鹰劫先原地蹦一下（scale 回弹）<br>
+          2. 身体向四周展开，像素块扩散成矩形<br>
+          3. 矩形填充为毛玻璃面板<br>
+          4. 搜索框和结果内容淡入<br>
+          5. 小鹰劫缩到窗口右上角趴着
+        </p>
+        <p>整个过程 400ms，全程 steps() 保持像素感。</p>
+        <div class="tip">
+          收起时反向播放。快捷键 Ctrl+Shift+F 也可以直接展开。
+        </div>
+      </div>
+      <div class="demo-stage" style="flex-direction:column;">
+        <div class="expand-demo">
+          <div class="eagle-container" style="transform:scale(0.9);pointer-events:none;">
+            <div class="eagle-sprite"><div class="blink-overlay"></div></div>
+            <div class="eagle-shadow"></div>
+          </div>
+
+          <div class="expand-arrow">>></div>
+
+          <div style="position:relative;">
+            <div class="mini-eagle">
+              <div class="eagle-container" style="transform:scale(0.4);transform-origin:bottom center;pointer-events:none;">
+                <div class="eagle-sprite"><div class="blink-overlay"></div></div>
+              </div>
+            </div>
+
+            <div class="morph-widget">
+              <div class="w-bar">
+                <div class="w-bar-left">
+                  <div class="w-logo">⚡</div>
+                  <span class="w-name">鹰劫</span>
+                </div>
+                <div class="w-bar-right">
+                  <div class="w-dot"></div>
+                  <span class="w-db">game_config</span>
+                  <button class="w-btn">⚙</button>
+                </div>
+              </div>
+
+              <div class="w-search">
+                <div class="w-sbox">
+                  <span class="ico">🔍</span>
+                  <input value="hero" readonly>
+                  <div class="w-tags">
+                    <span class="w-tag on">字段</span>
+                    <span class="w-tag on">表名</span>
+                    <span class="w-tag on">备注</span>
+                    <span class="w-tag off">数据</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="w-res">
+                <div class="w-rg">
+                  <div class="w-rg-h">
+                    <div class="w-rg-ico t">T</div>
+                    <span class="w-rg-label">表名匹配</span>
+                    <span class="w-rg-count">3</span>
+                  </div>
+                  <div class="w-ri">
+                    <div class="w-ri-main">
+                      <div class="w-ri-t">t_<span class="hl">hero</span>_config</div>
+                      <div class="w-ri-s">英雄配置表 · 238 行</div>
+                    </div>
+                    <span class="w-badge tbl">TABLE</span>
+                  </div>
+                  <div class="w-ri">
+                    <div class="w-ri-main">
+                      <div class="w-ri-t">t_<span class="hl">hero</span>_skill</div>
+                      <div class="w-ri-s">英雄技能表 · 1,024 行</div>
+                    </div>
+                    <span class="w-badge tbl">TABLE</span>
+                  </div>
+                  <div class="w-ri">
+                    <div class="w-ri-main">
+                      <div class="w-ri-t">t_<span class="hl">hero</span>_star</div>
+                      <div class="w-ri-s">英雄升星表 · 560 行</div>
+                    </div>
+                    <span class="w-badge tbl">TABLE</span>
+                  </div>
+                </div>
+                <div class="w-rg">
+                  <div class="w-rg-h">
+                    <div class="w-rg-ico f">F</div>
+                    <span class="w-rg-label">字段名匹配</span>
+                    <span class="w-rg-count">2</span>
+                  </div>
+                  <div class="w-ri">
+                    <div class="w-ri-main">
+                      <div class="w-ri-t">t_equip.<span class="hl">hero</span>_id</div>
+                      <div class="w-ri-s">int(11) · 关联英雄ID</div>
+                    </div>
+                    <span class="w-badge fld">FIELD</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== SECTION 5: STORYBOARD ========== -->
+  <section class="section">
+    <div class="section-title">展开动画分镜</div>
+    <div class="storyboard">
+      <div class="sf"><div class="fv">🦅</div><div class="fl">待机中<br>鹰劫正常大小</div><div class="ft">0ms</div></div>
+      <div class="sa">>></div>
+      <div class="sf"><div class="fv">👆</div><div class="fl">点击回弹<br>scale 1.1→0.9→1</div><div class="ft">0-100ms</div></div>
+      <div class="sa">>></div>
+      <div class="sf"><div class="fv">💥</div><div class="fl">像素扩散<br>身体块向外展开</div><div class="ft">100-200ms</div></div>
+      <div class="sa">>></div>
+      <div class="sf"><div class="fv">🟦</div><div class="fl">面板成型<br>填充毛玻璃背景</div><div class="ft">200-300ms</div></div>
+      <div class="sa">>></div>
+      <div class="sf"><div class="fv">🔍</div><div class="fl">内容淡入<br>搜索框聚焦</div><div class="ft">300-400ms</div></div>
+      <div class="sa">>></div>
+      <div class="sf"><div class="fv">🐣</div><div class="fl">小鹰劫缩到<br>右上角趴着</div><div class="ft">300-400ms</div></div>
+      <div class="sa">>></div>
+      <div class="sf"><div class="fv">✅</div><div class="fl">展开完成</div><div class="ft">400ms</div></div>
+    </div>
+  </section>
+
+  <!-- ========== SECTION 6: RIGHT CLICK ========== -->
+  <section class="section">
+    <div class="section-title">右键菜单</div>
+    <div class="demo-row">
+      <div class="demo-desc">
+        <h3>右键鹰劫</h3>
+        <p>弹出上下文菜单，提供快捷操作。菜单保持毛玻璃风格，与搜索窗口视觉统一。</p>
+      </div>
+      <div class="demo-stage">
+        <div class="ctx-demo">
+          <div class="eagle-container" style="transform:scale(0.8);pointer-events:none;">
+            <div class="eagle-sprite"><div class="blink-overlay"></div></div>
+            <div class="eagle-shadow"></div>
+          </div>
+          <div class="ctx-menu">
+            <div class="ctx-item"><span class="ci">🔍</span>打开搜索<span class="ck">Click</span></div>
+            <div class="ctx-sep"></div>
+            <div class="ctx-item"><span class="ci">🔄</span>刷新缓存</div>
+            <div class="ctx-item"><span class="ci">📌</span>锁定位置</div>
+            <div class="ctx-item"><span class="ci">⚙</span>设置</div>
+            <div class="ctx-sep"></div>
+            <div class="ctx-item red"><span class="ci">⏻</span>退出鹰劫</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ========== SECTION 7: SPECS ========== -->
+  <section class="section">
+    <div class="section-title">实现规格</div>
+    <div class="spec-grid">
+      <div class="spec-card">
+        <h4>WINDOW CONFIG</h4>
+        <div class="spec-row"><span class="sk">宠物像素网格</span><span class="sv">16×14 px</span></div>
+        <div class="spec-row"><span class="sk">像素单元大小</span><span class="sv">5px（可配 4-6）</span></div>
+        <div class="spec-row"><span class="sk">宠物窗口</span><span class="sv">~100×90 px</span></div>
+        <div class="spec-row"><span class="sk">展开窗口</span><span class="sv">460×480 px</span></div>
+        <div class="spec-row"><span class="sk">窗口属性</span><span class="sv">transparent + no-decor</span></div>
+        <div class="spec-row"><span class="sk">skip_taskbar</span><span class="sv">true</span></div>
+      </div>
+      <div class="spec-card">
+        <h4>ANIMATION</h4>
+        <div class="spec-row"><span class="sk">呼吸（待机）</span><span class="sv">1.2s steps(2) inf</span></div>
+        <div class="spec-row"><span class="sk">眨眼间隔</span><span class="sv">4s steps(1)</span></div>
+        <div class="spec-row"><span class="sk">悬停弹跳</span><span class="sv">0.4s steps(2)</span></div>
+        <div class="spec-row"><span class="sk">搜索闪烁</span><span class="sv">0.3s steps(1)</span></div>
+        <div class="spec-row"><span class="sk">展开时长</span><span class="sv">400ms steps(4)</span></div>
+        <div class="spec-row"><span class="sk">休眠触发</span><span class="sv">闲置 5 分钟</span></div>
+      </div>
+      <div class="spec-card">
+        <h4>INTERACTION MAP</h4>
+        <div class="spec-row"><span class="sk">左键单击</span><span class="sv">展开搜索窗口</span></div>
+        <div class="spec-row"><span class="sk">右键单击</span><span class="sv">上下文菜单</span></div>
+        <div class="spec-row"><span class="sk">左键拖拽</span><span class="sv">移动位置</span></div>
+        <div class="spec-row"><span class="sk">鼠标悬停</span><span class="sv">兴奋弹跳</span></div>
+        <div class="spec-row"><span class="sk">Esc / 外部点击</span><span class="sv">收起搜索</span></div>
+        <div class="spec-row"><span class="sk">Ctrl+Shift+F</span><span class="sv">直接展开</span></div>
+      </div>
+      <div class="spec-card">
+        <h4>PIXEL ART IMPL</h4>
+        <div class="spec-row"><span class="sk">渲染方式</span><span class="sv">CSS box-shadow</span></div>
+        <div class="spec-row"><span class="sk">image-rendering</span><span class="sv">pixelated</span></div>
+        <div class="spec-row"><span class="sk">动画缓动</span><span class="sv">steps(N) 保持像素感</span></div>
+        <div class="spec-row"><span class="sk">帧切换</span><span class="sv">切换 box-shadow</span></div>
+        <div class="spec-row"><span class="sk">备选方案</span><span class="sv">Canvas / Sprite sheet</span></div>
+        <div class="spec-row"><span class="sk">缩放</span><span class="sv">调整 --px 变量即可</span></div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+</body>
+</html>

@@ -1,7 +1,7 @@
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
-use sqlx::mysql::MySqlPoolOptions;
+use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
 use sqlx::{MySqlPool, Row};
 use std::collections::HashMap;
 use std::fs;
@@ -12,6 +12,7 @@ use tauri::{
     Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
 #[derive(Clone)]
@@ -239,13 +240,16 @@ async fn connect_db(
     if config.host.trim().is_empty() || config.database.trim().is_empty() {
         return Err("请填写数据库主机和库名".into());
     }
-    let url = format!(
-        "mysql://{}:{}@{}:{}/{}",
-        config.username, config.password, config.host, config.port, config.database
-    );
+    let opts = MySqlConnectOptions::new()
+        .host(config.host.trim())
+        .port(config.port)
+        .username(config.username.trim())
+        .password(&config.password)
+        .database(config.database.trim())
+        .ssl_mode(MySqlSslMode::Disabled);
     let pool = MySqlPoolOptions::new()
         .max_connections(5)
-        .connect(&url)
+        .connect_with(opts)
         .await
         .map_err(|e| format!("数据库连接失败: {e}"))?;
     let schema = load_schema_from_database(&pool, &config.database)
@@ -722,6 +726,7 @@ fn ensure_panel_window(
     .always_on_top(always_on_top)
     .skip_taskbar(false)
     .visible(false)
+    .drag_and_drop(false)
     .build()
     .map_err(|e| format!("failed to create panel window: {e}"))
 }
@@ -848,9 +853,14 @@ fn open_panel_from_global_shortcut(app: tauri::AppHandle) {
         let state = app.state::<AppState>().inner().clone();
         let always_on_top = state.runtime.lock().await.config.personal.always_on_top;
         if let Ok(panel) = ensure_panel_window(&app, always_on_top) {
-            let _ = panel.show();
-            let _ = panel.unminimize();
-            let _ = panel.set_focus();
+            let visible = panel.is_visible().unwrap_or(false);
+            if visible {
+                let _ = panel.hide();
+            } else {
+                let _ = panel.show();
+                let _ = panel.unminimize();
+                let _ = panel.set_focus();
+            }
         }
     });
 }
@@ -1242,6 +1252,16 @@ fn load_config_from_disk(app: &tauri::AppHandle) -> Result<AppConfig, String> {
     serde_json::from_str(&fs::read_to_string(p).map_err(|e| format!("读取配置失败: {e}"))?)
         .map_err(|e| format!("解析配置失败: {e}"))
 }
+#[tauri::command]
+async fn set_autostart(enable: bool, app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_autostart::ManagerExt;
+    if enable {
+        app.autolaunch().enable().map_err(|e| e.to_string())
+    } else {
+        app.autolaunch().disable().map_err(|e| e.to_string())
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1254,6 +1274,7 @@ pub fn run() {
                 })
                 .build(),
         )
+        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .setup(|app| {
@@ -1313,7 +1334,8 @@ pub fn run() {
             hide_pet_menu,
             toggle_pet_lock,
             save_pet_position,
-            quit_app
+            quit_app,
+            set_autostart
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -1,7 +1,7 @@
 ﻿<script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import "./styles.css";
 
@@ -15,6 +15,7 @@ const isPanelWindow = computed(() => !isPetWindow.value && !isMenuWindow.value);
 const settingsOpen = ref(false);
 const tableOpen = ref(false);
 const historyOpen = ref(false);
+const settingsMsg = ref("");
 
 const keyword = ref("");
 const dbConnected = ref(false);
@@ -74,6 +75,12 @@ let unlistenPanelOpenSettings = null;
 let unlistenPetLockChanged = null;
 let unlistenMenuOpened = null;
 let unlistenPetMoved = null;
+let unlistenSearchFound = null;
+
+const petSleeping = ref(false);
+const petFound = ref(false);
+let idleTimer = null;
+const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 
 const tableView = reactive({
   tableName: "",
@@ -95,14 +102,14 @@ const settingsDraft = reactive({
   database: "",
   widgetMode: "tray",
   hotkey: "Ctrl+Shift+F",
-  alwaysOnTop: true,
+  autoStart: false,
   excludeTables: "^t_log_.*,^tmp_.*",
   perTableTimeoutSec: 10,
   perTableMaxRows: 50,
 });
 
 const totalMetaCount = computed(() => results.table.length + results.column.length + results.comment.length);
-const canSearchData = computed(() => options.data && keyword.value.trim().length > 0);
+const canSearchData = computed(() => keyword.value.trim().length > 0);
 const totalPages = computed(() => Math.max(1, Math.ceil(tableView.totalRows / tableView.pageSize)));
 const lockActionText = computed(() => (config.personal.pet_locked ? "📌 解锁位置" : "📌 锁定位置"));
 const hotkeyPlaceholder = "点击后按下快捷键";
@@ -115,6 +122,18 @@ onMounted(async () => {
   await loadConfig();
 
   if (isPanelWindow.value) {
+    if (isTauriWindow && config.shared.db.host && config.shared.db.database) {
+      summaryText.value = "正在连接数据库...";
+      await invoke("connect_db", {
+        config: {
+          host: config.shared.db.host,
+          port: config.shared.db.port,
+          username: config.shared.db.username,
+          password: config.shared.db.password,
+          database: config.shared.db.database,
+        },
+      }).catch(() => { summaryText.value = "自动连接失败，请检查设置"; });
+    }
     await refreshConnectionStatus();
     await attachProgressListener();
     loadHistory();
@@ -150,6 +169,20 @@ onMounted(async () => {
         config.personal.pet_locked = payload.locked;
       }
     });
+
+    unlistenSearchFound = await listen("search-found", () => {
+      petFound.value = true;
+      setTimeout(() => { petFound.value = false; }, 800);
+    });
+
+    function resetIdle() {
+      petSleeping.value = false;
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(() => { petSleeping.value = true; }, IDLE_TIMEOUT_MS);
+    }
+    document.addEventListener("mousemove", resetIdle);
+    document.addEventListener("click", resetIdle);
+    resetIdle();
     return;
   }
 
@@ -188,6 +221,11 @@ onBeforeUnmount(() => {
     unlistenPetMoved();
     unlistenPetMoved = null;
   }
+  if (unlistenSearchFound) {
+    unlistenSearchFound();
+    unlistenSearchFound = null;
+  }
+  clearTimeout(idleTimer);
 });
 
 watch(keyword, () => {
@@ -197,21 +235,36 @@ watch(keyword, () => {
 });
 
 watch(
-  () => [options.table, options.column, options.comment, options.data],
+  () => [options.table, options.column, options.comment],
   () => {
     if (!isPanelWindow.value) return;
     runMetaSearch();
   },
 );
 
+function onDocDragover(e) { e.preventDefault(); }
+
+function onDocDrop(e) {
+  e.preventDefault();
+  e.stopPropagation();
+  const file = e.dataTransfer?.files?.[0];
+  if (!file) return;
+  if (!settingsOpen.value) openSettings();
+  onDropConfig(e);
+}
+
 function bindPanelListeners() {
   window.addEventListener("click", onWindowClick);
   window.addEventListener("keydown", onWindowKeydown);
+  document.addEventListener("dragover", onDocDragover);
+  document.addEventListener("drop", onDocDrop);
 }
 
 function detachPanelListeners() {
   window.removeEventListener("click", onWindowClick);
   window.removeEventListener("keydown", onWindowKeydown);
+  document.removeEventListener("dragover", onDocDragover);
+  document.removeEventListener("drop", onDocDrop);
 }
 
 function onWindowClick(event) {
@@ -280,14 +333,6 @@ async function attachProgressListener() {
 async function togglePanel() {
   if (!isTauriWindow) return;
   await invoke("toggle_panel_window", { openSettings: false });
-}
-
-async function quickToggleAlwaysOnTop() {
-  config.personal.always_on_top = !config.personal.always_on_top;
-  await persistConfig();
-  if (isTauriWindow) {
-    await invoke("set_panel_always_on_top", { alwaysOnTop: config.personal.always_on_top }).catch(() => {});
-  }
 }
 
 function normalizeHotkeyDisplay(value) {
@@ -435,10 +480,11 @@ function openSettings() {
   settingsDraft.database = config.shared.db.database;
   settingsDraft.widgetMode = config.personal.widget_mode;
   settingsDraft.hotkey = normalizeHotkeyDisplay(config.personal.hotkey);
-  settingsDraft.alwaysOnTop = config.personal.always_on_top;
+  settingsDraft.autoStart = config.personal.auto_start;
   settingsDraft.excludeTables = (config.shared.search.exclude_tables || []).join(",");
   settingsDraft.perTableTimeoutSec = config.shared.search.per_table_timeout_sec;
   settingsDraft.perTableMaxRows = config.shared.search.per_table_max_rows;
+  settingsMsg.value = "";
   settingsOpen.value = true;
 }
 
@@ -447,6 +493,7 @@ function closeSettings() {
 }
 
 async function testConnect() {
+  settingsMsg.value = "连接中...";
   try {
     const msg = await invoke("connect_db", {
       config: {
@@ -457,10 +504,10 @@ async function testConnect() {
         database: settingsDraft.database,
       },
     });
-    summaryText.value = msg;
+    settingsMsg.value = `✓ ${msg}`;
     await refreshConnectionStatus();
   } catch (error) {
-    summaryText.value = `连接失败：${String(error)}`;
+    settingsMsg.value = `✗ 连接失败：${String(error)}`;
   }
 }
 
@@ -475,11 +522,9 @@ async function saveSettings() {
   config.personal.widget_mode = settingsDraft.widgetMode;
   config.personal.hotkey = normalizeHotkeyDisplay(settingsDraft.hotkey.trim() || "Ctrl+Shift+F");
   if (isModifierOnlyHotkey(config.personal.hotkey)) {
-    summaryText.value = "快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F";
+    settingsMsg.value = "✗ 快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F";
     return;
   }
-  config.personal.always_on_top = !!settingsDraft.alwaysOnTop;
-
   config.shared.search.exclude_tables = settingsDraft.excludeTables
     .split(",")
     .map((item) => item.trim())
@@ -492,12 +537,14 @@ async function saveSettings() {
       await invoke("register_hotkey", { hotkey: config.personal.hotkey });
     } catch (error) {
       config.personal.hotkey = previousHotkey;
-      summaryText.value = `快捷键注册失败：${String(error)}`;
+      settingsMsg.value = `✗ 快捷键注册失败：${String(error)}`;
       return;
     }
   }
 
+  config.personal.auto_start = !!settingsDraft.autoStart;
   await persistConfig();
+  await invoke("set_autostart", { enable: config.personal.auto_start }).catch(() => {});
 
   try {
     await invoke("connect_db", {
@@ -511,10 +558,6 @@ async function saveSettings() {
     });
   } catch {
     // keep saved config even if connect failed
-  }
-
-  if (isTauriWindow) {
-    await invoke("set_panel_always_on_top", { alwaysOnTop: config.personal.always_on_top }).catch(() => {});
   }
 
   await refreshConnectionStatus();
@@ -560,13 +603,12 @@ async function runMetaSearch() {
   }
 
   addHistory(value);
-  const scope = options.data ? "All" : "MetaOnly";
 
   try {
     const response = await invoke("search", {
       params: {
         keyword: value,
-        scope,
+        scope: "MetaOnly",
         targetTable: null,
       },
     });
@@ -578,11 +620,11 @@ async function runMetaSearch() {
       ? meta.filter((item) => item.match_type === "TableComment" || item.match_type === "ColumnComment")
       : [];
 
-    if (!options.data) {
-      results.data = [];
-    }
-
     summaryText.value = `元信息结果：${totalMetaCount.value} 条`;
+
+    if (totalMetaCount.value > 0 && isTauriWindow) {
+      emit("search-found").catch(() => {});
+    }
   } catch (error) {
     summaryText.value = `搜索失败：${String(error)}`;
   }
@@ -681,8 +723,8 @@ async function loadTablePage() {
 
     tableView.columns = payload.columns || [];
     tableView.rows = payload.rows || [];
-    tableView.totalRows = payload.total_rows || 0;
-    tableView.tableComment = payload.table_comment || "";
+    tableView.totalRows = payload.totalRows || 0;
+    tableView.tableComment = payload.tableComment || "";
   } catch (error) {
     summaryText.value = `读取表数据失败：${String(error)}`;
   }
@@ -806,6 +848,38 @@ async function onImportConfig(event) {
   }
 }
 
+async function onDropConfig(event) {
+  const file = event.dataTransfer?.files?.[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const parsed = JSON.parse(text);
+    if (parsed.host) settingsDraft.host = String(parsed.host);
+    if (parsed.port) settingsDraft.port = Number(parsed.port);
+    if (parsed.database) settingsDraft.database = String(parsed.database);
+    if (parsed.username) settingsDraft.username = String(parsed.username);
+    else if (parsed.user) settingsDraft.username = String(parsed.user);
+    if (parsed.password !== undefined) settingsDraft.password = String(parsed.password);
+    settingsMsg.value = "✓ 配置已填入，请测试连接";
+  } catch {
+    settingsMsg.value = "✗ JSON 解析失败";
+  }
+}
+
+async function copyText(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    summaryText.value = `已复制: ${text}`;
+    setTimeout(() => {
+      summaryText.value = totalMetaCount.value > 0
+        ? `元信息结果：${totalMetaCount.value} 条`
+        : "输入关键词开始搜索";
+    }, 1200);
+  } catch {
+    // ignore
+  }
+}
+
 function escapeHtml(str) {
   return String(str || "")
     .replace(/&/g, "&amp;")
@@ -821,7 +895,7 @@ function escapeRegExp(str) {
 </script>
 
 <template>
-  <main v-if="isPanelWindow" class="app-shell open panel-shell" id="appShell">
+  <main v-if="isPanelWindow" class="app-shell open panel-shell" id="appShell" @contextmenu.prevent>
     <section class="widget" id="widget">
       <header class="widget-header" @pointerdown="panelHeaderPointerDown">
         <div class="traffic-lights">
@@ -830,11 +904,10 @@ function escapeRegExp(str) {
           <button class="traffic-btn traffic-green" title="最大化/还原" @click="panelToggleMaximize"></button>
         </div>
         <div class="title-drag" data-tauri-drag-region></div>
-        <span class="window-title">鹰劫</span>
+        <span class="window-title">鹰捷</span>
         <div class="header-actions">
           <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
           <span class="db-name" id="dbName">{{ dbName }}</span>
-          <button class="icon-btn" :title="config.personal.always_on_top ? '取消置顶' : '窗口置顶'" @click="quickToggleAlwaysOnTop">📌</button>
           <button class="icon-btn" title="设置" @click="openSettings">⚙</button>
         </div>
       </header>
@@ -842,7 +915,7 @@ function escapeRegExp(str) {
       <section class="search-panel">
         <div class="search-input-wrap">
           <span class="search-icon">🔍</span>
-          <input id="keywordInput" v-model="keyword" type="text" placeholder="输入关键词搜索表名、字段名、备注..." autocomplete="off" />
+          <input id="keywordInput" v-model="keyword" type="text" placeholder="输入关键词搜索表名、字段名、备注..." autocomplete="off" @keydown.enter.exact="runDataSearch" />
           <button id="historyBtn" class="ghost-btn" @click="toggleHistory">历史</button>
         </div>
 
@@ -879,8 +952,8 @@ function escapeRegExp(str) {
           <div class="list">
             <button v-for="item in results.table" :key="`${item.table_name}-${item.match_type}-${item.matched_text}`" class="list-item" @click="openFromMeta(item)">
               <div class="main" v-html="renderHighlighted(item.table_name)"></div>
-              <div class="sub" v-html="renderHighlighted(item.matched_text)"></div>
               <span class="badge">TABLE</span>
+              <span class="copy-icon-btn" role="button" tabindex="0" @click.stop="copyText(item.table_name)" title="复制">⎘</span>
             </button>
             <div v-if="results.table.length === 0" class="muted p-10">暂无结果</div>
           </div>
@@ -891,8 +964,8 @@ function escapeRegExp(str) {
           <div class="list">
             <button v-for="item in results.column" :key="`${item.table_name}-${item.column_name}-${item.match_type}`" class="list-item" @click="openFromMeta(item)">
               <div class="main" v-html="`${item.table_name}.` + renderHighlighted(item.column_name || '')"></div>
-              <div class="sub" v-html="renderHighlighted(item.matched_text)"></div>
               <span class="badge">FIELD</span>
+              <span class="copy-icon-btn" role="button" tabindex="0" @click.stop="copyText(item.column_name || item.table_name)" title="复制">⎘</span>
             </button>
             <div v-if="results.column.length === 0" class="muted p-10">暂无结果</div>
           </div>
@@ -904,7 +977,8 @@ function escapeRegExp(str) {
             <button v-for="item in results.comment" :key="`${item.table_name}-${item.column_name || ''}-${item.match_type}-${item.matched_text}`" class="list-item" @click="openFromMeta(item)">
               <div class="main">{{ item.table_name }}<span v-if="item.column_name">.{{ item.column_name }}</span></div>
               <div class="sub" v-html="renderHighlighted(item.matched_text)"></div>
-              <span class="badge">COMMENT</span>
+              <span class="badge">{{ item.match_type === 'TableComment' ? '表备注' : '列备注' }}</span>
+              <span class="copy-icon-btn" role="button" tabindex="0" @click.stop="copyText(item.column_name || item.table_name)" title="复制">⎘</span>
             </button>
             <div v-if="results.comment.length === 0" class="muted p-10">暂无结果</div>
           </div>
@@ -930,15 +1004,19 @@ function escapeRegExp(str) {
       id="pet"
       class="pet pet-anchored"
       role="button"
-      aria-label="鹰劫"
+      aria-label="鹰捷"
       data-tauri-drag-region
       @click="togglePanel"
       @contextmenu="openContextMenu"
       @pointerdown="petPointerDown"
     >
       <div class="eagle-container">
-        <div id="eagleSprite" class="eagle-sprite" :class="{ searching: progress.show }">
+        <div id="eagleSprite" class="eagle-sprite" :class="{ searching: progress.show, sleeping: petSleeping, found: petFound }">
           <div class="blink-overlay"></div>
+          <template v-if="petSleeping">
+            <div class="pixel-zzz">z</div>
+            <div class="pixel-zzz">z</div>
+          </template>
         </div>
         <div class="eagle-shadow"></div>
       </div>
@@ -959,7 +1037,7 @@ function escapeRegExp(str) {
   <div v-if="tableOpen" class="dialog-mask" @click.self="closeTableDialog">
     <section class="modal-card wide">
       <header class="modal-header">
-        <h3>{{ tableView.tableName }}（{{ tableView.tableComment || '无备注' }}）</h3>
+        <h3>{{ tableView.tableName }}</h3>
         <button class="icon-btn" @click="closeTableDialog">✕</button>
       </header>
 
@@ -1017,7 +1095,7 @@ function escapeRegExp(str) {
     </section>
   </div>
 
-  <div v-if="settingsOpen" class="dialog-mask" @click.self="closeSettings">
+  <div v-if="settingsOpen" class="dialog-mask" @click.self="closeSettings" @dragover.prevent @drop.prevent="onDropConfig">
     <section class="modal-card settings-modal">
       <header class="modal-header">
         <h3>设置</h3>
@@ -1025,7 +1103,7 @@ function escapeRegExp(str) {
       </header>
 
       <section class="form-group">
-        <h4>数据库连接</h4>
+        <h4>数据库连接 <span class="drop-hint">（可拖入 JSON 配置文件）</span></h4>
         <div class="form-grid">
           <label>主机<input v-model="settingsDraft.host" type="text" /></label>
           <label>端口<input v-model.number="settingsDraft.port" type="number" /></label>
@@ -1043,7 +1121,7 @@ function escapeRegExp(str) {
         </div>
         <div class="form-grid">
           <label>快捷键<input v-model="settingsDraft.hotkey" type="text" readonly :placeholder="hotkeyPlaceholder" @keydown="onHotkeyInputKeydown" /></label>
-          <label><input v-model="settingsDraft.alwaysOnTop" type="checkbox" />面板窗口置顶显示</label>
+          <label><input v-model="settingsDraft.autoStart" type="checkbox" />开机自启</label>
         </div>
       </section>
 
@@ -1057,6 +1135,7 @@ function escapeRegExp(str) {
       </section>
 
       <footer class="modal-footer">
+        <span v-if="settingsMsg" class="settings-msg" :class="{ ok: settingsMsg.startsWith('✓'), err: settingsMsg.startsWith('✗') }">{{ settingsMsg }}</span>
         <button class="small-btn" @click="triggerImport">导入共享配置</button>
         <button class="small-btn" @click="exportConfig">导出共享配置</button>
         <button class="small-btn" @click="testConnect">测试连接</button>

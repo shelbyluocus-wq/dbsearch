@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "鹰劫",
+        "title": "鹰捷",
         "width": 104,
         "height": 122,
         "decorations": false,
@@ -48,6 +48,6 @@
   },
   "plugins": {
     "global-shortcut": null,
-    "autostart": {}
+    "autostart": null
   }
 }
