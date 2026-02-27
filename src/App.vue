@@ -1,5 +1,5 @@
 ﻿<script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -14,6 +14,8 @@ const isPanelWindow = computed(() => !isPetWindow.value && !isMenuWindow.value);
 
 const settingsOpen = ref(false);
 const tableOpen = ref(false);
+const tableDetailView = ref("full");
+const tableFullscreen = ref(false);
 const historyOpen = ref(false);
 const resultZoomOpen = ref(false);
 const resultZoomType = ref("table");
@@ -103,6 +105,8 @@ const tableView = reactive({
   totalRows: 0,
   hitRowIndex: null,
   hitColumn: null,
+  hitNavCursor: -1,
+  focusedHitLocalIndex: null,
 });
 
 const detailHitContext = reactive({
@@ -146,6 +150,23 @@ const petSpriteClasses = computed(() => ({
   "idle-ghost": petIdleActive.value && currentIdleState.value === "ghost_fade",
 }));
 const hotkeyPlaceholder = "点击后按下快捷键";
+const hitOnlySchemaColumns = computed(() => tableView.columns.filter((col) => isSchemaColumnHit(col)));
+const hitOnlyDisplayColumns = computed(() => {
+  const allColumnNames = tableView.columns.map((col) => col.column_name);
+  const scoped = detailHitContext.columns.filter((name) => allColumnNames.includes(name));
+  if (scoped.length > 0) return scoped;
+  const terms = getDetailTerms();
+  if (terms.length === 0) return allColumnNames;
+  const inferred = allColumnNames.filter((name) => tableView.rows.some((row) => containsAnyTerms(row?.[name], terms)));
+  return inferred.length > 0 ? inferred : allColumnNames;
+});
+const hitOnlyRows = computed(() => tableView.rows
+  .map((row, idx) => ({
+    row,
+    localIndex: idx,
+    globalIndex: (tableView.page - 1) * tableView.pageSize + idx + 1,
+  }))
+  .filter((item) => isDataRowHit(item.row, item.localIndex)));
 
 function sanitizeIdleStates(states) {
   const values = Array.isArray(states) ? states : [];
@@ -418,6 +439,12 @@ function onWindowClick(event) {
 }
 
 function onWindowKeydown(event) {
+  if (tableOpen.value && event.key === "Tab") {
+    event.preventDefault();
+    toggleTableDetailView();
+    return;
+  }
+
   if (event.key !== "Escape") return;
 
   if (resultZoomOpen.value) {
@@ -733,6 +760,37 @@ function closeResultZoom() {
   resultZoomOpen.value = false;
 }
 
+function toggleTableDetailView() {
+  tableDetailView.value = tableDetailView.value === "full" ? "hits" : "full";
+}
+
+function toggleTableFullscreen() {
+  tableFullscreen.value = !tableFullscreen.value;
+}
+
+function getCurrentPageHitLocalIndexes() {
+  return tableView.rows
+    .map((row, idx) => ({ row, idx }))
+    .filter((item) => isDataRowHit(item.row, item.idx))
+    .map((item) => item.idx);
+}
+
+async function jumpToNextHitRow() {
+  const hitIndexes = getCurrentPageHitLocalIndexes();
+  if (hitIndexes.length === 0) {
+    summaryText.value = "当前页没有命中行";
+    return;
+  }
+  tableView.hitNavCursor = (tableView.hitNavCursor + 1) % hitIndexes.length;
+  tableView.focusedHitLocalIndex = hitIndexes[tableView.hitNavCursor];
+
+  await nextTick();
+  const target = document.querySelector(`[data-hit-row-index="${tableView.focusedHitLocalIndex}"]`);
+  if (target) {
+    target.scrollIntoView({ behavior: "smooth", block: "center" });
+  }
+}
+
 function chooseHistory(item) {
   keyword.value = item;
   historyOpen.value = false;
@@ -970,9 +1028,13 @@ async function openFromData(item) {
 
 async function openTable(tableName, rowIndex = null, columnName = null, hitContext = {}) {
   resultZoomOpen.value = false;
+  tableDetailView.value = "full";
+  tableFullscreen.value = false;
   tableView.tableName = tableName;
   tableView.hitRowIndex = rowIndex;
   tableView.hitColumn = columnName;
+  tableView.hitNavCursor = -1;
+  tableView.focusedHitLocalIndex = null;
   setDetailHitContext(hitContext);
   tableView.page = rowIndex !== null && rowIndex >= 0 ? Math.floor(rowIndex / tableView.pageSize) + 1 : 1;
   await loadTablePage();
@@ -992,6 +1054,8 @@ async function loadTablePage() {
     tableView.rows = payload.rows || [];
     tableView.totalRows = payload.totalRows || 0;
     tableView.tableComment = payload.tableComment || "";
+    tableView.hitNavCursor = -1;
+    tableView.focusedHitLocalIndex = null;
   } catch (error) {
     summaryText.value = `读取表数据失败：${String(error)}`;
   }
@@ -1011,6 +1075,10 @@ async function nextPage() {
 
 function closeTableDialog() {
   tableOpen.value = false;
+  tableDetailView.value = "full";
+  tableFullscreen.value = false;
+  tableView.hitNavCursor = -1;
+  tableView.focusedHitLocalIndex = null;
   setDetailHitContext();
 }
 
@@ -1377,68 +1445,132 @@ function escapeRegExp(str) {
   </div>
 
   <div v-if="tableOpen" class="dialog-mask" @click.self="closeTableDialog">
-    <section class="modal-card wide">
+    <section :class="['modal-card', 'wide', 'table-modal', { fullscreen: tableFullscreen }]">
       <header class="modal-header">
         <h3>{{ tableView.tableName }}</h3>
-        <button class="icon-btn" @click="closeTableDialog">✕</button>
+        <div class="table-header-actions">
+          <button class="small-btn" @click="toggleTableDetailView">{{ tableDetailView === 'full' ? '只看命中(Tab)' : '返回原页(Tab)' }}</button>
+          <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中</button>
+          <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏' : '全屏查看' }}</button>
+          <button class="icon-btn" @click="closeTableDialog">✕</button>
+        </div>
       </header>
 
-      <section class="schema-box">
-        <h4>Schema 信息</h4>
-        <div v-if="tableView.tableComment" class="table-comment" v-html="renderDetailHighlighted(tableView.tableComment)"></div>
-        <table class="schema-table">
-          <thead>
-            <tr><th>字段名</th><th>类型</th><th>备注</th></tr>
-          </thead>
-          <tbody>
-            <tr v-for="col in tableView.columns" :key="col.column_name" :class="{ hit: isSchemaColumnHit(col) }">
-              <td v-html="renderDetailHighlighted(col.column_name)"></td>
-              <td>{{ col.column_type }}</td>
-              <td v-html="renderDetailHighlighted(col.column_comment || '-')"></td>
-            </tr>
-          </tbody>
-        </table>
-      </section>
-
-      <section class="data-box">
-        <div class="data-head">
-          <h4>表数据（共 {{ tableView.totalRows }} 行）</h4>
-          <div class="pager">
-            <button :disabled="tableView.page <= 1" @click="prevPage">上一页</button>
-            <span>{{ tableView.page }} / {{ totalPages }}</span>
-            <button :disabled="tableView.page >= totalPages" @click="nextPage">下一页</button>
-          </div>
-        </div>
-
-        <div class="grid-wrap">
-          <table class="data-table">
+      <template v-if="tableDetailView === 'full'">
+        <section class="schema-box">
+          <h4>Schema 信息</h4>
+          <div v-if="tableView.tableComment" class="table-comment" v-html="renderDetailHighlighted(tableView.tableComment)"></div>
+          <table class="schema-table">
             <thead>
-              <tr>
-                <th
-                  v-for="col in tableView.columns"
-                  :key="col.column_name"
-                  :class="{ 'hit-col': isDataColumnHit(col.column_name) }"
-                  v-html="renderTableColumnHeader(col.column_name)"
-                ></th>
-              </tr>
+              <tr><th>字段名</th><th>类型</th><th>备注</th></tr>
             </thead>
             <tbody>
-              <tr
-                v-for="(row, idx) in tableView.rows"
-                :key="idx"
-                :class="{ hit: isDataRowHit(row, idx) }"
-              >
-                <td
-                  v-for="col in tableView.columns"
-                  :key="col.column_name"
-                  :class="{ 'hit-cell': isDataCellHit(row, col.column_name) }"
-                  v-html="renderDataCell(row, col.column_name)"
-                ></td>
+              <tr v-for="col in tableView.columns" :key="col.column_name" :class="{ hit: isSchemaColumnHit(col) }">
+                <td v-html="renderDetailHighlighted(col.column_name)"></td>
+                <td>{{ col.column_type }}</td>
+                <td v-html="renderDetailHighlighted(col.column_comment || '-')"></td>
               </tr>
             </tbody>
           </table>
-        </div>
-      </section>
+        </section>
+
+        <section class="data-box">
+          <div class="data-head">
+            <h4>表数据（共 {{ tableView.totalRows }} 行）</h4>
+            <div class="data-actions">
+              <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中</button>
+              <div class="pager">
+                <button :disabled="tableView.page <= 1" @click="prevPage">上一页</button>
+                <span>{{ tableView.page }} / {{ totalPages }}</span>
+                <button :disabled="tableView.page >= totalPages" @click="nextPage">下一页</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="grid-wrap">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th
+                    v-for="col in tableView.columns"
+                    :key="col.column_name"
+                    :class="{ 'hit-col': isDataColumnHit(col.column_name) }"
+                    v-html="renderTableColumnHeader(col.column_name)"
+                  ></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="(row, idx) in tableView.rows"
+                  :key="idx"
+                  :data-hit-row-index="idx"
+                  :class="{ hit: isDataRowHit(row, idx), 'hit-active': tableView.focusedHitLocalIndex === idx }"
+                >
+                  <td
+                    v-for="col in tableView.columns"
+                    :key="col.column_name"
+                    :class="{ 'hit-cell': isDataCellHit(row, col.column_name) }"
+                    v-html="renderDataCell(row, col.column_name)"
+                  ></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </template>
+
+      <template v-else>
+        <section class="schema-box hit-only-section">
+          <h4>命中 Schema（{{ hitOnlySchemaColumns.length }}）</h4>
+          <table v-if="hitOnlySchemaColumns.length > 0" class="schema-table">
+            <thead>
+              <tr><th>字段名</th><th>类型</th><th>备注</th></tr>
+            </thead>
+            <tbody>
+              <tr v-for="col in hitOnlySchemaColumns" :key="col.column_name" class="hit">
+                <td v-html="renderDetailHighlighted(col.column_name)"></td>
+                <td>{{ col.column_type }}</td>
+                <td v-html="renderDetailHighlighted(col.column_comment || '-')"></td>
+              </tr>
+            </tbody>
+          </table>
+          <div v-else class="muted p-10">暂无命中 Schema 信息</div>
+        </section>
+
+        <section class="data-box hit-only-section">
+          <div class="data-head">
+            <h4>当前页命中数据（{{ hitOnlyRows.length }} 行）</h4>
+            <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中</button>
+          </div>
+          <div v-if="hitOnlyRows.length === 0" class="muted p-12">当前页暂无命中数据</div>
+          <div v-else class="grid-wrap">
+            <table class="data-table hit-only-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th v-for="columnName in hitOnlyDisplayColumns" :key="columnName" v-html="renderDetailHighlighted(columnName)"></th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr
+                  v-for="item in hitOnlyRows"
+                  :key="item.localIndex"
+                  :data-hit-row-index="item.localIndex"
+                  :class="{ hit: true, 'hit-active': tableView.focusedHitLocalIndex === item.localIndex }"
+                >
+                  <td>{{ item.globalIndex }}</td>
+                  <td
+                    v-for="columnName in hitOnlyDisplayColumns"
+                    :key="columnName"
+                    :class="{ 'hit-cell': isDataCellHit(item.row, columnName) }"
+                    v-html="renderDataCell(item.row, columnName)"
+                  ></td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </template>
     </section>
   </div>
 
