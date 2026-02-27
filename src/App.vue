@@ -73,8 +73,11 @@ const config = reactive({
 });
 
 const history = ref([]);
+const allHitRows = ref([]);
+const allHitRowsLoading = ref(false);
 let debounceTimer = null;
 let currentSearchToken = 0;
+let hitCollectToken = 0;
 let unlistenProgress = null;
 let unlistenPanelOpenSettings = null;
 let unlistenPetLockChanged = null;
@@ -157,16 +160,10 @@ const hitOnlyDisplayColumns = computed(() => {
   if (scoped.length > 0) return scoped;
   const terms = getDetailTerms();
   if (terms.length === 0) return allColumnNames;
-  const inferred = allColumnNames.filter((name) => tableView.rows.some((row) => containsAnyTerms(row?.[name], terms)));
+  const inferred = allColumnNames.filter((name) => allHitRows.value.some((item) => containsAnyTerms(item.row?.[name], terms)));
   return inferred.length > 0 ? inferred : allColumnNames;
 });
-const hitOnlyRows = computed(() => tableView.rows
-  .map((row, idx) => ({
-    row,
-    localIndex: idx,
-    globalIndex: (tableView.page - 1) * tableView.pageSize + idx + 1,
-  }))
-  .filter((item) => isDataRowHit(item.row, item.localIndex)));
+const hitOnlyRows = computed(() => allHitRows.value);
 
 function sanitizeIdleStates(states) {
   const values = Array.isArray(states) ? states : [];
@@ -405,6 +402,13 @@ watch(
     runMetaSearch();
   },
 );
+
+watch(tableDetailView, (view) => {
+  if (!tableOpen.value) return;
+  if (view === "hits") {
+    collectAllHitRows().catch(() => {});
+  }
+});
 
 function onDocDragover(e) { e.preventDefault(); }
 
@@ -766,23 +770,94 @@ function toggleTableDetailView() {
 
 function toggleTableFullscreen() {
   tableFullscreen.value = !tableFullscreen.value;
+  if (isTauriWindow && isPanelWindow.value) {
+    getCurrentWindow().setFullscreen(tableFullscreen.value).catch(() => {});
+  }
 }
 
-function getCurrentPageHitLocalIndexes() {
-  return tableView.rows
-    .map((row, idx) => ({ row, idx }))
-    .filter((item) => isDataRowHit(item.row, item.idx))
-    .map((item) => item.idx);
+function getTargetColumns(columnNames = null) {
+  const all = Array.isArray(columnNames) && columnNames.length > 0
+    ? columnNames
+    : tableView.columns.map((column) => column.column_name);
+  if (detailHitContext.columns.length === 0) return all;
+  const scoped = detailHitContext.columns.filter((name) => all.includes(name));
+  return scoped.length > 0 ? scoped : all;
+}
+
+function rowMatchesContext(row, columnNames = null) {
+  const terms = getDetailTerms();
+  if (terms.length === 0) return false;
+  const targetColumns = getTargetColumns(columnNames);
+  return targetColumns.some((columnName) => containsAllTerms(row?.[columnName], terms));
+}
+
+async function collectAllHitRows() {
+  if (!tableView.tableName || tableView.totalRows <= 0) {
+    allHitRows.value = [];
+    return [];
+  }
+
+  const token = ++hitCollectToken;
+  allHitRowsLoading.value = true;
+  try {
+    const pageCount = totalPages.value;
+    const collected = [];
+    for (let page = 1; page <= pageCount; page += 1) {
+      let columns = tableView.columns;
+      let rows = [];
+      if (page === tableView.page) {
+        rows = tableView.rows;
+      } else {
+        const payload = await invoke("get_table_data", {
+          tableName: tableView.tableName,
+          page,
+          pageSize: tableView.pageSize,
+        });
+        columns = payload.columns || columns;
+        rows = payload.rows || [];
+      }
+
+      if (token !== hitCollectToken) return [];
+
+      const columnNames = (columns || []).map((column) => column.column_name);
+      rows.forEach((row, idx) => {
+        if (rowMatchesContext(row, columnNames)) {
+          collected.push({
+            row,
+            page,
+            localIndex: idx,
+            globalIndex: (page - 1) * tableView.pageSize + idx + 1,
+          });
+        }
+      });
+    }
+    allHitRows.value = collected;
+    return collected;
+  } finally {
+    if (token === hitCollectToken) {
+      allHitRowsLoading.value = false;
+    }
+  }
 }
 
 async function jumpToNextHitRow() {
-  const hitIndexes = getCurrentPageHitLocalIndexes();
-  if (hitIndexes.length === 0) {
-    summaryText.value = "当前页没有命中行";
+  if (allHitRows.value.length === 0) {
+    await collectAllHitRows();
+  }
+  if (allHitRows.value.length === 0) {
+    summaryText.value = "未找到命中数据行";
     return;
   }
-  tableView.hitNavCursor = (tableView.hitNavCursor + 1) % hitIndexes.length;
-  tableView.focusedHitLocalIndex = hitIndexes[tableView.hitNavCursor];
+
+  tableView.hitNavCursor = (tableView.hitNavCursor + 1) % allHitRows.value.length;
+  const targetHit = allHitRows.value[tableView.hitNavCursor];
+  if (!targetHit) return;
+
+  if (tableView.page !== targetHit.page) {
+    tableView.page = targetHit.page;
+    await loadTablePage({ resetFocus: false, clearHitCache: false });
+  }
+  tableView.focusedHitLocalIndex = targetHit.localIndex;
 
   await nextTick();
   const target = document.querySelector(`[data-hit-row-index="${tableView.focusedHitLocalIndex}"]`);
@@ -989,21 +1064,13 @@ function isDataRowHit(row, idx) {
     tableView.hitRowIndex < tableView.page * tableView.pageSize &&
     idx === tableView.hitRowIndex - (tableView.page - 1) * tableView.pageSize;
 
-  const terms = getDetailTerms();
-  if (terms.length === 0) return indexHit;
-
-  const targetColumns = detailHitContext.columns.length > 0
-    ? detailHitContext.columns
-    : tableView.columns.map((column) => column.column_name);
-
-  const contentHit = targetColumns.some((columnName) => containsAllTerms(row?.[columnName], terms));
-  return indexHit || contentHit;
+  return indexHit || rowMatchesContext(row);
 }
 
 function isDataCellHit(row, columnName) {
   const terms = getDetailTerms();
   if (terms.length === 0) return false;
-  const inScope = detailHitContext.columns.length === 0 || detailHitContext.columns.includes(columnName);
+  const inScope = getTargetColumns().includes(columnName);
   return inScope && containsAnyTerms(row?.[columnName], terms);
 }
 
@@ -1029,19 +1096,26 @@ async function openFromData(item) {
 async function openTable(tableName, rowIndex = null, columnName = null, hitContext = {}) {
   resultZoomOpen.value = false;
   tableDetailView.value = "full";
+  hitCollectToken += 1;
+  allHitRows.value = [];
+  allHitRowsLoading.value = false;
+  tableView.hitNavCursor = -1;
+  tableView.focusedHitLocalIndex = null;
+  if (tableFullscreen.value && isTauriWindow && isPanelWindow.value) {
+    getCurrentWindow().setFullscreen(false).catch(() => {});
+  }
   tableFullscreen.value = false;
   tableView.tableName = tableName;
   tableView.hitRowIndex = rowIndex;
   tableView.hitColumn = columnName;
-  tableView.hitNavCursor = -1;
-  tableView.focusedHitLocalIndex = null;
   setDetailHitContext(hitContext);
   tableView.page = rowIndex !== null && rowIndex >= 0 ? Math.floor(rowIndex / tableView.pageSize) + 1 : 1;
-  await loadTablePage();
+  await loadTablePage({ resetFocus: true, clearHitCache: true });
   tableOpen.value = true;
 }
 
-async function loadTablePage() {
+async function loadTablePage(options = {}) {
+  const { resetFocus = true, clearHitCache = true } = options;
   if (!tableView.tableName) return;
   try {
     const payload = await invoke("get_table_data", {
@@ -1054,8 +1128,15 @@ async function loadTablePage() {
     tableView.rows = payload.rows || [];
     tableView.totalRows = payload.totalRows || 0;
     tableView.tableComment = payload.tableComment || "";
-    tableView.hitNavCursor = -1;
-    tableView.focusedHitLocalIndex = null;
+    if (resetFocus) {
+      tableView.focusedHitLocalIndex = null;
+    }
+    if (clearHitCache) {
+      hitCollectToken += 1;
+      allHitRows.value = [];
+      allHitRowsLoading.value = false;
+      tableView.hitNavCursor = -1;
+    }
   } catch (error) {
     summaryText.value = `读取表数据失败：${String(error)}`;
   }
@@ -1064,19 +1145,25 @@ async function loadTablePage() {
 async function prevPage() {
   if (tableView.page <= 1) return;
   tableView.page -= 1;
-  await loadTablePage();
+  await loadTablePage({ resetFocus: true, clearHitCache: true });
 }
 
 async function nextPage() {
   if (tableView.page >= totalPages.value) return;
   tableView.page += 1;
-  await loadTablePage();
+  await loadTablePage({ resetFocus: true, clearHitCache: true });
 }
 
 function closeTableDialog() {
+  if (tableFullscreen.value && isTauriWindow && isPanelWindow.value) {
+    getCurrentWindow().setFullscreen(false).catch(() => {});
+  }
   tableOpen.value = false;
   tableDetailView.value = "full";
   tableFullscreen.value = false;
+  hitCollectToken += 1;
+  allHitRows.value = [];
+  allHitRowsLoading.value = false;
   tableView.hitNavCursor = -1;
   tableView.focusedHitLocalIndex = null;
   setDetailHitContext();
@@ -1456,9 +1543,10 @@ function escapeRegExp(str) {
         </div>
       </header>
 
+      <div class="table-content">
       <template v-if="tableDetailView === 'full'">
         <section class="schema-box">
-          <h4>Schema 信息</h4>
+          <h4>Schema 信息（命中 {{ hitOnlySchemaColumns.length }}）</h4>
           <div v-if="tableView.tableComment" class="table-comment" v-html="renderDetailHighlighted(tableView.tableComment)"></div>
           <table class="schema-table">
             <thead>
@@ -1539,10 +1627,11 @@ function escapeRegExp(str) {
 
         <section class="data-box hit-only-section">
           <div class="data-head">
-            <h4>当前页命中数据（{{ hitOnlyRows.length }} 行）</h4>
+            <h4>全部命中数据（{{ hitOnlyRows.length }} 行）</h4>
             <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中</button>
           </div>
-          <div v-if="hitOnlyRows.length === 0" class="muted p-12">当前页暂无命中数据</div>
+          <div v-if="allHitRowsLoading" class="muted p-12">正在汇总全部命中数据...</div>
+          <div v-else-if="hitOnlyRows.length === 0" class="muted p-12">暂无命中数据</div>
           <div v-else class="grid-wrap">
             <table class="data-table hit-only-table">
               <thead>
@@ -1571,6 +1660,7 @@ function escapeRegExp(str) {
           </div>
         </section>
       </template>
+      </div>
     </section>
   </div>
 
