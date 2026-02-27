@@ -116,6 +116,7 @@ const detailHitContext = reactive({
   source: "none",
   terms: [],
   columns: [],
+  externalHitCount: 0,
 });
 
 const settingsDraft = reactive({
@@ -224,10 +225,11 @@ function ensureDbConnectedForSearch() {
   return false;
 }
 
-function setDetailHitContext({ source = "none", columns = [], terms = [] } = {}) {
+function setDetailHitContext({ source = "none", columns = [], terms = [], externalHitCount = 0 } = {}) {
   detailHitContext.source = source;
   detailHitContext.columns = [...new Set((Array.isArray(columns) ? columns : []).filter(Boolean))];
   detailHitContext.terms = sanitizeTerms(terms);
+  detailHitContext.externalHitCount = Number(externalHitCount) || 0;
 }
 
 onMounted(async () => {
@@ -1075,10 +1077,16 @@ function isDataCellHit(row, columnName) {
 }
 
 async function openFromMeta(item) {
+  let externalHitCount = 0;
+  if (item.match_type === "TableName") externalHitCount = results.table.length;
+  else if (item.match_type === "ColumnName") externalHitCount = results.column.length;
+  else externalHitCount = results.comment.length;
+
   await openTable(item.table_name, null, item.column_name || null, {
     source: "meta",
     columns: item.column_name ? [item.column_name] : [],
     terms: splitKeywordTerms(keyword.value),
+    externalHitCount,
   });
 }
 
@@ -1090,6 +1098,7 @@ async function openFromData(item) {
     source: "data",
     columns,
     terms: splitKeywordTerms(keyword.value),
+    externalHitCount: results.data.length,
   });
 }
 
@@ -1534,10 +1543,9 @@ function escapeRegExp(str) {
   <div v-if="tableOpen" class="dialog-mask" @click.self="closeTableDialog">
     <section :class="['modal-card', 'wide', 'table-modal', { fullscreen: tableFullscreen }]">
       <header class="modal-header">
-        <h3>{{ tableView.tableName }}</h3>
+        <h3 v-html="renderDetailHighlighted(tableView.tableName)"></h3>
         <div class="table-header-actions">
           <button class="small-btn" @click="toggleTableDetailView">{{ tableDetailView === 'full' ? '只看命中(Tab)' : '返回原页(Tab)' }}</button>
-          <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中</button>
           <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏' : '全屏查看' }}</button>
           <button class="icon-btn" @click="closeTableDialog">✕</button>
         </div>
@@ -1546,7 +1554,7 @@ function escapeRegExp(str) {
       <div class="table-content">
       <template v-if="tableDetailView === 'full'">
         <section class="schema-box">
-          <h4>Schema 信息（命中 {{ hitOnlySchemaColumns.length }}）</h4>
+          <h4>Schema 信息（命中 {{ detailHitContext.externalHitCount }}）</h4>
           <div v-if="tableView.tableComment" class="table-comment" v-html="renderDetailHighlighted(tableView.tableComment)"></div>
           <table class="schema-table">
             <thead>
