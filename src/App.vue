@@ -177,7 +177,6 @@ const settingsDraft = reactive({
   database: "",
   hotkey: "Ctrl+Shift+F",
   autoStart: false,
-  uiScale: 1.0,
   idleStates: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
   excludeTables: "^t_log_.*,^tmp_.*",
   perTableTimeoutSec: 10,
@@ -242,7 +241,6 @@ const filteredResults = computed(() => {
   }
 });
 const totalPages = computed(() => Math.max(1, Math.ceil(tableView.totalRows / tableView.pageSize)));
-const lockActionText = computed(() => (config.personal.pet_locked ? "📌 解锁位置" : "📌 锁定位置"));
 const resultZoomTitle = computed(() => {
   if (resultZoomType.value === "table") return "表名匹配";
   if (resultZoomType.value === "column") return "字段名匹配";
@@ -261,10 +259,19 @@ const petSpriteClasses = computed(() => ({
 }));
 const hotkeyPlaceholder = "点击后按下快捷键";
 const uiScalePercent = computed(() => `${Math.round(normalizeUiScale(config.personal.ui_scale) * 100)}%`);
-const panelScaleStyle = computed(() => ({
-  "--ui-scale": String(normalizeUiScale(config.personal.ui_scale)),
+const contentScaleStyle = computed(() => ({
+  "--content-scale": String(normalizeUiScale(config.personal.ui_scale)),
 }));
 const hitOnlySchemaColumns = computed(() => tableView.columns.filter((col) => isSchemaColumnHit(col)));
+const hitOnlyPrimaryKeyColumns = computed(() =>
+  tableView.columns
+    .filter((col) => !!col?.is_primary_key && !!col?.column_name)
+    .map((col) => col.column_name),
+);
+const hitOnlyPrimaryHeader = computed(() => {
+  if (hitOnlyPrimaryKeyColumns.value.length === 0) return "主键";
+  return `主键(${hitOnlyPrimaryKeyColumns.value.join(", ")})`;
+});
 const hitOnlyDisplayColumns = computed(() => {
   const allColumnNames = tableView.columns.map((col) => col.column_name);
   const scoped = detailHitContext.columns.filter((name) => allColumnNames.includes(name));
@@ -306,19 +313,17 @@ function scheduleUiScalePersist() {
   }, 180);
 }
 
-function setUiScale(nextValue, { persist = false, syncDraft = false } = {}) {
+function setUiScale(nextValue, { persist = false } = {}) {
   const normalized = normalizeUiScale(nextValue);
   config.personal.ui_scale = normalized;
-  if (syncDraft) {
-    settingsDraft.uiScale = normalized;
-  }
   if (persist) {
     scheduleUiScalePersist();
   }
 }
 
-function onUiScaleInput() {
-  setUiScale(settingsDraft.uiScale, { persist: true, syncDraft: true });
+function onPanelScaleInput(event) {
+  const value = Number(event?.target?.value);
+  setUiScale(value, { persist: true });
 }
 
 function handleUiScaleHotkey(event) {
@@ -329,34 +334,33 @@ function handleUiScaleHotkey(event) {
   const zoomIn = key === "+" || (key === "=" && event.shiftKey) || code === "NumpadAdd";
   if (zoomIn) {
     event.preventDefault();
-    setUiScale(config.personal.ui_scale + UI_SCALE_STEP, {
-      persist: true,
-      syncDraft: settingsOpen.value,
-    });
+    setUiScale(config.personal.ui_scale + UI_SCALE_STEP, { persist: true });
     return true;
   }
 
   const zoomOut = key === "-" || key === "_" || code === "NumpadSubtract";
   if (zoomOut) {
     event.preventDefault();
-    setUiScale(config.personal.ui_scale - UI_SCALE_STEP, {
-      persist: true,
-      syncDraft: settingsOpen.value,
-    });
+    setUiScale(config.personal.ui_scale - UI_SCALE_STEP, { persist: true });
     return true;
   }
 
   const reset = key === "0" || code === "Digit0" || code === "Numpad0";
   if (reset) {
     event.preventDefault();
-    setUiScale(1.0, {
-      persist: true,
-      syncDraft: settingsOpen.value,
-    });
+    setUiScale(1.0, { persist: true });
     return true;
   }
 
   return false;
+}
+
+function renderHitPrimaryKey(row, fallbackIndex = null) {
+  const primaryColumns = hitOnlyPrimaryKeyColumns.value;
+  if (primaryColumns.length === 0) {
+    return fallbackIndex === null || fallbackIndex === undefined ? "-" : String(fallbackIndex);
+  }
+  return primaryColumns.map((name) => `${name}=${String(row?.[name] ?? "")}`).join(" | ");
 }
 
 function sanitizeIdleStates(states) {
@@ -1021,7 +1025,6 @@ function openSettings() {
   settingsDraft.database = config.shared.db.database;
   settingsDraft.hotkey = normalizeHotkeyDisplay(config.personal.hotkey);
   settingsDraft.autoStart = config.personal.auto_start;
-  settingsDraft.uiScale = normalizeUiScale(config.personal.ui_scale);
   settingsDraft.idleStates = [...sanitizeIdleStates(config.personal.idle_states)];
   settingsDraft.excludeTables = (config.shared.search.exclude_tables || []).join(",");
   settingsDraft.perTableTimeoutSec = config.shared.search.per_table_timeout_sec;
@@ -1064,7 +1067,6 @@ async function saveSettings() {
 
   config.personal.hotkey = normalizeHotkeyDisplay(settingsDraft.hotkey.trim() || "Ctrl+Shift+F");
   config.personal.idle_states = sanitizeIdleStates(settingsDraft.idleStates);
-  config.personal.ui_scale = normalizeUiScale(settingsDraft.uiScale);
   if (isModifierOnlyHotkey(config.personal.hotkey)) {
     settingsMsg.value = "✗ 快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F";
     return;
@@ -1815,11 +1817,6 @@ async function contextAction(action) {
   try {
     if (action === "open") {
       await invoke("show_panel_window", { openSettings: false });
-    } else if (action === "refresh") {
-      await invoke("refresh_schema");
-    } else if (action === "lock") {
-      const locked = await invoke("toggle_pet_lock");
-      config.personal.pet_locked = !!locked;
     } else if (action === "settings") {
       await invoke("show_panel_window", { openSettings: true });
     } else if (action === "exit") {
@@ -1946,7 +1943,7 @@ function escapeRegExp(str) {
 </script>
 
 <template>
-  <main v-if="isPanelWindow" class="app-shell open panel-shell" id="appShell" :style="panelScaleStyle" @contextmenu.prevent>
+  <main v-if="isPanelWindow" class="app-shell open panel-shell" id="appShell" @contextmenu.prevent>
     <section class="widget" id="widget">
       <header class="widget-header" @pointerdown="panelHeaderPointerDown">
         <div class="traffic-lights">
@@ -1963,6 +1960,7 @@ function escapeRegExp(str) {
         </div>
       </header>
 
+      <div class="panel-content-scale" :style="contentScaleStyle">
       <section class="search-panel">
         <div class="search-input-wrap">
           <span class="search-icon">🔍</span>
@@ -2014,7 +2012,6 @@ function escapeRegExp(str) {
 
       <div class="results-layout" id="resultsWrap">
         <aside class="result-sidebar">
-          <div class="sidebar-label">筛选</div>
           <button
             v-for="tab in resultTabs" :key="tab.key"
             :class="['sidebar-item', { active: activeResultTab === tab.key }]"
@@ -2047,7 +2044,6 @@ function escapeRegExp(str) {
               <button v-else-if="item._type === 'data'" class="list-item" @click="openFromData(item._item)">
                 <div class="main">{{ item.table_name }}</div>
                 <div class="sub">{{ item.preview }}</div>
-                <span class="badge">DATA</span>
               </button>
             </template>
             <div v-if="filteredResults.length === 0 && keyword.trim()" class="muted p-10">
@@ -2067,6 +2063,18 @@ function escapeRegExp(str) {
             @click="applyTheme(t.id)"
           ></button>
         </div>
+        <div class="panel-scale-control">
+          <input
+            :value="normalizeUiScale(config.personal.ui_scale)"
+            type="range"
+            min="0.8"
+            max="1.4"
+            step="0.1"
+            @input="onPanelScaleInput"
+          />
+          <span>{{ uiScalePercent }}</span>
+        </div>
+      </div>
       </div>
     </section>
   </main>
@@ -2098,15 +2106,13 @@ function escapeRegExp(str) {
   <div v-else class="pet-menu-root">
     <section class="pet-menu-window">
       <button @click="contextAction('open')">🔍 打开搜索</button>
-      <button @click="contextAction('refresh')">🔄 刷新缓存</button>
-      <button @click="contextAction('lock')">{{ lockActionText }}</button>
       <button @click="contextAction('settings')">⚙ 设置</button>
       <hr />
       <button class="danger" @click="contextAction('exit')">⏻ 退出程序</button>
     </section>
   </div>
 
-  <div v-if="resultZoomOpen" class="dialog-mask" :style="panelScaleStyle" @click.self="closeResultZoom">
+  <div v-if="resultZoomOpen" class="dialog-mask" @click.self="closeResultZoom">
     <section class="modal-card wide result-zoom-modal">
       <header class="modal-header">
         <h3>{{ resultZoomTitle }}（{{ resultZoomItems.length }}）</h3>
@@ -2140,7 +2146,6 @@ function escapeRegExp(str) {
             <button v-for="item in resultZoomItems" :key="`${item.table_name}-${item.total_matches}`" class="list-item" @click="openFromData(item)">
               <div class="main">{{ item.table_name }} · {{ item.total_matches }} 条命中</div>
               <div class="sub">{{ (item.matched_columns || []).join(' · ') }}</div>
-              <span class="badge">DATA</span>
             </button>
           </template>
           <div v-if="resultZoomItems.length === 0" class="muted p-12">暂无结果</div>
@@ -2149,7 +2154,7 @@ function escapeRegExp(str) {
     </section>
   </div>
 
-  <div v-if="tableOpen" class="dialog-mask" :style="panelScaleStyle" @mousedown.self="closeTableDialog">
+  <div v-if="tableOpen" class="dialog-mask" @mousedown.self="closeTableDialog">
     <section :class="['modal-card', 'wide', 'table-modal', { fullscreen: tableFullscreen }]">
       <header class="modal-header" @pointerdown="panelHeaderPointerDown">
         <div class="modal-title-row" @pointerdown.stop>
@@ -2302,7 +2307,7 @@ function escapeRegExp(str) {
             <table class="data-table hit-only-table">
               <thead>
                 <tr>
-                  <th>#</th>
+                  <th>{{ hitOnlyPrimaryHeader }}</th>
                   <th
                     v-for="columnName in hitOnlyDisplayColumns"
                     :key="columnName"
@@ -2320,7 +2325,7 @@ function escapeRegExp(str) {
                   :data-hit-row-index="item.localIndex"
                   :class="{ hit: true, 'hit-active': tableView.focusedHitLocalIndex === item.localIndex }"
                 >
-                  <td>{{ item.globalIndex }}</td>
+                  <td>{{ renderHitPrimaryKey(item.row, item.globalIndex) }}</td>
                   <td
                     v-for="columnName in hitOnlyDisplayColumns"
                     :key="columnName"
@@ -2339,7 +2344,7 @@ function escapeRegExp(str) {
     </section>
   </div>
 
-  <div v-if="settingsOpen" class="dialog-mask" :style="panelScaleStyle" @click.self="closeSettings" @dragover.prevent @drop.prevent="onDropConfig">
+  <div v-if="settingsOpen" class="dialog-mask" @click.self="closeSettings" @dragover.prevent @drop.prevent="onDropConfig">
     <section class="modal-card settings-modal">
       <header class="modal-header">
         <h3>设置</h3>
@@ -2362,18 +2367,6 @@ function escapeRegExp(str) {
           <div class="form-grid">
             <label>快捷键<input v-model="settingsDraft.hotkey" type="text" readonly :placeholder="hotkeyPlaceholder" @keydown="onHotkeyInputKeydown" /></label>
             <label><input v-model="settingsDraft.autoStart" type="checkbox" />开机自启</label>
-            <label class="full ui-scale-field">
-              <span>界面缩放 {{ uiScalePercent }}</span>
-              <input
-                v-model.number="settingsDraft.uiScale"
-                type="range"
-                min="0.8"
-                max="1.4"
-                step="0.1"
-                @input="onUiScaleInput"
-              />
-              <small>快捷键：Ctrl +/-，Ctrl+0 重置</small>
-            </label>
           </div>
         </section>
 
