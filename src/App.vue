@@ -40,6 +40,21 @@ const results = reactive({
   data: [],
 });
 
+const themeId = ref(localStorage.getItem('dbsearch-theme') || 'azure')
+
+const THEMES = [
+  { id: 'azure',    name: 'Azure',    color: '#0284c7' },
+  { id: 'midnight', name: 'Midnight', color: '#334155' },
+  { id: 'emerald',  name: 'Emerald',  color: '#059669' },
+  { id: 'violet',   name: 'Violet',   color: '#7c3aed' },
+]
+
+function applyTheme(id) {
+  themeId.value = id
+  document.documentElement.dataset.theme = id
+  localStorage.setItem('dbsearch-theme', id)
+}
+
 const progress = reactive({
   show: false,
   text: "",
@@ -157,7 +172,62 @@ const settingsDraft = reactive({
 });
 
 const totalMetaCount = computed(() => results.table.length + results.column.length + results.comment.length);
-const canSearchData = computed(() => keyword.value.trim().length > 0);
+const canSearchData = computed(() => dbConnected.value && keyword.value.trim().length > 0);
+
+const flatDataResults = computed(() => {
+  const flat = [];
+  for (const item of results.data) {
+    const rows = item.matched_rows || [];
+    const matchedCols = item.matched_columns || [];
+    for (const row of rows) {
+      if (matchedCols.length > 0) {
+        for (const col of matchedCols) {
+          flat.push({
+            table_name: item.table_name,
+            column: col,
+            preview: `${col}: ${row[col] ?? ''}`,
+            _item: item,
+          });
+        }
+      } else {
+        flat.push({ table_name: item.table_name, column: '', preview: '(匹配行)', _item: item });
+      }
+    }
+    if (!rows.length && item.total_matches > 0) {
+      flat.push({ table_name: item.table_name, column: '', preview: `${item.total_matches} 条命中`, _item: item });
+    }
+  }
+  return flat;
+});
+
+const activeResultTab = ref('全部');
+
+const totalResultCount = computed(() =>
+  results.table.length + results.column.length + results.comment.length + flatDataResults.value.length
+);
+
+const resultTabs = computed(() => [
+  { key: '全部',  label: '全部',  count: totalResultCount.value },
+  { key: '表名',  label: '表名',  count: results.table.length },
+  { key: '字段名', label: '字段名', count: results.column.length },
+  { key: '备注',  label: '备注',  count: results.comment.length },
+  { key: '数据值', label: '数据值', count: flatDataResults.value.length },
+]);
+
+const filteredResults = computed(() => {
+  switch (activeResultTab.value) {
+    case '表名':  return results.table.map(i => ({ ...i, _type: 'table' }));
+    case '字段名': return results.column.map(i => ({ ...i, _type: 'column' }));
+    case '备注':  return results.comment.map(i => ({ ...i, _type: 'comment' }));
+    case '数据值': return flatDataResults.value.map(i => ({ ...i, _type: 'data' }));
+    default: return [
+      ...results.table.map(i => ({ ...i, _type: 'table' })),
+      ...results.column.map(i => ({ ...i, _type: 'column' })),
+      ...results.comment.map(i => ({ ...i, _type: 'comment' })),
+      ...flatDataResults.value.map(i => ({ ...i, _type: 'data' })),
+    ];
+  }
+});
 const totalPages = computed(() => Math.max(1, Math.ceil(tableView.totalRows / tableView.pageSize)));
 const lockActionText = computed(() => (config.personal.pet_locked ? "📌 解锁位置" : "📌 锁定位置"));
 const resultZoomTitle = computed(() => {
@@ -380,6 +450,7 @@ onMounted(async () => {
     windowLabel.value = getCurrentWindow().label;
   }
 
+  applyTheme(themeId.value)
   await loadConfig();
 
   if (isPanelWindow.value) {
@@ -1265,6 +1336,7 @@ function loadHistory() {
 }
 
 async function runMetaSearch() {
+  activeResultTab.value = '全部';
   const value = keyword.value.trim();
   if (!value) {
     results.table = [];
@@ -1313,6 +1385,7 @@ async function runMetaSearch() {
 }
 
 async function runDataSearch() {
+  activeResultTab.value = '数据值';
   if (!canSearchData.value) return;
   if (!ensureDbConnectedForSearch()) {
     results.data = [];
@@ -1742,6 +1815,13 @@ async function copyText(text) {
   }
 }
 
+function getResultKey(item) {
+  if (item._type === 'table') return `t-${item.table_name}-${item.match_type}`;
+  if (item._type === 'column') return `c-${item.table_name}-${item.column_name}`;
+  if (item._type === 'comment') return `cm-${item.table_name}-${item.column_name}-${item.matched_text}`;
+  return `d-${item.table_name}-${item.column}-${item.preview}`;
+}
+
 function escapeHtml(str) {
   return String(str || "")
     .replace(/&/g, "&amp;")
@@ -1810,13 +1890,6 @@ function escapeRegExp(str) {
           <div v-if="history.length === 0" class="muted p-12">暂无历史</div>
         </div>
 
-        <div class="search-options">
-          <label><input v-model="options.table" type="checkbox" />表名</label>
-          <label><input v-model="options.column" type="checkbox" />字段名</label>
-          <label><input v-model="options.comment" type="checkbox" />备注</label>
-          <label><input v-model="options.data" type="checkbox" />数据值</label>
-        </div>
-
         <div class="actions-row">
           <span class="muted">{{ summaryText }}</span>
         </div>
@@ -1830,80 +1903,62 @@ function escapeRegExp(str) {
         </div>
       </section>
 
-      <section class="results" id="resultsWrap">
-        <article class="result-group">
-          <header @click="openResultZoom('table')">
-            <div class="group-title-row">
-              <h3>表名匹配</h3>
-              <button class="group-expand-btn" title="放大查看" @click.stop="openResultZoom('table')">⤢</button>
-            </div>
-            <span>{{ results.table.length }}</span>
-          </header>
-          <div class="list list-scrollable">
-            <button v-for="item in results.table" :key="`${item.table_name}-${item.match_type}-${item.matched_text}`" class="list-item" @click="openFromMeta(item)">
-              <div class="main" v-html="renderHighlighted(item.table_name)"></div>
-              <span class="badge">TABLE</span>
-              <span class="copy-icon-btn" role="button" tabindex="0" @click.stop="copyText(item.table_name)" title="复制">⎘</span>
-            </button>
-            <div v-if="results.table.length === 0" class="muted p-10">暂无结果</div>
-          </div>
-        </article>
+      <div class="results-layout" id="resultsWrap">
+        <aside class="result-sidebar">
+          <div class="sidebar-label">筛选</div>
+          <button
+            v-for="tab in resultTabs" :key="tab.key"
+            :class="['sidebar-item', { active: activeResultTab === tab.key }]"
+            @click="activeResultTab = tab.key"
+          >
+            <span>{{ tab.label }}</span>
+            <span class="sidebar-count" v-if="tab.count > 0">{{ tab.count }}</span>
+          </button>
+        </aside>
 
-        <article class="result-group">
-          <header @click="openResultZoom('column')">
-            <div class="group-title-row">
-              <h3>字段名匹配</h3>
-              <button class="group-expand-btn" title="放大查看" @click.stop="openResultZoom('column')">⤢</button>
+        <section class="results-main">
+          <div class="list list-main">
+            <template v-for="item in filteredResults" :key="getResultKey(item)">
+              <button v-if="item._type === 'table'" class="list-item" @click="openFromMeta(item)">
+                <div class="main" v-html="renderHighlighted(item.table_name)"></div>
+                <span class="badge">TABLE</span>
+                <span class="copy-icon-btn" @click.stop="copyText(item.table_name)" title="复制">⎘</span>
+              </button>
+              <button v-else-if="item._type === 'column'" class="list-item" @click="openFromMeta(item)">
+                <div class="main" v-html="`${item.table_name}.` + renderHighlighted(item.column_name || '')"></div>
+                <span class="badge">FIELD</span>
+                <span class="copy-icon-btn" @click.stop="copyText(item.column_name || item.table_name)" title="复制">⎘</span>
+              </button>
+              <button v-else-if="item._type === 'comment'" class="list-item" @click="openFromMeta(item)">
+                <div class="main">{{ item.table_name }}<span v-if="item.column_name">.{{ item.column_name }}</span></div>
+                <div class="sub" v-html="renderHighlighted(item.matched_text)"></div>
+                <span class="badge">{{ item.match_type === 'TableComment' ? '表备注' : '列备注' }}</span>
+                <span class="copy-icon-btn" @click.stop="copyText(item.column_name || item.table_name)" title="复制">⎘</span>
+              </button>
+              <button v-else-if="item._type === 'data'" class="list-item" @click="openFromData(item._item)">
+                <div class="main">{{ item.table_name }}</div>
+                <div class="sub">{{ item.preview }}</div>
+                <span class="badge">DATA</span>
+              </button>
+            </template>
+            <div v-if="filteredResults.length === 0 && keyword.trim()" class="muted p-10">
+              {{ activeResultTab === '数据值' ? '按回车搜索数据值' : '暂无结果' }}
             </div>
-            <span>{{ results.column.length }}</span>
-          </header>
-          <div class="list list-scrollable">
-            <button v-for="item in results.column" :key="`${item.table_name}-${item.column_name}-${item.match_type}`" class="list-item" @click="openFromMeta(item)">
-              <div class="main" v-html="`${item.table_name}.` + renderHighlighted(item.column_name || '')"></div>
-              <span class="badge">FIELD</span>
-              <span class="copy-icon-btn" role="button" tabindex="0" @click.stop="copyText(item.column_name || item.table_name)" title="复制">⎘</span>
-            </button>
-            <div v-if="results.column.length === 0" class="muted p-10">暂无结果</div>
           </div>
-        </article>
-
-        <article class="result-group">
-          <header @click="openResultZoom('comment')">
-            <div class="group-title-row">
-              <h3>备注匹配</h3>
-              <button class="group-expand-btn" title="放大查看" @click.stop="openResultZoom('comment')">⤢</button>
-            </div>
-            <span>{{ results.comment.length }}</span>
-          </header>
-          <div class="list list-scrollable">
-            <button v-for="item in results.comment" :key="`${item.table_name}-${item.column_name || ''}-${item.match_type}-${item.matched_text}`" class="list-item" @click="openFromMeta(item)">
-              <div class="main">{{ item.table_name }}<span v-if="item.column_name">.{{ item.column_name }}</span></div>
-              <div class="sub" v-html="renderHighlighted(item.matched_text)"></div>
-              <span class="badge">{{ item.match_type === 'TableComment' ? '表备注' : '列备注' }}</span>
-              <span class="copy-icon-btn" role="button" tabindex="0" @click.stop="copyText(item.column_name || item.table_name)" title="复制">⎘</span>
-            </button>
-            <div v-if="results.comment.length === 0" class="muted p-10">暂无结果</div>
-          </div>
-        </article>
-
-        <article class="result-group">
-          <header @click="openResultZoom('data')">
-            <div class="group-title-row">
-              <h3>数据值匹配</h3>
-              <button class="group-expand-btn" title="放大查看" @click.stop="openResultZoom('data')">⤢</button>
-            </div>
-            <span>{{ results.data.length }}</span>
-          </header>
-          <div class="list list-scrollable">
-            <button v-for="item in results.data" :key="`${item.table_name}-${item.total_matches}`" class="list-item" @click="openFromData(item)">
-              <div class="main">{{ item.table_name }} · {{ item.total_matches }} 条命中</div>
-              <div class="sub">{{ (item.matched_columns || []).join(' · ') }}</div>
-              <span class="badge">DATA</span>
-            </button>
-            <div v-if="results.data.length === 0" class="muted p-10">暂无结果</div>
-          </div>
-        </article>
-      </section>
+        </section>
+      </div>
+      <div class="panel-footer">
+        <div class="theme-switcher">
+          <button
+            v-for="t in THEMES" :key="t.id"
+            class="theme-dot"
+            :class="{ active: themeId === t.id }"
+            :style="{ '--c': t.color, background: t.color }"
+            :title="t.name"
+            @click="applyTheme(t.id)"
+          ></button>
+        </div>
+      </div>
     </section>
   </main>
 
@@ -1985,14 +2040,19 @@ function escapeRegExp(str) {
     </section>
   </div>
 
-  <div v-if="tableOpen" class="dialog-mask" @click.self="closeTableDialog">
+  <div v-if="tableOpen" class="dialog-mask" @mousedown.self="closeTableDialog">
     <section :class="['modal-card', 'wide', 'table-modal', { fullscreen: tableFullscreen }]">
       <header class="modal-header" @pointerdown="panelHeaderPointerDown">
-        <h3
-          data-schema-key="table_name"
-          :class="{ 'find-active-schema': tableFindFocus.type === 'schema' && tableFindFocus.schemaKey === 'table_name' }"
-          v-html="renderDetailHighlighted(tableView.tableName)"
-        ></h3>
+        <div class="modal-title-row" @pointerdown.stop>
+          <h3
+            class="modal-table-title"
+            data-schema-key="table_name"
+            :class="{ 'find-active-schema': tableFindFocus.type === 'schema' && tableFindFocus.schemaKey === 'table_name' }"
+            v-html="renderDetailHighlighted(tableView.tableName)"
+          ></h3>
+          <button class="copy-icon-btn modal-copy-btn"
+            @click.stop="copyText(tableView.tableName)" title="复制表名">⎘</button>
+        </div>
         <div class="table-header-actions">
           <button class="small-btn" @click="toggleTableDetailView">{{ tableDetailView === 'full' ? '只看命中(Tab)' : '返回原页(Tab)' }}</button>
           <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏' : '全屏查看' }}</button>
