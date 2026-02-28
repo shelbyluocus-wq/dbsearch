@@ -258,8 +258,10 @@ const petSpriteClasses = computed(() => ({
   "idle-ghost": petIdleActive.value && currentIdleState.value === "ghost_fade",
 }));
 const hotkeyPlaceholder = "点击后按下快捷键";
-const uiScalePercent = computed(() => `${Math.round(normalizeUiScale(config.personal.ui_scale) * 100)}%`);
 const contentScaleStyle = computed(() => ({
+  "--content-scale": String(normalizeUiScale(config.personal.ui_scale)),
+}));
+const tableContentScaleStyle = computed(() => ({
   "--content-scale": String(normalizeUiScale(config.personal.ui_scale)),
 }));
 const hitOnlySchemaColumns = computed(() => tableView.columns.filter((col) => isSchemaColumnHit(col)));
@@ -321,11 +323,6 @@ function setUiScale(nextValue, { persist = false } = {}) {
   }
 }
 
-function onPanelScaleInput(event) {
-  const value = Number(event?.target?.value);
-  setUiScale(value, { persist: true });
-}
-
 function handleUiScaleHotkey(event) {
   if (!(event.ctrlKey || event.metaKey) || event.altKey) return false;
   const key = String(event.key || "").toLowerCase();
@@ -361,6 +358,13 @@ function renderHitPrimaryKey(row, fallbackIndex = null) {
     return fallbackIndex === null || fallbackIndex === undefined ? "-" : String(fallbackIndex);
   }
   return primaryColumns.map((name) => `${name}=${String(row?.[name] ?? "")}`).join(" | ");
+}
+
+function isEditableTarget(target) {
+  if (!(target instanceof Element)) return false;
+  if (target.closest("input, textarea, select")) return true;
+  if (target.closest("[contenteditable]")) return true;
+  return !!target.isContentEditable;
 }
 
 function sanitizeIdleStates(states) {
@@ -814,6 +818,26 @@ function onWindowKeydown(event) {
     return;
   }
 
+  if (
+    tableOpen.value &&
+    !event.ctrlKey &&
+    !event.metaKey &&
+    !event.altKey &&
+    !isEditableTarget(event.target)
+  ) {
+    const lower = String(event.key || "").toLowerCase();
+    if (lower === "q") {
+      event.preventDefault();
+      jumpHitRow(-1).catch(() => {});
+      return;
+    }
+    if (lower === "e") {
+      event.preventDefault();
+      jumpHitRow(1).catch(() => {});
+      return;
+    }
+  }
+
   if (event.key !== "Escape") return;
 
   if (resultZoomOpen.value) {
@@ -1206,7 +1230,7 @@ async function collectAllHitRows() {
   }
 }
 
-async function jumpToNextHitRow() {
+async function jumpHitRow(step = 1) {
   if (allHitRows.value.length === 0) {
     await collectAllHitRows();
   }
@@ -1215,7 +1239,13 @@ async function jumpToNextHitRow() {
     return;
   }
 
-  tableView.hitNavCursor = (tableView.hitNavCursor + 1) % allHitRows.value.length;
+  const total = allHitRows.value.length;
+  const delta = step >= 0 ? 1 : -1;
+  const seedCursor = tableView.hitNavCursor < 0
+    ? (delta > 0 ? -1 : 0)
+    : tableView.hitNavCursor;
+  const nextCursor = ((seedCursor + delta) % total + total) % total;
+  tableView.hitNavCursor = nextCursor;
   const targetHit = allHitRows.value[tableView.hitNavCursor];
   if (!targetHit) return;
 
@@ -1230,6 +1260,10 @@ async function jumpToNextHitRow() {
   if (target) {
     target.scrollIntoView({ behavior: "smooth", block: "center" });
   }
+}
+
+async function jumpToNextHitRow() {
+  await jumpHitRow(1);
 }
 
 function clearTableFindFocus() {
@@ -2052,6 +2086,7 @@ function escapeRegExp(str) {
           </div>
         </section>
       </div>
+      </div>
       <div class="panel-footer">
         <div class="theme-switcher">
           <button
@@ -2063,18 +2098,6 @@ function escapeRegExp(str) {
             @click="applyTheme(t.id)"
           ></button>
         </div>
-        <div class="panel-scale-control">
-          <input
-            :value="normalizeUiScale(config.personal.ui_scale)"
-            type="range"
-            min="0.8"
-            max="1.4"
-            step="0.1"
-            @input="onPanelScaleInput"
-          />
-          <span>{{ uiScalePercent }}</span>
-        </div>
-      </div>
       </div>
     </section>
   </main>
@@ -2182,6 +2205,7 @@ function escapeRegExp(str) {
       </section>
 
       <div class="table-content">
+      <div class="table-content-scale" :style="tableContentScaleStyle">
       <template v-if="tableDetailView === 'full'">
         <section class="schema-box">
           <h4>Schema 信息</h4>
@@ -2340,6 +2364,7 @@ function escapeRegExp(str) {
           </div>
         </section>
       </template>
+      </div>
       </div>
     </section>
   </div>
