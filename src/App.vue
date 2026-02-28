@@ -16,6 +16,8 @@ const settingsOpen = ref(false);
 const tableOpen = ref(false);
 const tableDetailView = ref("full");
 const tableFullscreen = ref(false);
+const schemaCollapsed = ref(true);
+const dataCollapsed = ref(false);
 const historyOpen = ref(false);
 const resultZoomOpen = ref(false);
 const resultZoomType = ref("table");
@@ -321,35 +323,6 @@ function setUiScale(nextValue, { persist = false } = {}) {
   if (persist) {
     scheduleUiScalePersist();
   }
-}
-
-function handleUiScaleHotkey(event) {
-  if (!(event.ctrlKey || event.metaKey) || event.altKey) return false;
-  const key = String(event.key || "").toLowerCase();
-  const code = String(event.code || "");
-
-  const zoomIn = key === "+" || (key === "=" && event.shiftKey) || code === "NumpadAdd";
-  if (zoomIn) {
-    event.preventDefault();
-    setUiScale(config.personal.ui_scale + UI_SCALE_STEP, { persist: true });
-    return true;
-  }
-
-  const zoomOut = key === "-" || key === "_" || code === "NumpadSubtract";
-  if (zoomOut) {
-    event.preventDefault();
-    setUiScale(config.personal.ui_scale - UI_SCALE_STEP, { persist: true });
-    return true;
-  }
-
-  const reset = key === "0" || code === "Digit0" || code === "Numpad0";
-  if (reset) {
-    event.preventDefault();
-    setUiScale(1.0, { persist: true });
-    return true;
-  }
-
-  return false;
 }
 
 function renderHitPrimaryKey(row, fallbackIndex = null) {
@@ -768,6 +741,7 @@ function onDocDrop(e) {
 function bindPanelListeners() {
   window.addEventListener("click", onWindowClick);
   window.addEventListener("keydown", onWindowKeydown);
+  window.addEventListener("wheel", onWindowWheel, { passive: false });
   document.addEventListener("dragover", onDocDragover);
   document.addEventListener("drop", onDocDrop);
 }
@@ -775,6 +749,7 @@ function bindPanelListeners() {
 function detachPanelListeners() {
   window.removeEventListener("click", onWindowClick);
   window.removeEventListener("keydown", onWindowKeydown);
+  window.removeEventListener("wheel", onWindowWheel);
   document.removeEventListener("dragover", onDocDragover);
   document.removeEventListener("drop", onDocDrop);
 }
@@ -791,11 +766,15 @@ function onWindowClick(event) {
   }
 }
 
-function onWindowKeydown(event) {
-  if (handleUiScaleHotkey(event)) {
-    return;
-  }
+function onWindowWheel(event) {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+  if (event.deltaY === 0) return;
+  event.preventDefault();
+  const delta = event.deltaY < 0 ? UI_SCALE_STEP : -UI_SCALE_STEP;
+  setUiScale(config.personal.ui_scale + delta, { persist: true });
+}
 
+function onWindowKeydown(event) {
   if (tableOpen.value && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
     event.preventDefault();
     openTableFind();
@@ -834,6 +813,11 @@ function onWindowKeydown(event) {
     if (lower === "e") {
       event.preventDefault();
       jumpHitRow(1).catch(() => {});
+      return;
+    }
+    if (lower === "w") {
+      event.preventDefault();
+      toggleTableFullscreen();
       return;
     }
   }
@@ -1730,11 +1714,21 @@ async function openFromData(item) {
   });
 }
 
+function toggleSchemaCollapsed() {
+  schemaCollapsed.value = !schemaCollapsed.value;
+}
+
+function toggleDataCollapsed() {
+  dataCollapsed.value = !dataCollapsed.value;
+}
+
 async function openTable(tableName, rowIndex = null, columnName = null, hitContext = {}) {
   resetTableFindState();
   clearColumnWidths();
   resultZoomOpen.value = false;
   tableDetailView.value = "full";
+  schemaCollapsed.value = true;
+  dataCollapsed.value = false;
   hitCollectToken += 1;
   allHitRows.value = [];
   allHitRowsLoading.value = false;
@@ -2192,7 +2186,7 @@ function escapeRegExp(str) {
         </div>
         <div class="table-header-actions">
           <button class="small-btn" @click="toggleTableDetailView">{{ tableDetailView === 'full' ? '只看命中(Tab)' : '返回原页(Tab)' }}</button>
-          <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏' : '全屏查看' }}</button>
+          <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏(W)' : '全屏查看(W)' }}</button>
           <button class="icon-btn" @click="closeTableDialog">✕</button>
         </div>
       </header>
@@ -2208,159 +2202,187 @@ function escapeRegExp(str) {
       <div class="table-content-scale" :style="tableContentScaleStyle">
       <template v-if="tableDetailView === 'full'">
         <section class="schema-box">
-          <h4>Schema 信息</h4>
-          <div
-            v-if="tableView.tableComment"
-            class="table-comment"
-            data-schema-key="table_comment"
-            :class="{ 'find-active-schema': tableFindFocus.type === 'schema' && tableFindFocus.schemaKey === 'table_comment' }"
-            v-html="renderDetailHighlighted(tableView.tableComment)"
-          ></div>
-          <table class="schema-table">
-            <thead>
-              <tr><th>字段名</th><th>类型</th><th>备注</th></tr>
-            </thead>
-            <tbody>
-              <tr
-                v-for="col in tableView.columns"
-                :key="col.column_name"
-                :data-schema-key="`col-${col.column_name}`"
-                :class="{
-                  hit: isSchemaColumnHit(col),
-                  'find-active-schema': tableFindFocus.type === 'schema' && tableFindFocus.schemaKey === `col-${col.column_name}`,
-                }"
-              >
-                <td v-html="renderDetailHighlighted(col.column_name)"></td>
-                <td>{{ col.column_type }}</td>
-                <td v-html="renderDetailHighlighted(col.column_comment || '-')"></td>
-              </tr>
-            </tbody>
-          </table>
-        </section>
-
-        <section class="data-box">
-          <div class="data-head">
-            <h4>表数据（共 {{ tableView.totalRows }} 行）</h4>
-            <div class="data-actions">
-              <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中</button>
-              <div class="pager">
-                <button :disabled="tableView.page <= 1" @click="prevPage">上一页</button>
-                <span>{{ tableView.page }} / {{ totalPages }}</span>
-                <button :disabled="tableView.page >= totalPages" @click="nextPage">下一页</button>
-              </div>
-            </div>
+          <div class="section-head">
+            <h4>Schema 信息</h4>
+            <button class="section-toggle-btn" @click="toggleSchemaCollapsed">
+              {{ schemaCollapsed ? "展开" : "收起" }}
+            </button>
           </div>
-
-          <div class="grid-wrap">
-            <table class="data-table">
+          <div v-show="!schemaCollapsed" class="section-body">
+            <div
+              v-if="tableView.tableComment"
+              class="table-comment"
+              data-schema-key="table_comment"
+              :class="{ 'find-active-schema': tableFindFocus.type === 'schema' && tableFindFocus.schemaKey === 'table_comment' }"
+              v-html="renderDetailHighlighted(tableView.tableComment)"
+            ></div>
+            <table class="schema-table">
               <thead>
-                <tr>
-                  <th
-                    v-for="col in tableView.columns"
-                    :key="col.column_name"
-                    :class="{ 'hit-col': isDataColumnHit(col.column_name) }"
-                    :style="getColumnStyle(col.column_name)"
-                  >
-                    <div class="th-content" v-html="renderTableColumnHeader(col.column_name)"></div>
-                    <span class="col-resize-handle" @pointerdown="startColumnResize($event, col.column_name)"></span>
-                  </th>
-                </tr>
+                <tr><th>字段名</th><th>类型</th><th>备注</th></tr>
               </thead>
               <tbody>
                 <tr
-                  v-for="(row, idx) in tableView.rows"
-                  :key="idx"
-                  :data-hit-row-index="idx"
+                  v-for="col in tableView.columns"
+                  :key="col.column_name"
+                  :data-schema-key="`col-${col.column_name}`"
                   :class="{
-                    hit: isDataRowHit(row, idx),
-                    'hit-active': tableView.focusedHitLocalIndex === idx,
-                    'find-active-row': tableFindFocus.type === 'data' && tableFindFocus.page === tableView.page && tableFindFocus.localIndex === idx,
+                    hit: isSchemaColumnHit(col),
+                    'find-active-schema': tableFindFocus.type === 'schema' && tableFindFocus.schemaKey === `col-${col.column_name}`,
                   }"
                 >
-                  <td
-                    v-for="col in tableView.columns"
-                    :key="col.column_name"
-                    :data-find-page="tableView.page"
-                    :data-find-row="idx"
-                    :data-find-col="col.column_name"
-                    :style="getColumnStyle(col.column_name)"
-                    :class="{
-                      'hit-cell': isDataCellHit(row, col.column_name),
-                      'find-active-cell':
-                        tableFindFocus.type === 'data' &&
-                        tableFindFocus.page === tableView.page &&
-                        tableFindFocus.localIndex === idx &&
-                        tableFindFocus.columnName === col.column_name,
-                    }"
-                  >
-                    <div class="td-clip" v-html="renderDataCell(row, col.column_name)"></div>
-                  </td>
+                  <td v-html="renderDetailHighlighted(col.column_name)"></td>
+                  <td>{{ col.column_type }}</td>
+                  <td v-html="renderDetailHighlighted(col.column_comment || '-')"></td>
                 </tr>
               </tbody>
             </table>
+          </div>
+        </section>
+
+        <section class="data-box">
+          <div class="section-head">
+            <h4>表数据（共 {{ tableView.totalRows }} 行）</h4>
+            <button class="section-toggle-btn" @click="toggleDataCollapsed">
+              {{ dataCollapsed ? "展开" : "收起" }}
+            </button>
+          </div>
+          <div v-show="!dataCollapsed" class="section-body">
+            <div class="data-head actions-only">
+              <div class="data-actions">
+                <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中(Q/E)</button>
+                <div class="pager">
+                  <button :disabled="tableView.page <= 1" @click="prevPage">上一页</button>
+                  <span>{{ tableView.page }} / {{ totalPages }}</span>
+                  <button :disabled="tableView.page >= totalPages" @click="nextPage">下一页</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="grid-wrap">
+              <table class="data-table">
+                <thead>
+                  <tr>
+                    <th
+                      v-for="col in tableView.columns"
+                      :key="col.column_name"
+                      :class="{ 'hit-col': isDataColumnHit(col.column_name) }"
+                      :style="getColumnStyle(col.column_name)"
+                    >
+                      <div class="th-content" v-html="renderTableColumnHeader(col.column_name)"></div>
+                      <span class="col-resize-handle" @pointerdown="startColumnResize($event, col.column_name)"></span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="(row, idx) in tableView.rows"
+                    :key="idx"
+                    :data-hit-row-index="idx"
+                    :class="{
+                      hit: isDataRowHit(row, idx),
+                      'hit-active': tableView.focusedHitLocalIndex === idx,
+                      'find-active-row': tableFindFocus.type === 'data' && tableFindFocus.page === tableView.page && tableFindFocus.localIndex === idx,
+                    }"
+                  >
+                    <td
+                      v-for="col in tableView.columns"
+                      :key="col.column_name"
+                      :data-find-page="tableView.page"
+                      :data-find-row="idx"
+                      :data-find-col="col.column_name"
+                      :style="getColumnStyle(col.column_name)"
+                      :class="{
+                        'hit-cell': isDataCellHit(row, col.column_name),
+                        'find-active-cell':
+                          tableFindFocus.type === 'data' &&
+                          tableFindFocus.page === tableView.page &&
+                          tableFindFocus.localIndex === idx &&
+                          tableFindFocus.columnName === col.column_name,
+                      }"
+                    >
+                      <div class="td-clip" v-html="renderDataCell(row, col.column_name)"></div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
       </template>
 
       <template v-else>
         <section class="schema-box hit-only-section">
-          <h4>命中 Schema（{{ hitOnlySchemaColumns.length }}）</h4>
-          <table v-if="hitOnlySchemaColumns.length > 0" class="schema-table">
-            <thead>
-              <tr><th>字段名</th><th>类型</th><th>备注</th></tr>
-            </thead>
-            <tbody>
-              <tr v-for="col in hitOnlySchemaColumns" :key="col.column_name" class="hit">
-                <td v-html="renderDetailHighlighted(col.column_name)"></td>
-                <td>{{ col.column_type }}</td>
-                <td v-html="renderDetailHighlighted(col.column_comment || '-')"></td>
-              </tr>
-            </tbody>
-          </table>
-          <div v-else class="muted p-10">暂无命中 Schema 信息</div>
-        </section>
-
-        <section class="data-box hit-only-section">
-          <div class="data-head">
-            <h4>全部命中数据（{{ hitOnlyRows.length }} 行）</h4>
-            <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中</button>
+          <div class="section-head">
+            <h4>命中 Schema（{{ hitOnlySchemaColumns.length }}）</h4>
+            <button class="section-toggle-btn" @click="toggleSchemaCollapsed">
+              {{ schemaCollapsed ? "展开" : "收起" }}
+            </button>
           </div>
-          <div v-if="allHitRowsLoading" class="muted p-12">正在汇总全部命中数据...</div>
-          <div v-else-if="hitOnlyRows.length === 0" class="muted p-12">暂无命中数据</div>
-          <div v-else class="grid-wrap">
-            <table class="data-table hit-only-table">
+          <div v-show="!schemaCollapsed" class="section-body">
+            <table v-if="hitOnlySchemaColumns.length > 0" class="schema-table">
               <thead>
-                <tr>
-                  <th>{{ hitOnlyPrimaryHeader }}</th>
-                  <th
-                    v-for="columnName in hitOnlyDisplayColumns"
-                    :key="columnName"
-                    :style="getColumnStyle(columnName)"
-                  >
-                    <div class="th-content" v-html="renderDetailHighlighted(columnName)"></div>
-                    <span class="col-resize-handle" @pointerdown="startColumnResize($event, columnName)"></span>
-                  </th>
-                </tr>
+                <tr><th>字段名</th><th>类型</th><th>备注</th></tr>
               </thead>
               <tbody>
-                <tr
-                  v-for="item in hitOnlyRows"
-                  :key="item.localIndex"
-                  :data-hit-row-index="item.localIndex"
-                  :class="{ hit: true, 'hit-active': tableView.focusedHitLocalIndex === item.localIndex }"
-                >
-                  <td>{{ renderHitPrimaryKey(item.row, item.globalIndex) }}</td>
-                  <td
-                    v-for="columnName in hitOnlyDisplayColumns"
-                    :key="columnName"
-                    :style="getColumnStyle(columnName)"
-                    :class="{ 'hit-cell': isDataCellHit(item.row, columnName) }"
-                  >
-                    <div class="td-clip" v-html="renderDataCell(item.row, columnName)"></div>
-                  </td>
+                <tr v-for="col in hitOnlySchemaColumns" :key="col.column_name" class="hit">
+                  <td v-html="renderDetailHighlighted(col.column_name)"></td>
+                  <td>{{ col.column_type }}</td>
+                  <td v-html="renderDetailHighlighted(col.column_comment || '-')"></td>
                 </tr>
               </tbody>
             </table>
+            <div v-else class="muted p-10">暂无命中 Schema 信息</div>
+          </div>
+        </section>
+
+        <section class="data-box hit-only-section">
+          <div class="section-head">
+            <h4>全部命中数据（{{ hitOnlyRows.length }} 行）</h4>
+            <button class="section-toggle-btn" @click="toggleDataCollapsed">
+              {{ dataCollapsed ? "展开" : "收起" }}
+            </button>
+          </div>
+          <div v-show="!dataCollapsed" class="section-body">
+            <div class="data-head actions-only">
+              <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中(Q/E)</button>
+            </div>
+            <div v-if="allHitRowsLoading" class="muted p-12">正在汇总全部命中数据...</div>
+            <div v-else-if="hitOnlyRows.length === 0" class="muted p-12">暂无命中数据</div>
+            <div v-else class="grid-wrap">
+              <table class="data-table hit-only-table">
+                <thead>
+                  <tr>
+                    <th>{{ hitOnlyPrimaryHeader }}</th>
+                    <th
+                      v-for="columnName in hitOnlyDisplayColumns"
+                      :key="columnName"
+                      :style="getColumnStyle(columnName)"
+                    >
+                      <div class="th-content" v-html="renderDetailHighlighted(columnName)"></div>
+                      <span class="col-resize-handle" @pointerdown="startColumnResize($event, columnName)"></span>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="item in hitOnlyRows"
+                    :key="item.localIndex"
+                    :data-hit-row-index="item.localIndex"
+                    :class="{ hit: true, 'hit-active': tableView.focusedHitLocalIndex === item.localIndex }"
+                  >
+                    <td>{{ renderHitPrimaryKey(item.row, item.globalIndex) }}</td>
+                    <td
+                      v-for="columnName in hitOnlyDisplayColumns"
+                      :key="columnName"
+                      :style="getColumnStyle(columnName)"
+                      :class="{ 'hit-cell': isDataCellHit(item.row, columnName) }"
+                    >
+                      <div class="td-clip" v-html="renderDataCell(item.row, columnName)"></div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
         </section>
       </template>
