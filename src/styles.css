@@ -21,6 +21,15 @@
   --accent-ring: rgba(2, 132, 199, 0.40);   /* input / search borders */
   --accent-dark: #0369a1;                    /* darker accent (btn gradient end) */
   --accent-text: #0369a1;                    /* accent-tinted text (badge label) */
+  --scrollbar-track: rgba(15, 23, 42, 0.08);
+  --scrollbar-thumb: rgba(30, 41, 59, 0.35);
+  --scrollbar-thumb-hover: rgba(30, 41, 59, 0.52);
+  --copy-btn-bg: rgba(15, 23, 42, 0.05);
+  --copy-btn-border: rgba(15, 23, 42, 0.12);
+  --copy-btn-text: #334155;
+  --copy-btn-hover-bg: var(--accent-soft);
+  --copy-btn-hover-border: var(--accent-line);
+  --copy-btn-hover-text: var(--accent-text);
 }
 
 * {
@@ -65,19 +74,22 @@ body,
 }
 
 .panel-shell {
+  --ui-scale: 1;
   position: relative;
   right: auto;
   bottom: auto;
-  width: 100%;
+  width: calc(100% / var(--ui-scale));
   max-width: none;
   max-height: none;
-  height: 100%;
-  transform: none;
+  height: calc(100% / var(--ui-scale));
+  transform-origin: top left;
+  transform: scale(var(--ui-scale));
   opacity: 1;
   pointer-events: auto;
 }
 
 .panel-shell .widget {
+  width: 100%;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -971,6 +983,7 @@ mark {
 }
 
 .dialog-mask {
+  --ui-scale: 1;
   position: fixed;
   inset: 0;
   z-index: 70;
@@ -981,9 +994,14 @@ mark {
   justify-content: center;
 }
 
+.dialog-mask > .modal-card {
+  transform-origin: center center;
+  transform: scale(var(--ui-scale));
+}
+
 .modal-card {
-  width: min(560px, calc(100vw - 20px));
-  max-height: calc(100vh - 20px);
+  width: min(560px, calc((100vw - 20px) / var(--ui-scale)));
+  max-height: calc((100vh - 20px) / var(--ui-scale));
   overflow: auto;
   border: 1px solid var(--border-glass);
   border-radius: 14px;
@@ -992,7 +1010,7 @@ mark {
 }
 
 .modal-card.wide {
-  width: min(860px, calc(100vw - 20px));
+  width: min(860px, calc((100vw - 20px) / var(--ui-scale)));
   scrollbar-width: none;
   -ms-overflow-style: none;
 }
@@ -1006,13 +1024,13 @@ mark {
   overflow: hidden;
   min-width: 500px;
   min-height: 400px;
-  max-width: calc(100vw - 12px);
-  max-height: calc(100vh - 12px);
+  max-width: calc((100vw - 12px) / var(--ui-scale));
+  max-height: calc((100vh - 12px) / var(--ui-scale));
 }
 
 .table-modal.fullscreen {
-  width: calc(100vw - 12px);
-  height: calc(100vh - 12px);
+  width: calc((100vw - 12px) / var(--ui-scale));
+  height: calc((100vh - 12px) / var(--ui-scale));
   max-height: none;
 }
 
@@ -1071,13 +1089,12 @@ mark {
 }
 
 .settings-modal {
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  overflow: auto;
 }
 
 .settings-modal::-webkit-scrollbar {
-  width: 0;
-  height: 0;
+  width: 10px;
+  height: 10px;
 }
 
 .modal-header {
@@ -1145,6 +1162,21 @@ mark {
   color: var(--text-main);
   padding: 0 10px;
   font-size: 14px;
+}
+
+.ui-scale-field span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.ui-scale-field input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+
+.ui-scale-field small {
+  color: var(--text-dim);
 }
 
 .idle-state-grid {
@@ -1286,6 +1318,17 @@ mark {
   padding: 6px 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   border-right: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.data-table td {
+  overflow: hidden;
+}
+
+.td-clip {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  white-space: nowrap;
 }
 
 .data-table th {
@@ -1500,23 +1543,97 @@ mark {
 /* Copy button in list items */
 .copy-icon-btn {
   grid-area: copy;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   align-self: center;
-  border: 0;
-  background: transparent;
-  color: var(--text-dim);
+  min-width: 28px;
+  height: 28px;
+  border: 1px solid var(--copy-btn-border);
+  background: var(--copy-btn-bg);
+  color: var(--copy-btn-text);
   font-size: 13px;
   cursor: pointer;
-  padding: 2px 4px;
-  border-radius: 4px;
-  opacity: 0;
-  transition: opacity 0.1s;
+  padding: 0 8px;
+  border-radius: 8px;
+  opacity: 0.72;
+  transition: opacity 0.12s ease, color 0.12s ease, border-color 0.12s ease, background 0.12s ease, transform 0.12s ease;
   user-select: none;
 }
-.list-item:hover .copy-icon-btn { opacity: 1; }
-.modal-title-row:hover .copy-icon-btn { opacity: 1; }
-.modal-copy-btn { opacity: 0.5 !important; }
-.modal-copy-btn:hover { opacity: 1 !important; color: var(--accent); }
-.copy-icon-btn:hover { color: var(--accent); }
+.list-item .copy-icon-btn {
+  opacity: 0.45;
+}
+.list-item:hover .copy-icon-btn {
+  opacity: 1;
+}
+.modal-title-row .copy-icon-btn {
+  opacity: 0.92;
+}
+.copy-icon-btn:hover {
+  color: var(--copy-btn-hover-text);
+  border-color: var(--copy-btn-hover-border);
+  background: var(--copy-btn-hover-bg);
+  transform: translateY(-1px);
+}
+.modal-copy-btn {
+  min-width: 38px;
+  height: 32px;
+  font-size: 15px;
+  border-color: var(--accent-line);
+  background: var(--accent-soft);
+  color: var(--accent-text);
+}
+.modal-copy-btn:hover {
+  color: var(--accent-text);
+  border-color: var(--accent-line);
+  background: var(--accent-chip);
+}
+
+.copy-toast {
+  position: fixed;
+  top: 14px;
+  right: 16px;
+  z-index: 2400;
+  min-width: 76px;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  background: rgba(15, 23, 42, 0.9);
+  color: #f8fafc;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.22);
+  pointer-events: none;
+  animation: copy-toast-float 1.4s ease forwards;
+}
+
+.copy-toast.is-success {
+  border-color: rgba(16, 185, 129, 0.45);
+}
+
+.copy-toast.is-error {
+  border-color: rgba(239, 68, 68, 0.45);
+}
+
+@keyframes copy-toast-float {
+  0% {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  12% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+  85% {
+    opacity: 1;
+    transform: translateY(-6px);
+  }
+  100% {
+    opacity: 0;
+    transform: translateY(-12px);
+  }
+}
 
 .results-layout {
   display: flex;
@@ -1585,6 +1702,56 @@ mark {
   overscroll-behavior: contain;
 }
 
+.result-sidebar,
+.results-main,
+.list-scrollable,
+.list-zoom,
+.table-content,
+.settings-modal {
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
+}
+
+.result-sidebar::-webkit-scrollbar,
+.results-main::-webkit-scrollbar,
+.list-scrollable::-webkit-scrollbar,
+.list-zoom::-webkit-scrollbar,
+.table-content::-webkit-scrollbar,
+.settings-modal::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.result-sidebar::-webkit-scrollbar-track,
+.results-main::-webkit-scrollbar-track,
+.list-scrollable::-webkit-scrollbar-track,
+.list-zoom::-webkit-scrollbar-track,
+.table-content::-webkit-scrollbar-track,
+.settings-modal::-webkit-scrollbar-track {
+  background: var(--scrollbar-track);
+  border-radius: 999px;
+}
+
+.result-sidebar::-webkit-scrollbar-thumb,
+.results-main::-webkit-scrollbar-thumb,
+.list-scrollable::-webkit-scrollbar-thumb,
+.list-zoom::-webkit-scrollbar-thumb,
+.table-content::-webkit-scrollbar-thumb,
+.settings-modal::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border: 2px solid var(--scrollbar-track);
+  border-radius: 999px;
+}
+
+.result-sidebar::-webkit-scrollbar-thumb:hover,
+.results-main::-webkit-scrollbar-thumb:hover,
+.list-scrollable::-webkit-scrollbar-thumb:hover,
+.list-zoom::-webkit-scrollbar-thumb:hover,
+.table-content::-webkit-scrollbar-thumb:hover,
+.settings-modal::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+}
+
 @media (max-width: 768px) {
   .app-shell:not(.panel-shell) {
     right: 8px;
@@ -1628,6 +1795,12 @@ mark {
   --text-sub: #94a3b8;
   --text-dim: #475569;
   --bg-deep: #0f172a;
+  --scrollbar-track: rgba(15, 23, 42, 0.78);
+  --scrollbar-thumb: rgba(148, 163, 184, 0.36);
+  --scrollbar-thumb-hover: rgba(148, 163, 184, 0.58);
+  --copy-btn-bg: rgba(148, 163, 184, 0.08);
+  --copy-btn-border: rgba(148, 163, 184, 0.22);
+  --copy-btn-text: #cbd5e1;
 }
 
 [data-theme="midnight"] .widget-header {
@@ -1722,6 +1895,12 @@ mark {
   --accent-ring: rgba(5, 150, 105, 0.40);
   --accent-dark: #047857;
   --accent-text: #047857;
+  --scrollbar-track: rgba(6, 95, 70, 0.10);
+  --scrollbar-thumb: rgba(4, 120, 87, 0.34);
+  --scrollbar-thumb-hover: rgba(4, 120, 87, 0.52);
+  --copy-btn-bg: rgba(5, 150, 105, 0.08);
+  --copy-btn-border: rgba(5, 150, 105, 0.20);
+  --copy-btn-text: #065f46;
 }
 
 [data-theme="violet"] {
@@ -1734,6 +1913,12 @@ mark {
   --accent-ring: rgba(124, 58, 237, 0.40);
   --accent-dark: #6d28d9;
   --accent-text: #6d28d9;
+  --scrollbar-track: rgba(76, 29, 149, 0.10);
+  --scrollbar-thumb: rgba(109, 40, 217, 0.34);
+  --scrollbar-thumb-hover: rgba(109, 40, 217, 0.52);
+  --copy-btn-bg: rgba(124, 58, 237, 0.08);
+  --copy-btn-border: rgba(124, 58, 237, 0.20);
+  --copy-btn-text: #5b21b6;
 }
 
 /* ========== Panel Footer & Theme Switcher ========== */

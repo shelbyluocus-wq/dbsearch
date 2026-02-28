@@ -25,6 +25,12 @@ const keyword = ref("");
 const dbConnected = ref(false);
 const dbName = ref("未连接");
 const summaryText = ref("输入关键词开始搜索");
+const copyToast = reactive({
+  visible: false,
+  text: "",
+  tone: "success",
+  version: 0,
+});
 
 const options = reactive({
   table: true,
@@ -81,6 +87,7 @@ const config = reactive({
     hotkey: "Ctrl+Shift+F",
     always_on_top: true,
     auto_start: false,
+    ui_scale: 1.0,
     pet_locked: false,
     pet_position: null,
     idle_states: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
@@ -115,6 +122,8 @@ let unlistenPetMoved = null;
 let unlistenSearchFound = null;
 let unlistenPetIdleStatesChanged = null;
 let unlistenPetIdlePreview = null;
+let copyToastTimer = null;
+let uiScalePersistTimer = null;
 
 const petIdleActive = ref(false);
 const currentIdleState = ref("float_breathe");
@@ -127,6 +136,9 @@ const columnWidthMap = reactive({});
 let columnResizeState = null;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const IDLE_STATE_CHANGE_MS = 7 * 1000;
+const UI_SCALE_MIN = 0.8;
+const UI_SCALE_MAX = 1.4;
+const UI_SCALE_STEP = 0.1;
 const ALLOWED_IDLE_STATES = ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"];
 
 const tableView = reactive({
@@ -165,6 +177,7 @@ const settingsDraft = reactive({
   database: "",
   hotkey: "Ctrl+Shift+F",
   autoStart: false,
+  uiScale: 1.0,
   idleStates: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
   excludeTables: "^t_log_.*,^tmp_.*",
   perTableTimeoutSec: 10,
@@ -247,6 +260,10 @@ const petSpriteClasses = computed(() => ({
   "idle-ghost": petIdleActive.value && currentIdleState.value === "ghost_fade",
 }));
 const hotkeyPlaceholder = "点击后按下快捷键";
+const uiScalePercent = computed(() => `${Math.round(normalizeUiScale(config.personal.ui_scale) * 100)}%`);
+const panelScaleStyle = computed(() => ({
+  "--ui-scale": String(normalizeUiScale(config.personal.ui_scale)),
+}));
 const hitOnlySchemaColumns = computed(() => tableView.columns.filter((col) => isSchemaColumnHit(col)));
 const hitOnlyDisplayColumns = computed(() => {
   const allColumnNames = tableView.columns.map((col) => col.column_name);
@@ -273,6 +290,74 @@ const tableFindCounterText = computed(() => {
   if (tableFindMatches.value.length === 0 || tableFindCursor.value < 0) return "0/0";
   return `${tableFindCursor.value + 1}/${tableFindMatches.value.length}`;
 });
+
+function normalizeUiScale(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1.0;
+  const rounded = Math.round(numeric / UI_SCALE_STEP) * UI_SCALE_STEP;
+  return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, Number(rounded.toFixed(1))));
+}
+
+function scheduleUiScalePersist() {
+  if (uiScalePersistTimer) clearTimeout(uiScalePersistTimer);
+  uiScalePersistTimer = setTimeout(() => {
+    persistConfig().catch(() => {});
+    uiScalePersistTimer = null;
+  }, 180);
+}
+
+function setUiScale(nextValue, { persist = false, syncDraft = false } = {}) {
+  const normalized = normalizeUiScale(nextValue);
+  config.personal.ui_scale = normalized;
+  if (syncDraft) {
+    settingsDraft.uiScale = normalized;
+  }
+  if (persist) {
+    scheduleUiScalePersist();
+  }
+}
+
+function onUiScaleInput() {
+  setUiScale(settingsDraft.uiScale, { persist: true, syncDraft: true });
+}
+
+function handleUiScaleHotkey(event) {
+  if (!(event.ctrlKey || event.metaKey) || event.altKey) return false;
+  const key = String(event.key || "").toLowerCase();
+  const code = String(event.code || "");
+
+  const zoomIn = key === "+" || (key === "=" && event.shiftKey) || code === "NumpadAdd";
+  if (zoomIn) {
+    event.preventDefault();
+    setUiScale(config.personal.ui_scale + UI_SCALE_STEP, {
+      persist: true,
+      syncDraft: settingsOpen.value,
+    });
+    return true;
+  }
+
+  const zoomOut = key === "-" || key === "_" || code === "NumpadSubtract";
+  if (zoomOut) {
+    event.preventDefault();
+    setUiScale(config.personal.ui_scale - UI_SCALE_STEP, {
+      persist: true,
+      syncDraft: settingsOpen.value,
+    });
+    return true;
+  }
+
+  const reset = key === "0" || code === "Digit0" || code === "Numpad0";
+  if (reset) {
+    event.preventDefault();
+    setUiScale(1.0, {
+      persist: true,
+      syncDraft: settingsOpen.value,
+    });
+    return true;
+  }
+
+  return false;
+}
 
 function sanitizeIdleStates(states) {
   const values = Array.isArray(states) ? states : [];
@@ -331,6 +416,11 @@ function ensureDbConnectedForSearch() {
   if (dbConnected.value) return true;
   summaryText.value = "当前数据库未连接";
   return false;
+}
+
+function syncSummaryAfterConnectionCheck() {
+  if (summaryText.value !== "正在连接数据库...") return;
+  summaryText.value = dbConnected.value ? "输入关键词开始搜索" : "当前数据库未连接";
 }
 
 function currentSearchTargets() {
@@ -467,6 +557,7 @@ onMounted(async () => {
       }).catch(() => { summaryText.value = "自动连接失败，请检查设置"; });
     }
     await refreshConnectionStatus();
+    syncSummaryAfterConnectionCheck();
     await attachProgressListener();
     await loadTableOptions();
     loadHistory();
@@ -604,6 +695,8 @@ onBeforeUnmount(() => {
   }
   clearTimeout(idleTimer);
   clearTimeout(idleStateTimer);
+  clearTimeout(copyToastTimer);
+  clearTimeout(uiScalePersistTimer);
   stopColumnResize();
 });
 
@@ -691,6 +784,10 @@ function onWindowClick(event) {
 }
 
 function onWindowKeydown(event) {
+  if (handleUiScaleHotkey(event)) {
+    return;
+  }
+
   if (tableOpen.value && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
     event.preventDefault();
     openTableFind();
@@ -924,6 +1021,7 @@ function openSettings() {
   settingsDraft.database = config.shared.db.database;
   settingsDraft.hotkey = normalizeHotkeyDisplay(config.personal.hotkey);
   settingsDraft.autoStart = config.personal.auto_start;
+  settingsDraft.uiScale = normalizeUiScale(config.personal.ui_scale);
   settingsDraft.idleStates = [...sanitizeIdleStates(config.personal.idle_states)];
   settingsDraft.excludeTables = (config.shared.search.exclude_tables || []).join(",");
   settingsDraft.perTableTimeoutSec = config.shared.search.per_table_timeout_sec;
@@ -966,6 +1064,7 @@ async function saveSettings() {
 
   config.personal.hotkey = normalizeHotkeyDisplay(settingsDraft.hotkey.trim() || "Ctrl+Shift+F");
   config.personal.idle_states = sanitizeIdleStates(settingsDraft.idleStates);
+  config.personal.ui_scale = normalizeUiScale(settingsDraft.uiScale);
   if (isModifierOnlyHotkey(config.personal.hotkey)) {
     settingsMsg.value = "✗ 快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F";
     return;
@@ -1685,6 +1784,7 @@ async function loadConfig() {
     // keep default
   }
   config.personal.idle_states = sanitizeIdleStates(config.personal.idle_states);
+  config.personal.ui_scale = normalizeUiScale(config.personal.ui_scale);
 }
 
 async function persistConfig() {
@@ -1801,17 +1901,26 @@ async function onDropConfig(event) {
   await importDbConfigFile(file);
 }
 
+function showCopyToast(text, tone = "success") {
+  copyToast.text = text;
+  copyToast.tone = tone;
+  copyToast.version += 1;
+  copyToast.visible = true;
+  if (copyToastTimer) clearTimeout(copyToastTimer);
+  copyToastTimer = setTimeout(() => {
+    copyToast.visible = false;
+    copyToastTimer = null;
+  }, 1400);
+}
+
 async function copyText(text) {
+  const value = String(text || "");
+  if (!value) return;
   try {
-    await navigator.clipboard.writeText(text);
-    summaryText.value = `已复制: ${text}`;
-    setTimeout(() => {
-      summaryText.value = totalMetaCount.value > 0
-        ? `元信息结果：${totalMetaCount.value} 条`
-        : "输入关键词开始搜索";
-    }, 1200);
+    await navigator.clipboard.writeText(value);
+    showCopyToast("已复制", "success");
   } catch {
-    // ignore
+    showCopyToast("复制失败", "error");
   }
 }
 
@@ -1837,7 +1946,7 @@ function escapeRegExp(str) {
 </script>
 
 <template>
-  <main v-if="isPanelWindow" class="app-shell open panel-shell" id="appShell" @contextmenu.prevent>
+  <main v-if="isPanelWindow" class="app-shell open panel-shell" id="appShell" :style="panelScaleStyle" @contextmenu.prevent>
     <section class="widget" id="widget">
       <header class="widget-header" @pointerdown="panelHeaderPointerDown">
         <div class="traffic-lights">
@@ -1997,7 +2106,7 @@ function escapeRegExp(str) {
     </section>
   </div>
 
-  <div v-if="resultZoomOpen" class="dialog-mask" @click.self="closeResultZoom">
+  <div v-if="resultZoomOpen" class="dialog-mask" :style="panelScaleStyle" @click.self="closeResultZoom">
     <section class="modal-card wide result-zoom-modal">
       <header class="modal-header">
         <h3>{{ resultZoomTitle }}（{{ resultZoomItems.length }}）</h3>
@@ -2040,7 +2149,7 @@ function escapeRegExp(str) {
     </section>
   </div>
 
-  <div v-if="tableOpen" class="dialog-mask" @mousedown.self="closeTableDialog">
+  <div v-if="tableOpen" class="dialog-mask" :style="panelScaleStyle" @mousedown.self="closeTableDialog">
     <section :class="['modal-card', 'wide', 'table-modal', { fullscreen: tableFullscreen }]">
       <header class="modal-header" @pointerdown="panelHeaderPointerDown">
         <div class="modal-title-row" @pointerdown.stop>
@@ -2154,8 +2263,9 @@ function escapeRegExp(str) {
                         tableFindFocus.localIndex === idx &&
                         tableFindFocus.columnName === col.column_name,
                     }"
-                    v-html="renderDataCell(row, col.column_name)"
-                  ></td>
+                  >
+                    <div class="td-clip" v-html="renderDataCell(row, col.column_name)"></div>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -2216,8 +2326,9 @@ function escapeRegExp(str) {
                     :key="columnName"
                     :style="getColumnStyle(columnName)"
                     :class="{ 'hit-cell': isDataCellHit(item.row, columnName) }"
-                    v-html="renderDataCell(item.row, columnName)"
-                  ></td>
+                  >
+                    <div class="td-clip" v-html="renderDataCell(item.row, columnName)"></div>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -2228,58 +2339,80 @@ function escapeRegExp(str) {
     </section>
   </div>
 
-  <div v-if="settingsOpen" class="dialog-mask" @click.self="closeSettings" @dragover.prevent @drop.prevent="onDropConfig">
+  <div v-if="settingsOpen" class="dialog-mask" :style="panelScaleStyle" @click.self="closeSettings" @dragover.prevent @drop.prevent="onDropConfig">
     <section class="modal-card settings-modal">
       <header class="modal-header">
         <h3>设置</h3>
         <button class="icon-btn" @click="closeSettings">✕</button>
       </header>
 
-      <section class="form-group">
-        <h4>数据库连接 <span class="drop-hint">（可拖入 JSON 配置文件）</span></h4>
-        <div class="form-grid">
-          <label>主机<input v-model="settingsDraft.host" type="text" /></label>
-          <label>端口<input v-model.number="settingsDraft.port" type="number" /></label>
-          <label>用户名<input v-model="settingsDraft.username" type="text" /></label>
-          <label>密码<input v-model="settingsDraft.password" type="password" /></label>
-          <label class="full">数据库<input v-model="settingsDraft.database" type="text" /></label>
-        </div>
-      </section>
+        <section class="form-group">
+          <h4>数据库连接 <span class="drop-hint">（可拖入 JSON 配置文件）</span></h4>
+          <div class="form-grid">
+            <label>主机<input v-model="settingsDraft.host" type="text" /></label>
+            <label>端口<input v-model.number="settingsDraft.port" type="number" /></label>
+            <label>用户名<input v-model="settingsDraft.username" type="text" /></label>
+            <label>密码<input v-model="settingsDraft.password" type="password" /></label>
+            <label class="full">数据库<input v-model="settingsDraft.database" type="text" /></label>
+          </div>
+        </section>
 
-      <section class="form-group">
-        <h4>系统设置</h4>
-        <div class="form-grid">
-          <label>快捷键<input v-model="settingsDraft.hotkey" type="text" readonly :placeholder="hotkeyPlaceholder" @keydown="onHotkeyInputKeydown" /></label>
-          <label><input v-model="settingsDraft.autoStart" type="checkbox" />开机自启</label>
-        </div>
-      </section>
+        <section class="form-group">
+          <h4>系统设置</h4>
+          <div class="form-grid">
+            <label>快捷键<input v-model="settingsDraft.hotkey" type="text" readonly :placeholder="hotkeyPlaceholder" @keydown="onHotkeyInputKeydown" /></label>
+            <label><input v-model="settingsDraft.autoStart" type="checkbox" />开机自启</label>
+            <label class="full ui-scale-field">
+              <span>界面缩放 {{ uiScalePercent }}</span>
+              <input
+                v-model.number="settingsDraft.uiScale"
+                type="range"
+                min="0.8"
+                max="1.4"
+                step="0.1"
+                @input="onUiScaleInput"
+              />
+              <small>快捷键：Ctrl +/-，Ctrl+0 重置</small>
+            </label>
+          </div>
+        </section>
 
-      <section class="form-group">
-        <h4>挂件待机状态</h4>
-        <div class="idle-state-grid">
-          <label><input v-model="settingsDraft.idleStates" type="checkbox" value="float_breathe" @change="previewIdleState('float_breathe')" />漂浮呼吸</label>
-          <label><input v-model="settingsDraft.idleStates" type="checkbox" value="sleep_zzz" @change="previewIdleState('sleep_zzz')" />打盹(zzz)</label>
-          <label><input v-model="settingsDraft.idleStates" type="checkbox" value="look_around" @change="previewIdleState('look_around')" />左右张望</label>
-          <label><input v-model="settingsDraft.idleStates" type="checkbox" value="ghost_fade" @change="previewIdleState('ghost_fade')" />半透明潜行</label>
-        </div>
-      </section>
+        <section class="form-group">
+          <h4>挂件待机状态</h4>
+          <div class="idle-state-grid">
+            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="float_breathe" @change="previewIdleState('float_breathe')" />漂浮呼吸</label>
+            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="sleep_zzz" @change="previewIdleState('sleep_zzz')" />打盹(zzz)</label>
+            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="look_around" @change="previewIdleState('look_around')" />左右张望</label>
+            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="ghost_fade" @change="previewIdleState('ghost_fade')" />半透明潜行</label>
+          </div>
+        </section>
 
-      <section class="form-group">
-        <h4>搜索设置</h4>
-        <div class="form-grid">
-          <label class="full">排除表（正则，逗号分隔）<input v-model="settingsDraft.excludeTables" type="text" /></label>
-          <label>单表超时(秒)<input v-model.number="settingsDraft.perTableTimeoutSec" type="number" /></label>
-          <label>每表最大行数<input v-model.number="settingsDraft.perTableMaxRows" type="number" /></label>
-        </div>
-      </section>
+        <section class="form-group">
+          <h4>搜索设置</h4>
+          <div class="form-grid">
+            <label class="full">排除表（正则，逗号分隔）<input v-model="settingsDraft.excludeTables" type="text" /></label>
+            <label>单表超时(秒)<input v-model.number="settingsDraft.perTableTimeoutSec" type="number" /></label>
+            <label>每表最大行数<input v-model.number="settingsDraft.perTableMaxRows" type="number" /></label>
+          </div>
+        </section>
 
-      <footer class="modal-footer">
-        <span v-if="settingsMsg" class="settings-msg" :class="{ ok: settingsMsg.startsWith('✓'), err: settingsMsg.startsWith('✗') }">{{ settingsMsg }}</span>
-        <button class="small-btn" @click="triggerImport">导入共享配置</button>
-        <button class="small-btn" @click="testConnect">测试连接</button>
-        <button class="primary-btn" @click="saveSettings">保存设置</button>
-      </footer>
+        <footer class="modal-footer">
+          <span v-if="settingsMsg" class="settings-msg" :class="{ ok: settingsMsg.startsWith('✓'), err: settingsMsg.startsWith('✗') }">{{ settingsMsg }}</span>
+          <button class="small-btn" @click="triggerImport">导入共享配置</button>
+          <button class="small-btn" @click="testConnect">测试连接</button>
+          <button class="primary-btn" @click="saveSettings">保存设置</button>
+        </footer>
       <input id="importFile" class="hidden" type="file" accept="application/json" @change="onImportConfig" />
     </section>
+  </div>
+
+  <div
+    v-if="copyToast.visible"
+    :key="copyToast.version"
+    :class="['copy-toast', `is-${copyToast.tone}`]"
+    role="status"
+    aria-live="polite"
+  >
+    {{ copyToast.text }}
   </div>
 </template>

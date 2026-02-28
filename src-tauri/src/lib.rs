@@ -88,6 +88,7 @@ struct PersonalConfig {
     hotkey: String,
     always_on_top: bool,
     auto_start: bool,
+    ui_scale: f32,
     pet_locked: bool,
     pet_position: Option<WindowPosition>,
     idle_states: Vec<String>,
@@ -99,6 +100,7 @@ impl Default for PersonalConfig {
             hotkey: "Ctrl+Shift+F".into(),
             always_on_top: true,
             auto_start: false,
+            ui_scale: 1.0,
             pet_locked: false,
             pet_position: None,
             idle_states: vec![
