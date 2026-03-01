@@ -664,6 +664,11 @@ mark {
   padding: 0 2px;
 }
 
+[data-theme="midnight"] mark {
+  background: rgba(250, 204, 21, 0.32);
+  color: #fef3c7;
+}
+
 .pet {
   position: fixed;
   right: 36px;

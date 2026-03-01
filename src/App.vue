@@ -142,6 +142,7 @@ const currentIdleState = ref("float_breathe");
 const petIdlePreviewing = ref(false);
 const petFound = ref(false);
 const tableModalRef = ref(null);
+const tableTabsRef = ref(null);
 const tableGridWrapRef = ref(null);
 const tableFullscreenMode = ref("none");
 const tableFullscreenRestoreMaximized = ref(false);
@@ -770,6 +771,23 @@ function snapshotActiveTableTab() {
   });
 }
 
+function scrollTableTabIntoView(tabId, behavior = "smooth") {
+  if (!tabId) return;
+  nextTick(() => {
+    const wrap = tableTabsRef.value;
+    if (!(wrap instanceof HTMLElement)) return;
+    const tabEl = document.getElementById(`table-tab-${tabId}`);
+    if (!(tabEl instanceof HTMLElement)) return;
+    const wrapRect = wrap.getBoundingClientRect();
+    const tabRect = tabEl.getBoundingClientRect();
+    if (tabRect.left < wrapRect.left) {
+      wrap.scrollBy({ left: tabRect.left - wrapRect.left - 8, behavior });
+    } else if (tabRect.right > wrapRect.right) {
+      wrap.scrollBy({ left: tabRect.right - wrapRect.right + 8, behavior });
+    }
+  });
+}
+
 async function syncTableFullscreenForSwitch(targetFullscreen) {
   if (targetFullscreen) {
     if (!tableFullscreen.value) {
@@ -802,6 +820,7 @@ async function activateTableTab(tabId, { skipSnapshot = false } = {}) {
     stopTableLayoutObserver();
   }
   scheduleAdaptiveTablePageSize();
+  scrollTableTabIntoView(next.id);
 }
 
 async function openOrActivateTableTab(tableName, rowIndex = null, columnName = null, hitContext = {}) {
@@ -839,6 +858,7 @@ async function openOrActivateTableTab(tableName, rowIndex = null, columnName = n
   await startTableLayoutObserver();
   scheduleAdaptiveTablePageSize();
   snapshotActiveTableTab();
+  scrollTableTabIntoView(nextTab.id);
 }
 
 async function switchTableByStep(step = 1) {
@@ -2914,7 +2934,7 @@ function escapeRegExp(str) {
               </button>
               <button v-else-if="item._type === 'data'" class="list-item" @click="openFromData(item._item)">
                 <div class="main">{{ item.table_name }}</div>
-                <div class="sub">{{ item.preview }}</div>
+                <div class="sub" v-html="renderHighlighted(item.preview)"></div>
               </button>
             </template>
             <div v-if="filteredResults.length === 0 && keyword.trim()" class="muted p-10">
@@ -3034,10 +3054,11 @@ function escapeRegExp(str) {
           <button class="icon-btn" @click="closeTableDialog">✕</button>
         </div>
       </header>
-      <section class="table-tabs" @wheel="onTableTabsWheel">
+      <section ref="tableTabsRef" class="table-tabs" @wheel="onTableTabsWheel">
         <button
           v-for="tab in tableTabs"
           :key="tab.id"
+          :id="`table-tab-${tab.id}`"
           :class="['table-tab', { active: tab.id === activeTableTabId }]"
           :title="tab.tableName"
           @click="activateTableTab(tab.id)"
