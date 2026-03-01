@@ -783,7 +783,7 @@ async function syncTableFullscreenForSwitch(targetFullscreen) {
 async function activateTableTab(tabId, { skipSnapshot = false } = {}) {
   const next = tableTabs.value.find((item) => item.id === tabId);
   if (!next) return;
-  if (activeTableTabId.value === tabId) return;
+  if (activeTableTabId.value === tabId && tableOpen.value) return;
   if (!skipSnapshot) {
     snapshotActiveTableTab();
   }
@@ -865,6 +865,7 @@ async function closeTableTab(tabId) {
   tableTabs.value.splice(index, 1);
 
   if (tableTabs.value.length === 0) {
+    activeTableTabId.value = "";
     closeTableDialog();
     return;
   }
@@ -1508,6 +1509,7 @@ function onWindowKeydown(event) {
 
   historyOpen.value = false;
   if (isTauriWindow) {
+    snapshotActiveTableTab();
     invoke("hide_panel_window").catch(() => {});
   }
 }
@@ -1686,6 +1688,7 @@ function onQuickDateHotkeyInputKeydown(event) {
 
 async function panelClose() {
   if (!isTauriWindow) return;
+  snapshotActiveTableTab();
   clearIdlePreview();
   await invoke("hide_panel_window").catch(() => {});
 }
@@ -2615,12 +2618,12 @@ async function nextPage() {
 }
 
 function closeTableDialog() {
+  snapshotActiveTableTab();
   resetTableFindState();
   clearColumnWidths();
   stopTableLayoutObserver();
   exitTableFullscreen().catch(() => {});
   closeTableCommandPalette();
-  clearTableTabs();
   tableOpen.value = false;
   tableDetailView.value = normalizeTableDefaultView(config.personal.table_default_view);
   hitCollectToken += 1;
