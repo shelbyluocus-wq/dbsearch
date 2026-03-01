@@ -1234,6 +1234,22 @@ fn normalize_shortcut_main_key(token: &str) -> Option<String> {
         }
     }
 
+    // Handle global_hotkey Code Display format: "keya"→"a", "keyf"→"f"
+    if token.starts_with("key") && token.len() == 4 {
+        let c = token.chars().nth(3)?;
+        if c.is_ascii_alphabetic() {
+            return Some(c.to_ascii_lowercase().to_string());
+        }
+    }
+
+    // Handle global_hotkey Code Display format: "digit0"→"0", "digit1"→"1"
+    if token.starts_with("digit") && token.len() == 6 {
+        let c = token.chars().nth(5)?;
+        if c.is_ascii_digit() {
+            return Some(c.to_string());
+        }
+    }
+
     if token.starts_with('f') && token[1..].chars().all(|ch| ch.is_ascii_digit()) {
         return Some(token.to_string());
     }
@@ -1689,9 +1705,13 @@ pub fn run() {
                     if event.state != ShortcutState::Pressed {
                         return;
                     }
-                    let triggered = match normalize_hotkey_for_plugin(shortcut.to_string().as_str()) {
+                    let raw = shortcut.to_string();
+                    let triggered = match normalize_hotkey_for_plugin(raw.as_str()) {
                         Ok(value) => value,
-                        Err(_) => return,
+                        Err(e) => {
+                            eprintln!("hotkey normalize failed: raw={raw:?} err={e}");
+                            return;
+                        }
                     };
                     let state = app.state::<AppState>().inner().clone();
                     let panel_hotkey = state.panel_hotkey_sync.read().unwrap().clone();
