@@ -1322,26 +1322,43 @@ function formatTodayYmdByLocalTime() {
   return `${y}${m}${d}`;
 }
 
-function insertTextIntoEditable(target, text) {
+function resolveEditableTarget(target) {
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
-    if (target.disabled || target.readOnly) return false;
-    if (target instanceof HTMLInputElement) {
-      const type = String(target.type || "").toLowerCase();
+    return target;
+  }
+  if (target instanceof HTMLElement) {
+    return target.closest?.("[contenteditable]:not([contenteditable='false'])") || null;
+  }
+  return null;
+}
+
+function insertTextIntoEditable(target, text) {
+  const editableTarget = resolveEditableTarget(target);
+  if (!editableTarget) return false;
+
+  if (editableTarget instanceof HTMLInputElement || editableTarget instanceof HTMLTextAreaElement) {
+    if (editableTarget.disabled || editableTarget.readOnly) return false;
+    if (editableTarget instanceof HTMLInputElement) {
+      const type = String(editableTarget.type || "").toLowerCase();
       const allowed = new Set(["", "text", "search", "url", "tel", "password", "email", "number"]);
       if (!allowed.has(type)) return false;
     }
-    const start = Number.isInteger(target.selectionStart) ? target.selectionStart : target.value.length;
-    const end = Number.isInteger(target.selectionEnd) ? target.selectionEnd : target.value.length;
-    const nextValue = `${target.value.slice(0, start)}${text}${target.value.slice(end)}`;
-    target.value = nextValue;
+    const start = Number.isInteger(editableTarget.selectionStart)
+      ? editableTarget.selectionStart
+      : editableTarget.value.length;
+    const end = Number.isInteger(editableTarget.selectionEnd)
+      ? editableTarget.selectionEnd
+      : editableTarget.value.length;
+    const nextValue = `${editableTarget.value.slice(0, start)}${text}${editableTarget.value.slice(end)}`;
+    editableTarget.value = nextValue;
     const cursor = start + text.length;
-    target.setSelectionRange(cursor, cursor);
-    target.dispatchEvent(new Event("input", { bubbles: true }));
+    editableTarget.setSelectionRange(cursor, cursor);
+    editableTarget.dispatchEvent(new Event("input", { bubbles: true }));
     return true;
   }
 
-  if (target instanceof HTMLElement && target.isContentEditable) {
-    target.focus();
+  if (editableTarget instanceof HTMLElement && editableTarget.isContentEditable) {
+    editableTarget.focus();
     if (document.queryCommandSupported?.("insertText")) {
       document.execCommand("insertText", false, text);
       return true;
@@ -1365,19 +1382,32 @@ function insertTextIntoEditable(target, text) {
 function insertTodayDateToken() {
   const token = formatTodayYmdByLocalTime();
   const active = document.activeElement;
-  if (insertTextIntoEditable(active, token)) {
-    return true;
-  }
-  keyword.value = `${keyword.value}${token}`;
-  focusKeyword();
-  return true;
+  return insertTextIntoEditable(active, token);
+}
+
+function onTableTabsWheel(event) {
+  if (event.ctrlKey || event.metaKey) return;
+  const el = event.currentTarget;
+  if (!(el instanceof HTMLElement)) return;
+  const maxScroll = el.scrollWidth - el.clientWidth;
+  if (maxScroll <= 0) return;
+
+  const rect = el.getBoundingClientRect();
+  const zoneHeight = 10;
+  const pointerInScrollbarZone = event.clientY >= rect.bottom - zoneHeight;
+  if (!pointerInScrollbarZone) return;
+
+  if (event.deltaY === 0) return;
+  event.preventDefault();
+  el.scrollLeft += event.deltaY;
 }
 
 function onWindowKeydown(event) {
   const lower = String(event.key || "").toLowerCase();
   const withPrimary = event.ctrlKey || event.metaKey;
 
-  if (!settingsOpen.value && !event.repeat && isEventMatchingHotkey(event, config.personal.quick_date_hotkey)) {
+  if (!event.repeat && isEventMatchingHotkey(event, config.personal.quick_date_hotkey)) {
+    if (!resolveEditableTarget(document.activeElement)) return;
     event.preventDefault();
     insertTodayDateToken();
     return;
@@ -2991,7 +3021,7 @@ function escapeRegExp(str) {
           <button class="icon-btn" @click="closeTableDialog">✕</button>
         </div>
       </header>
-      <section class="table-tabs">
+      <section class="table-tabs" @wheel="onTableTabsWheel">
         <button
           v-for="tab in tableTabs"
           :key="tab.id"
