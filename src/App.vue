@@ -18,6 +18,27 @@ const tableDetailView = ref("hits");
 const tableFullscreen = ref(false);
 const schemaCollapsed = ref(true);
 const dataCollapsed = ref(false);
+
+// ── 编辑模式 ──
+const editMode = ref(false)
+const editGlowPhase = ref('none')
+const editDirty = ref(false)
+const editDateDialogOpen = ref(false)
+const editDateInput = ref('')
+const editDateError = ref(false)
+const editChanges = reactive({
+  updates: new Map(),
+  inserts: [],
+  deletes: new Set(),
+})
+const editSelectedRows = reactive(new Set())
+const editingCell = reactive({ active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
+const editNoPkWarningShown = ref(false)
+const editSaveDialogOpen = ref(false)
+const editUnsavedDialogOpen = ref(false)
+const editUnsavedCallback = ref(null)
+let editGlowTimer = null
+
 const historyOpen = ref(false);
 const resultZoomOpen = ref(false);
 const resultZoomType = ref("table");
@@ -2648,17 +2669,36 @@ async function loadTablePage(options = {}) {
 
 async function prevPage() {
   if (tableView.page <= 1) return;
+  if (editMode.value && editDirty.value) {
+    editUnsavedDialogOpen.value = true
+    editUnsavedCallback.value = async () => { resetEditChanges(); tableView.page -= 1; await loadTablePage({ resetFocus: true, clearHitCache: true }) }
+    return
+  }
   tableView.page -= 1;
   await loadTablePage({ resetFocus: true, clearHitCache: true });
 }
 
 async function nextPage() {
   if (tableView.page >= totalPages.value) return;
+  if (editMode.value && editDirty.value) {
+    editUnsavedDialogOpen.value = true
+    editUnsavedCallback.value = async () => { resetEditChanges(); tableView.page += 1; await loadTablePage({ resetFocus: true, clearHitCache: true }) }
+    return
+  }
   tableView.page += 1;
   await loadTablePage({ resetFocus: true, clearHitCache: true });
 }
 
 function closeTableDialog() {
+  if (editMode.value && editDirty.value) {
+    editUnsavedDialogOpen.value = true
+    editUnsavedCallback.value = () => { forceExitEditMode(); doCloseTableDialog() }
+    return
+  }
+  forceExitEditMode()
+  doCloseTableDialog()
+}
+function doCloseTableDialog() {
   snapshotActiveTableTab();
   resetTableFindState();
   clearColumnWidths();
@@ -2673,6 +2713,306 @@ function closeTableDialog() {
   tableView.hitNavCursor = -1;
   tableView.focusedHitLocalIndex = null;
   setDetailHitContext();
+}
+
+// ── 编辑模式：工具函数 ──
+function getTablePrimaryKeys() {
+  return tableView.columns.filter(c => c.is_primary_key).map(c => c.column_name)
+}
+function hasTablePrimaryKey() {
+  return getTablePrimaryKeys().length > 0
+}
+function computeRowKey(row, idx) {
+  const pks = getTablePrimaryKeys()
+  if (pks.length > 0) return pks.map(k => String(row[k] ?? '')).join('||')
+  return `__idx_${tableView.page}_${idx}`
+}
+
+const editSaveSummary = computed(() => {
+  const updates = editChanges.updates.size
+  const inserts = editChanges.inserts.length
+  const deletes = editChanges.deletes.size
+  return { updates, inserts, deletes, total: updates + inserts + deletes }
+})
+
+// ── 编辑模式：日期密码验证 ──
+function onEditToggleClick() {
+  if (editMode.value) {
+    if (editDirty.value) {
+      editUnsavedDialogOpen.value = true
+      editUnsavedCallback.value = () => exitEditMode()
+      return
+    }
+    exitEditMode()
+  } else {
+    editDateInput.value = ''
+    editDateError.value = false
+    editDateDialogOpen.value = true
+    nextTick(() => document.getElementById('edit-date-input')?.focus())
+  }
+}
+function validateEditDate() {
+  const today = new Date()
+  const expected = `${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}`
+  if (editDateInput.value === expected) {
+    editDateDialogOpen.value = false
+    enterEditMode()
+  } else {
+    editDateError.value = true
+    setTimeout(() => { editDateError.value = false }, 500)
+  }
+}
+watch(editDateInput, (val) => {
+  if (val.length === 8) validateEditDate()
+})
+
+// ── 编辑模式：进入/退出 ──
+function resetEditChanges() {
+  editChanges.updates.clear()
+  editChanges.inserts.splice(0)
+  editChanges.deletes.clear()
+  editSelectedRows.clear()
+  editDirty.value = false
+  Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
+}
+function enterEditMode() {
+  resetEditChanges()
+  editMode.value = true
+  editNoPkWarningShown.value = !hasTablePrimaryKey()
+  triggerEditGlow()
+}
+function exitEditMode() {
+  cancelCellEdit()
+  triggerExitGlow(() => {
+    editMode.value = false
+    resetEditChanges()
+    editNoPkWarningShown.value = false
+  })
+}
+function forceExitEditMode() {
+  clearEditGlowTimers()
+  editGlowPhase.value = 'none'
+  editMode.value = false
+  resetEditChanges()
+  editNoPkWarningShown.value = false
+}
+function clearEditGlowTimers() {
+  if (editGlowTimer) { clearTimeout(editGlowTimer); editGlowTimer = null }
+}
+function triggerEditGlow() {
+  clearEditGlowTimers()
+  editGlowPhase.value = 'ignition'
+  editGlowTimer = setTimeout(() => {
+    editGlowPhase.value = 'aurora'
+    editGlowTimer = setTimeout(() => {
+      editGlowPhase.value = 'cooldown'
+      editGlowTimer = setTimeout(() => {
+        editGlowPhase.value = 'steady'
+        editGlowTimer = null
+      }, 500)
+    }, 2400)
+  }, 600)
+}
+function triggerExitGlow(callback) {
+  clearEditGlowTimers()
+  editGlowPhase.value = 'exit'
+  editGlowTimer = setTimeout(() => {
+    editGlowPhase.value = 'none'
+    editGlowTimer = null
+    if (callback) callback()
+  }, 400)
+}
+
+// ── 编辑模式：单元格编辑 ──
+function startCellEdit(rowIndex, columnName) {
+  if (!editMode.value) return
+  const key = computeRowKey(tableView.rows[rowIndex], rowIndex)
+  if (editChanges.deletes.has(key)) return
+  const original = String(tableView.rows[rowIndex]?.[columnName] ?? '')
+  Object.assign(editingCell, { active: true, rowIndex, columnName, originalValue: original, currentValue: original })
+  nextTick(() => {
+    const el = document.getElementById('edit-cell-input')
+    if (el) { el.focus(); el.select() }
+  })
+}
+function confirmCellEdit() {
+  if (!editingCell.active) return
+  const { rowIndex, columnName, originalValue, currentValue } = editingCell
+  if (currentValue !== originalValue) {
+    const row = tableView.rows[rowIndex]
+    const key = computeRowKey(row, rowIndex)
+    if (!editChanges.updates.has(key)) {
+      const pks = getTablePrimaryKeys()
+      const whereKeys = {}
+      if (pks.length > 0) {
+        pks.forEach(pk => { whereKeys[pk] = String(row[pk] ?? '') })
+      } else {
+        tableView.columns.forEach(c => { whereKeys[c.column_name] = String(row[c.column_name] ?? '') })
+      }
+      editChanges.updates.set(key, { whereKeys, changes: {} })
+    }
+    editChanges.updates.get(key).changes[columnName] = currentValue
+    tableView.rows[rowIndex][columnName] = currentValue
+    editDirty.value = true
+  }
+  Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
+}
+function cancelCellEdit() {
+  Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
+}
+function onCellEditKeydown(e) {
+  if (e.key === 'Enter') { e.preventDefault(); confirmCellEdit() }
+  else if (e.key === 'Escape') { e.preventDefault(); cancelCellEdit() }
+  else if (e.key === 'Tab') {
+    e.preventDefault()
+    const curRow = editingCell.rowIndex
+    const curCol = editingCell.columnName
+    confirmCellEdit()
+    const colNames = tableView.columns.map(c => c.column_name)
+    const curColIdx = colNames.indexOf(curCol)
+    const nextColIdx = curColIdx + 1
+    if (nextColIdx < colNames.length && curRow >= 0) {
+      startCellEdit(curRow, colNames[nextColIdx])
+    }
+  }
+}
+function startNewRowCellEdit(insertIdx, columnName) {
+  if (!editMode.value) return
+  const original = String(editChanges.inserts[insertIdx]?.[columnName] ?? '')
+  // Use a special index for new rows: offset by existing rows count
+  const specialIdx = tableView.rows.length + insertIdx
+  Object.assign(editingCell, { active: true, rowIndex: specialIdx, columnName, originalValue: original, currentValue: original })
+  nextTick(() => {
+    const el = document.getElementById('edit-cell-input')
+    if (el) { el.focus(); el.select() }
+  })
+}
+function confirmNewRowCellEdit(insertIdx) {
+  if (!editingCell.active) return
+  const { columnName, currentValue } = editingCell
+  if (editChanges.inserts[insertIdx]) {
+    editChanges.inserts[insertIdx][columnName] = currentValue
+    editDirty.value = true
+  }
+  Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
+}
+function onNewRowCellEditKeydown(e, insertIdx) {
+  if (e.key === 'Enter') { e.preventDefault(); confirmNewRowCellEdit(insertIdx) }
+  else if (e.key === 'Escape') { e.preventDefault(); cancelCellEdit() }
+}
+
+// ── 编辑模式：行操作 ──
+function toggleRowSelection(idx) {
+  const key = computeRowKey(tableView.rows[idx], idx)
+  if (editChanges.deletes.has(key)) return
+  if (editSelectedRows.has(key)) editSelectedRows.delete(key)
+  else editSelectedRows.add(key)
+}
+function toggleSelectAll() {
+  const selectableKeys = tableView.rows
+    .map((row, idx) => computeRowKey(row, idx))
+    .filter(k => !editChanges.deletes.has(k))
+  if (editSelectedRows.size > 0 && editSelectedRows.size === selectableKeys.length) {
+    editSelectedRows.clear()
+  } else {
+    selectableKeys.forEach(k => editSelectedRows.add(k))
+  }
+}
+function addNewRow() {
+  const newRow = {}
+  tableView.columns.forEach(c => { newRow[c.column_name] = '' })
+  editChanges.inserts.push(newRow)
+  editDirty.value = true
+}
+function removeNewRow(insertIdx) {
+  editChanges.inserts.splice(insertIdx, 1)
+  editDirty.value = editChanges.updates.size > 0 || editChanges.inserts.length > 0 || editChanges.deletes.size > 0
+}
+function deleteSelectedRows() {
+  editSelectedRows.forEach(key => {
+    editChanges.deletes.add(key)
+    // Remove any pending updates for deleted rows
+    editChanges.updates.delete(key)
+  })
+  editSelectedRows.clear()
+  editDirty.value = true
+}
+function isRowDeleted(row, idx) {
+  return editChanges.deletes.has(computeRowKey(row, idx))
+}
+function isRowModified(row, idx) {
+  return editChanges.updates.has(computeRowKey(row, idx))
+}
+function isCellModified(row, idx, columnName) {
+  const key = computeRowKey(row, idx)
+  const upd = editChanges.updates.get(key)
+  return upd ? columnName in upd.changes : false
+}
+
+// ── 编辑模式：保存 ──
+function openSaveDialog() {
+  editSaveDialogOpen.value = true
+}
+async function confirmSave() {
+  editSaveDialogOpen.value = false
+  const pks = getTablePrimaryKeys()
+  const hasPk = pks.length > 0
+
+  const updates = []
+  editChanges.updates.forEach((val) => {
+    updates.push({ whereKeys: val.whereKeys, changes: val.changes })
+  })
+
+  const deletes = []
+  editChanges.deletes.forEach(key => {
+    // Find matching row
+    const rowIdx = tableView.rows.findIndex((r, i) => computeRowKey(r, i) === key)
+    if (rowIdx >= 0) {
+      const row = tableView.rows[rowIdx]
+      const rowData = {}
+      if (hasPk) {
+        pks.forEach(pk => { rowData[pk] = String(row[pk] ?? '') })
+      } else {
+        tableView.columns.forEach(c => { rowData[c.column_name] = String(row[c.column_name] ?? '') })
+      }
+      deletes.push(rowData)
+    }
+  })
+
+  const inserts = editChanges.inserts
+    .filter(r => Object.values(r).some(v => v !== ''))
+    .map(r => {
+      const clean = {}
+      Object.entries(r).forEach(([k, v]) => { if (v !== '') clean[k] = v })
+      return clean
+    })
+
+  const changeset = {
+    tableName: tableView.tableName,
+    primaryKeys: pks,
+    updates,
+    inserts,
+    deletes,
+  }
+
+  try {
+    const result = await invoke('save_table_changes', { changeset })
+    const parts = []
+    if (result.inserted > 0) parts.push(`插入 ${result.inserted} 行`)
+    if (result.updated > 0) parts.push(`更新 ${result.updated} 行`)
+    if (result.deleted > 0) parts.push(`删除 ${result.deleted} 行`)
+    showCopyToast(parts.length > 0 ? parts.join('，') : '无变更', 'success')
+    resetEditChanges()
+    await loadTablePage({ resetFocus: false, clearHitCache: false })
+  } catch (err) {
+    showCopyToast(`保存失败: ${String(err)}`, 'error')
+  }
+}
+function discardAndProceed() {
+  editUnsavedDialogOpen.value = false
+  const cb = editUnsavedCallback.value
+  editUnsavedCallback.value = null
+  if (cb) cb()
 }
 
 async function loadConfig() {
@@ -3047,7 +3387,12 @@ function escapeRegExp(str) {
   </div>
 
   <div v-if="tableOpen" class="dialog-mask" @mousedown.self="closeTableDialog">
-    <section ref="tableModalRef" :class="['modal-card', 'wide', 'table-modal', { fullscreen: tableFullscreen }]">
+    <section ref="tableModalRef" :class="[
+      'modal-card', 'wide', 'table-modal',
+      { fullscreen: tableFullscreen },
+      editGlowPhase !== 'none' ? `edit-glow-${editGlowPhase}` : '',
+      { 'edit-mode-active': editMode },
+    ]">
       <header class="modal-header" @pointerdown="panelHeaderPointerDown">
         <div class="modal-title-row" @pointerdown.stop>
           <h3
@@ -3062,6 +3407,11 @@ function escapeRegExp(str) {
         <div class="table-header-actions">
           <button class="small-btn" @click="toggleTableDetailView">{{ tableDetailView === 'full' ? '只看命中(Tab)' : '返回原页(Tab)' }}</button>
           <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏(W)' : '全屏查看(W)' }}</button>
+          <button :class="['small-btn', 'edit-toggle-btn', { active: editMode }]"
+            :disabled="!dbConnected" @click="onEditToggleClick"
+            :title="editMode ? '退出编辑模式' : '进入编辑模式'">
+            {{ editMode ? '退出编辑' : '编辑' }}
+          </button>
           <button class="icon-btn" @click="closeTableDialog">✕</button>
         </div>
       </header>
@@ -3086,6 +3436,11 @@ function escapeRegExp(str) {
         <button class="small-btn" :disabled="tableFindMatches.length === 0" @click="jumpTableFind(1)">下一条</button>
         <button class="small-btn" @click="closeTableFind">关闭</button>
       </section>
+
+      <div v-if="editMode && editNoPkWarningShown" class="edit-no-pk-warning">
+        <span>⚠ 该表无主键，编辑操作将使用全列值匹配（LIMIT 1），请谨慎操作</span>
+        <button class="small-btn" @click="editNoPkWarningShown = false">知道了</button>
+      </div>
 
       <div class="table-content">
       <div class="table-content-viewport">
@@ -3152,6 +3507,10 @@ function escapeRegExp(str) {
               <table class="data-table">
                 <thead>
                   <tr>
+                    <th v-if="editMode" class="edit-checkbox-col">
+                      <input type="checkbox" @change="toggleSelectAll"
+                        :checked="editSelectedRows.size > 0 && editSelectedRows.size === tableView.rows.filter((r,i) => !isRowDeleted(r,i)).length" />
+                    </th>
                     <th
                       v-for="col in tableView.columns"
                       :key="col.column_name"
@@ -3172,8 +3531,16 @@ function escapeRegExp(str) {
                       hit: isDataRowHit(row, idx),
                       'hit-active': tableView.focusedHitLocalIndex === idx,
                       'find-active-row': tableFindFocus.type === 'data' && tableFindFocus.page === tableView.page && tableFindFocus.localIndex === idx,
+                      'edit-deleted': editMode && isRowDeleted(row, idx),
+                      'edit-modified': editMode && isRowModified(row, idx),
                     }"
                   >
+                    <td v-if="editMode" class="edit-checkbox-col">
+                      <input type="checkbox"
+                        :checked="editSelectedRows.has(computeRowKey(row, idx))"
+                        :disabled="isRowDeleted(row, idx)"
+                        @change="toggleRowSelection(idx)" />
+                    </td>
                     <td
                       v-for="col in tableView.columns"
                       :key="col.column_name"
@@ -3188,13 +3555,55 @@ function escapeRegExp(str) {
                           tableFindFocus.page === tableView.page &&
                           tableFindFocus.localIndex === idx &&
                           tableFindFocus.columnName === col.column_name,
+                        'edit-cell-modified': editMode && isCellModified(row, idx, col.column_name),
                       }"
+                      @dblclick="editMode && startCellEdit(idx, col.column_name)"
                     >
-                      <div class="td-clip" v-html="renderDataCell(row, col.column_name)"></div>
+                      <input v-if="editingCell.active && editingCell.rowIndex === idx && editingCell.columnName === col.column_name"
+                        id="edit-cell-input"
+                        class="edit-cell-input"
+                        v-model="editingCell.currentValue"
+                        @blur="confirmCellEdit"
+                        @keydown="onCellEditKeydown"
+                      />
+                      <div v-else class="td-clip" v-html="renderDataCell(row, col.column_name)"></div>
+                    </td>
+                  </tr>
+                  <!-- 新增行 -->
+                  <tr v-for="(newRow, nIdx) in editChanges.inserts" :key="'new-'+nIdx" class="edit-new-row">
+                    <td class="edit-checkbox-col">
+                      <button class="edit-remove-insert-btn" @click="removeNewRow(nIdx)" title="移除">✕</button>
+                    </td>
+                    <td v-for="col in tableView.columns" :key="col.column_name"
+                      :style="getColumnStyle(col.column_name)"
+                      @dblclick="startNewRowCellEdit(nIdx, col.column_name)"
+                    >
+                      <input v-if="editingCell.active && editingCell.rowIndex === (tableView.rows.length + nIdx) && editingCell.columnName === col.column_name"
+                        id="edit-cell-input"
+                        class="edit-cell-input"
+                        v-model="editingCell.currentValue"
+                        @blur="confirmNewRowCellEdit(nIdx)"
+                        @keydown="onNewRowCellEditKeydown($event, nIdx)"
+                      />
+                      <div v-else class="td-clip">{{ newRow[col.column_name] || '' }}</div>
                     </td>
                   </tr>
                 </tbody>
               </table>
+            </div>
+            <!-- 编辑模式底部工具栏 -->
+            <div v-if="editMode" class="edit-toolbar">
+              <div class="edit-toolbar-left">
+                <button class="small-btn" @click="addNewRow">+ 添加行</button>
+                <button class="small-btn danger" :disabled="editSelectedRows.size === 0"
+                  @click="deleteSelectedRows">删除选中 ({{ editSelectedRows.size }})</button>
+              </div>
+              <div class="edit-toolbar-right">
+                <span v-if="editDirty" class="edit-dirty-badge">
+                  <span class="edit-dirty-dot"></span> {{ editSaveSummary.total }} 项未保存
+                </span>
+                <button class="primary-btn" :disabled="!editDirty" @click="openSaveDialog">保存更改</button>
+              </div>
             </div>
           </div>
         </section>
@@ -3376,6 +3785,68 @@ function escapeRegExp(str) {
           <button class="primary-btn" @click="saveSettings">保存设置</button>
         </footer>
       <input id="importFile" class="hidden" type="file" accept="application/json" @change="onImportConfig" />
+    </section>
+  </div>
+
+  <!-- 日期密码验证弹窗 -->
+  <div v-if="editDateDialogOpen" class="dialog-mask" @click.self="editDateDialogOpen = false">
+    <section :class="['modal-card', 'edit-date-dialog', { shake: editDateError }]">
+      <header class="modal-header">
+        <h3>进入编辑模式</h3>
+        <button class="icon-btn" @click="editDateDialogOpen = false">✕</button>
+      </header>
+      <div class="edit-date-body">
+        <p>请输入当前日期以验证身份</p>
+        <input id="edit-date-input" v-model="editDateInput" type="text"
+          maxlength="8" placeholder="YYYYMMDD"
+          :class="{ 'input-error': editDateError }"
+          @keydown.enter="validateEditDate" />
+        <p v-if="editDateError" class="edit-date-error-text">日期不正确，请重试</p>
+      </div>
+      <footer class="modal-footer">
+        <button class="small-btn" @click="editDateDialogOpen = false">取消</button>
+        <button class="primary-btn" @click="validateEditDate">确认</button>
+      </footer>
+    </section>
+  </div>
+
+  <!-- 保存确认弹窗 -->
+  <div v-if="editSaveDialogOpen" class="dialog-mask" @click.self="editSaveDialogOpen = false">
+    <section class="modal-card edit-save-dialog">
+      <header class="modal-header">
+        <h3>确认保存</h3>
+        <button class="icon-btn" @click="editSaveDialogOpen = false">✕</button>
+      </header>
+      <div class="edit-save-body">
+        <p>即将提交以下变更到 <strong>{{ tableView.tableName }}</strong>：</p>
+        <ul class="edit-save-summary">
+          <li v-if="editSaveSummary.inserts > 0">插入 <strong>{{ editSaveSummary.inserts }}</strong> 行</li>
+          <li v-if="editSaveSummary.updates > 0">更新 <strong>{{ editSaveSummary.updates }}</strong> 行</li>
+          <li v-if="editSaveSummary.deletes > 0">删除 <strong>{{ editSaveSummary.deletes }}</strong> 行</li>
+        </ul>
+        <p v-if="!hasTablePrimaryKey()" class="edit-save-warn">⚠ 该表无主键，操作将使用全列值匹配</p>
+      </div>
+      <footer class="modal-footer">
+        <button class="small-btn" @click="editSaveDialogOpen = false">取消</button>
+        <button class="primary-btn" @click="confirmSave">确认保存</button>
+      </footer>
+    </section>
+  </div>
+
+  <!-- 未保存更改警告弹窗 -->
+  <div v-if="editUnsavedDialogOpen" class="dialog-mask" @click.self="editUnsavedDialogOpen = false">
+    <section class="modal-card edit-unsaved-dialog">
+      <header class="modal-header">
+        <h3>未保存的更改</h3>
+        <button class="icon-btn" @click="editUnsavedDialogOpen = false">✕</button>
+      </header>
+      <div class="edit-unsaved-body">
+        <p>当前有 <strong>{{ editSaveSummary.total }}</strong> 项未保存的更改，离开将丢失这些修改。</p>
+      </div>
+      <footer class="modal-footer">
+        <button class="small-btn" @click="editUnsavedDialogOpen = false">继续编辑</button>
+        <button class="primary-btn danger" @click="discardAndProceed">放弃更改</button>
+      </footer>
     </section>
   </div>
 

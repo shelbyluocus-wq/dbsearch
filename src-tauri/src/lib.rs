@@ -230,6 +230,31 @@ struct TableData {
     page_size: u32,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TableChangeSet {
+    table_name: String,
+    primary_keys: Vec<String>,
+    updates: Vec<RowUpdate>,
+    inserts: Vec<HashMap<String, String>>,
+    deletes: Vec<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RowUpdate {
+    where_keys: HashMap<String, String>,
+    changes: HashMap<String, String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SaveResult {
+    updated: u64,
+    inserted: u64,
+    deleted: u64,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct TableOption {
     table_name: String,
     table_comment: String,
@@ -543,6 +568,171 @@ async fn get_table_data(
         page_size,
     })
 }
+
+#[tauri::command]
+async fn save_table_changes(
+    changeset: TableChangeSet,
+    state: State<'_, AppState>,
+) -> Result<SaveResult, String> {
+    let pool = {
+        let rt = state.runtime.lock().await;
+        rt.pool
+            .clone()
+            .ok_or_else(|| "数据库未连接".to_string())?
+    };
+    let table = escape_ident(&changeset.table_name);
+    let has_pk = !changeset.primary_keys.is_empty();
+    let mut warnings: Vec<String> = Vec::new();
+    let mut deleted: u64 = 0;
+    let mut updated: u64 = 0;
+    let mut inserted: u64 = 0;
+
+    let mut tx = pool.begin().await.map_err(|e| format!("开启事务失败: {e}"))?;
+
+    // --- DELETE ---
+    for del_row in &changeset.deletes {
+        if del_row.is_empty() {
+            continue;
+        }
+        let (where_clause, where_vals) = if has_pk {
+            build_where_from_keys(&changeset.primary_keys, del_row)?
+        } else {
+            build_where_from_all(del_row)?
+        };
+        let sql = if has_pk {
+            format!("DELETE FROM `{}` WHERE {}", table, where_clause)
+        } else {
+            format!("DELETE FROM `{}` WHERE {} LIMIT 1", table, where_clause)
+        };
+        let mut q = sqlx::query(&sql);
+        for v in &where_vals {
+            q = q.bind(v);
+        }
+        let result = q.execute(&mut *tx).await.map_err(|e| format!("删除失败: {e}"))?;
+        deleted += result.rows_affected();
+        if !has_pk {
+            warnings.push(format!("无主键表删除使用全列匹配 LIMIT 1"));
+        }
+    }
+
+    // --- UPDATE ---
+    for upd in &changeset.updates {
+        if upd.changes.is_empty() {
+            continue;
+        }
+        let set_cols: Vec<String> = upd
+            .changes
+            .keys()
+            .map(|k| format!("`{}` = ?", escape_ident(k)))
+            .collect();
+        let set_vals: Vec<&String> = upd.changes.values().collect();
+
+        let (where_clause, where_vals) = if has_pk {
+            build_where_from_keys(&changeset.primary_keys, &upd.where_keys)?
+        } else {
+            build_where_from_all(&upd.where_keys)?
+        };
+
+        let sql = if has_pk {
+            format!(
+                "UPDATE `{}` SET {} WHERE {}",
+                table,
+                set_cols.join(", "),
+                where_clause
+            )
+        } else {
+            format!(
+                "UPDATE `{}` SET {} WHERE {} LIMIT 1",
+                table,
+                set_cols.join(", "),
+                where_clause
+            )
+        };
+
+        let mut q = sqlx::query(&sql);
+        for v in &set_vals {
+            q = q.bind(*v);
+        }
+        for v in &where_vals {
+            q = q.bind(v);
+        }
+        let result = q.execute(&mut *tx).await.map_err(|e| format!("更新失败: {e}"))?;
+        updated += result.rows_affected();
+        if !has_pk {
+            warnings.push(format!("无主键表更新使用全列匹配 LIMIT 1"));
+        }
+    }
+
+    // --- INSERT ---
+    for ins_row in &changeset.inserts {
+        if ins_row.is_empty() {
+            continue;
+        }
+        let cols: Vec<String> = ins_row.keys().map(|k| format!("`{}`", escape_ident(k))).collect();
+        let placeholders: Vec<&str> = ins_row.keys().map(|_| "?").collect();
+        let vals: Vec<&String> = ins_row.values().collect();
+        let sql = format!(
+            "INSERT INTO `{}` ({}) VALUES ({})",
+            table,
+            cols.join(", "),
+            placeholders.join(", ")
+        );
+        let mut q = sqlx::query(&sql);
+        for v in &vals {
+            q = q.bind(*v);
+        }
+        let result = q.execute(&mut *tx).await.map_err(|e| format!("插入失败: {e}"))?;
+        inserted += result.rows_affected();
+    }
+
+    tx.commit().await.map_err(|e| format!("提交事务失败: {e}"))?;
+
+    // Deduplicate warnings
+    warnings.sort();
+    warnings.dedup();
+
+    Ok(SaveResult {
+        updated,
+        inserted,
+        deleted,
+        warnings,
+    })
+}
+
+fn build_where_from_keys(
+    pk_cols: &[String],
+    row: &HashMap<String, String>,
+) -> Result<(String, Vec<String>), String> {
+    let mut parts = Vec::new();
+    let mut vals = Vec::new();
+    for col in pk_cols {
+        let val = row
+            .get(col)
+            .ok_or_else(|| format!("缺少主键列值: {}", col))?;
+        parts.push(format!("`{}` = ?", escape_ident(col)));
+        vals.push(val.clone());
+    }
+    if parts.is_empty() {
+        return Err("WHERE 条件为空".to_string());
+    }
+    Ok((parts.join(" AND "), vals))
+}
+
+fn build_where_from_all(
+    row: &HashMap<String, String>,
+) -> Result<(String, Vec<String>), String> {
+    let mut parts = Vec::new();
+    let mut vals = Vec::new();
+    for (col, val) in row {
+        parts.push(format!("`{}` = ?", escape_ident(col)));
+        vals.push(val.clone());
+    }
+    if parts.is_empty() {
+        return Err("WHERE 条件为空".to_string());
+    }
+    Ok((parts.join(" AND "), vals))
+}
+
 #[tauri::command]
 async fn list_tables(state: State<'_, AppState>) -> Result<Vec<TableOption>, String> {
     let schema = {
@@ -1501,7 +1691,8 @@ pub fn run() {
             toggle_pet_lock,
             save_pet_position,
             quit_app,
-            set_autostart
+            set_autostart,
+            save_table_changes
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
