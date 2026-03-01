@@ -216,23 +216,29 @@ const canSearchData = computed(() => dbConnected.value && keyword.value.trim().l
 
 const flatDataResults = computed(() => {
   const flat = [];
+  const terms = splitKeywordTerms(keyword.value);
   for (const item of results.data) {
     const rows = item.matched_rows || [];
-    const matchedCols = item.matched_columns || [];
-    for (const row of rows) {
-      if (matchedCols.length > 0) {
-        for (const col of matchedCols) {
-          flat.push({
-            table_name: item.table_name,
-            column: col,
-            preview: `${col}: ${row[col] ?? ''}`,
-            _item: item,
-          });
-        }
-      } else {
-        flat.push({ table_name: item.table_name, column: '', preview: '(匹配行)', _item: item });
+    const scopedColumns = Array.isArray(item.matched_columns) ? item.matched_columns.filter(Boolean) : [];
+    rows.forEach((row, rowLocalIndex) => {
+      const candidateColumns = scopedColumns.length > 0 ? scopedColumns : Object.keys(row || {});
+      let rowHitColumns = candidateColumns.filter((col) => containsAllTerms(row?.[col], terms));
+      if (rowHitColumns.length === 0) {
+        rowHitColumns = Object.keys(row || {}).filter((col) => containsAllTerms(row?.[col], terms));
       }
-    }
+      rowHitColumns.forEach((col) => {
+        const first = Number(item.first_row_index);
+        const rowIndex = Number.isFinite(first) ? first + rowLocalIndex : null;
+        flat.push({
+          table_name: item.table_name,
+          column: col,
+          hit_columns: rowHitColumns,
+          row_index: rowIndex,
+          preview: `${col}: ${row?.[col] ?? ''}`,
+          _item: item,
+        });
+      });
+    });
     if (!rows.length && item.total_matches > 0) {
       flat.push({ table_name: item.table_name, column: '', preview: `${item.total_matches} 条命中`, _item: item });
     }
@@ -2584,10 +2590,15 @@ async function openFromMeta(item) {
 }
 
 async function openFromData(item) {
-  const rowIndex = item.first_row_index ?? null;
-  const columns = Array.isArray(item.matched_columns) ? item.matched_columns.filter(Boolean) : [];
-  const col = columns[0] || null;
-  await openOrActivateTableTab(item.table_name, rowIndex, col, {
+  const sourceItem = item?._item || item;
+  const rowIndex = item?.row_index ?? sourceItem?.first_row_index ?? null;
+  const columns = Array.isArray(item?.hit_columns) && item.hit_columns.length > 0
+    ? item.hit_columns.filter(Boolean)
+    : Array.isArray(sourceItem?.matched_columns)
+      ? sourceItem.matched_columns.filter(Boolean)
+      : [];
+  const col = item?.column || columns[0] || null;
+  await openOrActivateTableTab(sourceItem.table_name, rowIndex, col, {
     source: "data",
     columns,
     terms: splitKeywordTerms(keyword.value),
@@ -2932,7 +2943,7 @@ function escapeRegExp(str) {
                 <span class="badge">{{ item.match_type === 'TableComment' ? '表备注' : '列备注' }}</span>
                 <span class="copy-icon-btn" @click.stop="copyText(item.column_name || item.table_name)" title="复制">⎘</span>
               </button>
-              <button v-else-if="item._type === 'data'" class="list-item" @click="openFromData(item._item)">
+              <button v-else-if="item._type === 'data'" class="list-item" @click="openFromData(item)">
                 <div class="main">{{ item.table_name }}</div>
                 <div class="sub" v-html="renderHighlighted(item.preview)"></div>
               </button>
