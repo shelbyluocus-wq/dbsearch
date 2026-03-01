@@ -20,12 +20,16 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 struct AppState {
     runtime: Arc<tokio::sync::Mutex<RuntimeState>>,
     cancel_seq: Arc<AtomicU64>,
+    panel_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
+    quick_date_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
 }
 impl Default for AppState {
     fn default() -> Self {
         Self {
             runtime: Arc::new(tokio::sync::Mutex::new(RuntimeState::default())),
             cancel_seq: Arc::new(AtomicU64::new(0)),
+            panel_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
+            quick_date_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
         }
     }
 }
@@ -45,7 +49,7 @@ const PET_MENU_WINDOW_LABEL: &str = "pet_menu";
 const PANEL_WIDTH: f64 = 620.0;
 const PANEL_HEIGHT: f64 = 760.0;
 const PET_MENU_WIDTH: f64 = 186.0;
-const PET_MENU_HEIGHT: f64 = 208.0;
+const PET_MENU_HEIGHT: f64 = 132.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -258,6 +262,12 @@ struct SaveResult {
 struct TableOption {
     table_name: String,
     table_comment: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportResult {
+    total_rows: u64,
+    table_count: usize,
 }
 #[derive(Debug, Clone, Serialize)]
 struct SearchProgress {
@@ -754,6 +764,96 @@ async fn list_tables(state: State<'_, AppState>) -> Result<Vec<TableOption>, Str
     out.sort_by(|a, b| a.table_name.cmp(&b.table_name));
     Ok(out)
 }
+
+#[tauri::command]
+async fn export_tables_xlsx(
+    tables: Vec<String>,
+    file_path: String,
+    state: State<'_, AppState>,
+) -> Result<ExportResult, String> {
+    use rust_xlsxwriter::{Format, Workbook};
+
+    let (pool, schema) = {
+        let rt = state.runtime.lock().await;
+        (
+            rt.pool
+                .clone()
+                .ok_or_else(|| "数据库未连接".to_string())?,
+            rt.schema_cache.clone(),
+        )
+    };
+
+    let mut workbook = Workbook::new();
+    let bold = Format::new().set_bold();
+    let mut total_rows: u64 = 0;
+    let table_count = tables.len();
+
+    for table_name in &tables {
+        let table_meta = schema
+            .tables
+            .iter()
+            .find(|t| &t.table_name == table_name)
+            .ok_or_else(|| format!("表 {} 不存在", table_name))?;
+
+        // Sheet name max 31 chars
+        let sheet_name: String = table_name.chars().take(31).collect();
+        let worksheet = workbook
+            .add_worksheet()
+            .set_name(&sheet_name)
+            .map_err(|e| format!("创建工作表失败: {e}"))?;
+
+        // Write header row
+        for (col_idx, col) in table_meta.columns.iter().enumerate() {
+            worksheet
+                .write_string_with_format(0, col_idx as u16, &col.column_name, &bold)
+                .map_err(|e| format!("写入表头失败: {e}"))?;
+        }
+
+        // Query all data
+        let select_cols = table_meta
+            .columns
+            .iter()
+            .map(|c| {
+                format!(
+                    "CAST(`{}` AS CHAR) AS `{}`",
+                    escape_ident(&c.column_name),
+                    escape_ident(&c.column_name)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT {} FROM `{}`",
+            select_cols,
+            escape_ident(table_name)
+        );
+        let rows = sqlx::query(&sql)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| format!("读取表 {} 失败: {e}", table_name))?;
+
+        total_rows += rows.len() as u64;
+
+        for (row_idx, row) in rows.iter().enumerate() {
+            for (col_idx, col) in table_meta.columns.iter().enumerate() {
+                let val: Option<String> = row.try_get(col.column_name.as_str()).unwrap_or(None);
+                if let Some(v) = val {
+                    let _ = worksheet.write_string((row_idx + 1) as u32, col_idx as u16, &v);
+                }
+            }
+        }
+    }
+
+    workbook
+        .save(&file_path)
+        .map_err(|e| format!("保存文件失败: {e}"))?;
+
+    Ok(ExportResult {
+        total_rows,
+        table_count,
+    })
+}
+
 #[tauri::command]
 async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
     Ok(state.runtime.lock().await.config.clone())
@@ -803,6 +903,7 @@ async fn register_hotkey(
         }
     }
 
+    *state.panel_hotkey_sync.write().unwrap() = Some(normalized.clone());
     state.runtime.lock().await.registered_hotkey = Some(normalized.clone());
     Ok(normalized)
 }
@@ -842,6 +943,7 @@ async fn register_quick_date_hotkey(
         }
     }
 
+    *state.quick_date_hotkey_sync.write().unwrap() = Some(normalized.clone());
     state.runtime.lock().await.registered_quick_date_hotkey = Some(normalized.clone());
     Ok(normalized)
 }
@@ -1009,7 +1111,7 @@ fn ensure_panel_window(
         return Ok(panel);
     }
 
-    WebviewWindowBuilder::new(
+    let panel = WebviewWindowBuilder::new(
         app,
         PANEL_WINDOW_LABEL,
         WebviewUrl::App("index.html".into()),
@@ -1026,7 +1128,17 @@ fn ensure_panel_window(
     .visible(false)
     .drag_and_drop(false)
     .build()
-    .map_err(|e| format!("failed to create panel window: {e}"))
+    .map_err(|e| format!("failed to create panel window: {e}"))?;
+
+    let panel_for_events = panel.clone();
+    panel.on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = panel_for_events.hide();
+        }
+    });
+
+    Ok(panel)
 }
 
 fn ensure_pet_menu_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
@@ -1582,13 +1694,8 @@ pub fn run() {
                         Err(_) => return,
                     };
                     let state = app.state::<AppState>().inner().clone();
-                    let (panel_hotkey, quick_date_hotkey) = tauri::async_runtime::block_on(async {
-                        let rt = state.runtime.lock().await;
-                        (
-                            rt.registered_hotkey.clone(),
-                            rt.registered_quick_date_hotkey.clone(),
-                        )
-                    });
+                    let panel_hotkey = state.panel_hotkey_sync.read().unwrap().clone();
+                    let quick_date_hotkey = state.quick_date_hotkey_sync.read().unwrap().clone();
 
                     if quick_date_hotkey.as_deref() == Some(triggered.as_str()) {
                         if let Err(e) = input_today_date_globally() {
@@ -1604,10 +1711,12 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .manage(AppState::default())
         .setup(|app| {
             let st = app.state::<AppState>().clone();
+            let _ = app.global_shortcut().unregister_all();
             let mut loaded = load_config_from_disk(&app.handle()).unwrap_or_default();
             if loaded.personal.quick_date_hotkey.trim().is_empty() {
                 loaded.personal.quick_date_hotkey = "F9".into();
@@ -1647,6 +1756,9 @@ pub fn run() {
                         None
                     }
                 };
+            // Sync-write hotkey values for the global shortcut handler
+            *st.panel_hotkey_sync.write().unwrap() = registered_hotkey.clone();
+            *st.quick_date_hotkey_sync.write().unwrap() = registered_quick_date_hotkey.clone();
             tauri::async_runtime::block_on(async move {
                 let mut rt = st.runtime.lock().await;
                 rt.config = loaded;
@@ -1692,7 +1804,8 @@ pub fn run() {
             save_pet_position,
             quit_app,
             set_autostart,
-            save_table_changes
+            save_table_changes,
+            export_tables_xlsx
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

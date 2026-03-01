@@ -12,6 +12,7 @@
     "core:window:allow-unmaximize",
     "core:window:allow-is-maximized",
     "core:window:allow-set-fullscreen",
-    "core:window:allow-set-always-on-top"
+    "core:window:allow-set-always-on-top",
+    "dialog:default"
   ]
 }

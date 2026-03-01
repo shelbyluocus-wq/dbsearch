@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { save } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
 
 const isTauriWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -38,6 +39,12 @@ const editSaveDialogOpen = ref(false)
 const editUnsavedDialogOpen = ref(false)
 const editUnsavedCallback = ref(null)
 let editGlowTimer = null
+
+// ── 导出 ──
+const exportDialogOpen = ref(false)
+const exportSelectedTables = reactive(new Set())
+const exportFilter = ref("")
+const exportLoading = ref(false)
 
 const historyOpen = ref(false);
 const resultZoomOpen = ref(false);
@@ -337,9 +344,11 @@ const resultZoomTitle = computed(() => {
   return "";
 });
 const resultZoomItems = computed(() => results[resultZoomType.value] || []);
+const petDragging = ref(false);
 const petSpriteClasses = computed(() => ({
   searching: progress.show,
   found: petFound.value,
+  dragging: petDragging.value,
   sleeping: petIdleActive.value && currentIdleState.value === "sleep_zzz",
   "idle-float": petIdleActive.value && currentIdleState.value === "float_breathe",
   "idle-look": petIdleActive.value && currentIdleState.value === "look_around",
@@ -1530,9 +1539,24 @@ function onWindowKeydown(event) {
       toggleTableFullscreen();
       return;
     }
+    if (event.key === '`') {
+      event.preventDefault();
+      onEditToggleClick();
+      return;
+    }
+    if (lower === "d") {
+      event.preventDefault();
+      exportCurrentTable();
+      return;
+    }
   }
 
   if (event.key !== "Escape") return;
+
+  if (exportDialogOpen.value) {
+    exportDialogOpen.value = false;
+    return;
+  }
 
   if (resultZoomOpen.value) {
     resultZoomOpen.value = false;
@@ -3076,7 +3100,88 @@ async function contextAction(action) {
 function petPointerDown(event) {
   if (event.button !== 0 || !isTauriWindow) return;
   event.preventDefault();
+  petDragging.value = true;
+
+  const endDrag = () => {
+    petDragging.value = false;
+    document.removeEventListener('pointerup', endDrag);
+    window.removeEventListener('blur', endDrag);
+    clearTimeout(fallback);
+  };
+  document.addEventListener('pointerup', endDrag, { once: true });
+  window.addEventListener('blur', endDrag, { once: true });
+  const fallback = setTimeout(endDrag, 5000);
+
   getCurrentWindow().startDragging().catch(() => {});
+}
+
+// ── 导出 ──
+const filteredExportTables = computed(() => {
+  const list = Array.isArray(tableOptions.value) ? tableOptions.value : [];
+  const q = exportFilter.value.trim().toLowerCase();
+  if (!q) return list;
+  return list.filter(
+    (t) => t.table_name.toLowerCase().includes(q) || (t.table_comment || "").toLowerCase().includes(q)
+  );
+});
+
+async function exportCurrentTable() {
+  if (!tableView.tableName) return;
+  const filePath = await save({
+    defaultPath: `${tableView.tableName}.xlsx`,
+    filters: [{ name: "Excel", extensions: ["xlsx"] }],
+  });
+  if (!filePath) return;
+  exportLoading.value = true;
+  try {
+    const result = await invoke("export_tables_xlsx", {
+      tables: [tableView.tableName],
+      filePath,
+    });
+    showToast(`导出完成：${result.totalRows} 行`, "success");
+  } catch (e) {
+    showToast(`导出失败：${e}`, "error");
+  } finally {
+    exportLoading.value = false;
+  }
+}
+
+function openBatchExport() {
+  exportSelectedTables.clear();
+  exportFilter.value = "";
+  exportDialogOpen.value = true;
+}
+
+function toggleExportSelectAll() {
+  const visible = filteredExportTables.value;
+  const allSelected = visible.length > 0 && visible.every((t) => exportSelectedTables.has(t.table_name));
+  if (allSelected) {
+    visible.forEach((t) => exportSelectedTables.delete(t.table_name));
+  } else {
+    visible.forEach((t) => exportSelectedTables.add(t.table_name));
+  }
+}
+
+async function doBatchExport() {
+  if (exportSelectedTables.size === 0) return;
+  const filePath = await save({
+    defaultPath: "export.xlsx",
+    filters: [{ name: "Excel", extensions: ["xlsx"] }],
+  });
+  if (!filePath) return;
+  exportLoading.value = true;
+  try {
+    const result = await invoke("export_tables_xlsx", {
+      tables: [...exportSelectedTables],
+      filePath,
+    });
+    showToast(`导出完成：${result.tableCount} 张表，${result.totalRows} 行`, "success");
+    exportDialogOpen.value = false;
+  } catch (e) {
+    showToast(`导出失败：${e}`, "error");
+  } finally {
+    exportLoading.value = false;
+  }
 }
 
 function triggerImport() {
@@ -3410,8 +3515,10 @@ function escapeRegExp(str) {
           <button :class="['small-btn', 'edit-toggle-btn', { active: editMode }]"
             :disabled="!dbConnected" @click="onEditToggleClick"
             :title="editMode ? '退出编辑模式' : '进入编辑模式'">
-            {{ editMode ? '退出编辑' : '编辑' }}
+            {{ editMode ? '退出编辑(\`)' : '编辑(\`)' }}
           </button>
+          <button class="small-btn" :disabled="!dbConnected || exportLoading" @click="exportCurrentTable" title="导出当前表为 XLSX">导出(D)</button>
+          <button class="small-btn" :disabled="!dbConnected" @click="openBatchExport" title="批量导出多张表">批量导出</button>
           <button class="icon-btn" @click="closeTableDialog">✕</button>
         </div>
       </header>
@@ -3846,6 +3953,39 @@ function escapeRegExp(str) {
       <footer class="modal-footer">
         <button class="small-btn" @click="editUnsavedDialogOpen = false">继续编辑</button>
         <button class="primary-btn danger" @click="discardAndProceed">放弃更改</button>
+      </footer>
+    </section>
+  </div>
+
+  <!-- 批量导出弹窗 -->
+  <div v-if="exportDialogOpen" class="dialog-mask" @click.self="exportDialogOpen = false">
+    <section class="modal-card export-dialog">
+      <header class="modal-header">
+        <h3>批量导出</h3>
+        <button class="icon-btn" @click="exportDialogOpen = false">✕</button>
+      </header>
+      <div class="export-dialog-body">
+        <input v-model="exportFilter" type="text" class="export-filter-input" placeholder="搜索表名或备注..." />
+        <label class="export-select-all">
+          <input type="checkbox"
+            :checked="filteredExportTables.length > 0 && filteredExportTables.every(t => exportSelectedTables.has(t.table_name))"
+            @change="toggleExportSelectAll" />
+          全选 ({{ exportSelectedTables.size }}/{{ filteredExportTables.length }})
+        </label>
+        <div class="export-table-list">
+          <label v-for="t in filteredExportTables" :key="t.table_name" class="export-table-item">
+            <input type="checkbox" :checked="exportSelectedTables.has(t.table_name)"
+              @change="exportSelectedTables.has(t.table_name) ? exportSelectedTables.delete(t.table_name) : exportSelectedTables.add(t.table_name)" />
+            <span class="export-table-name">{{ t.table_name }}</span>
+            <span v-if="t.table_comment" class="export-table-comment">{{ t.table_comment }}</span>
+          </label>
+        </div>
+      </div>
+      <footer class="modal-footer">
+        <button class="small-btn" @click="exportDialogOpen = false">取消</button>
+        <button class="primary-btn" :disabled="exportSelectedTables.size === 0 || exportLoading" @click="doBatchExport">
+          {{ exportLoading ? '导出中...' : `导出 ${exportSelectedTables.size} 张表` }}
+        </button>
       </footer>
     </section>
   </div>
