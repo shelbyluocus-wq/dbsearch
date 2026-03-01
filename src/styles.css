@@ -1098,18 +1098,39 @@ mark {
 .table-content {
   flex: 1;
   min-height: 0;
-  overflow: auto;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.table-content-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .table-content-scale {
   --content-scale: 1;
+  position: absolute;
+  left: 0;
+  top: 0;
   width: calc(100% / var(--content-scale));
-  min-height: calc(100% / var(--content-scale));
   height: calc(100% / var(--content-scale));
   transform-origin: top left;
   transform: scale(var(--content-scale));
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+
+.table-content-scale > .schema-box {
+  flex-shrink: 0;
+}
+
+.table-content-scale > .schema-box > .section-body {
+  max-height: min(240px, 34vh);
+  overflow: auto;
 }
 
 .table-content-scale > .data-box {
@@ -1223,7 +1244,8 @@ mark {
 
 .form-grid input[type="text"],
 .form-grid input[type="password"],
-.form-grid input[type="number"] {
+.form-grid input[type="number"],
+.form-grid select {
   height: 36px;
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.1);

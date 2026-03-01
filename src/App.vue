@@ -14,7 +14,7 @@ const isPanelWindow = computed(() => !isPetWindow.value && !isMenuWindow.value);
 
 const settingsOpen = ref(false);
 const tableOpen = ref(false);
-const tableDetailView = ref("full");
+const tableDetailView = ref("hits");
 const tableFullscreen = ref(false);
 const schemaCollapsed = ref(true);
 const dataCollapsed = ref(false);
@@ -90,6 +90,7 @@ const config = reactive({
     always_on_top: true,
     auto_start: false,
     ui_scale: 1.0,
+    table_default_view: "hits",
     pet_locked: false,
     pet_position: null,
     idle_states: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
@@ -190,6 +191,7 @@ const settingsDraft = reactive({
   database: "",
   hotkey: "Ctrl+Shift+F",
   autoStart: false,
+  tableDefaultView: "hits",
   idleStates: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
   excludeTables: "^t_log_.*,^tmp_.*",
   perTableTimeoutSec: 10,
@@ -318,6 +320,10 @@ function normalizeUiScale(value) {
   if (!Number.isFinite(numeric)) return 1.0;
   const rounded = Math.round(numeric / UI_SCALE_STEP) * UI_SCALE_STEP;
   return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, Number(rounded.toFixed(1))));
+}
+
+function normalizeTableDefaultView(value) {
+  return String(value || "").toLowerCase() === "full" ? "full" : "hits";
 }
 
 function scheduleUiScalePersist() {
@@ -534,6 +540,7 @@ onMounted(async () => {
 
   applyTheme(themeId.value)
   await loadConfig();
+  tableDetailView.value = normalizeTableDefaultView(config.personal.table_default_view);
 
   if (isPanelWindow.value) {
     if (isTauriWindow && config.shared.db.host && config.shared.db.database) {
@@ -1085,6 +1092,7 @@ function openSettings() {
   settingsDraft.database = config.shared.db.database;
   settingsDraft.hotkey = normalizeHotkeyDisplay(config.personal.hotkey);
   settingsDraft.autoStart = config.personal.auto_start;
+  settingsDraft.tableDefaultView = normalizeTableDefaultView(config.personal.table_default_view);
   settingsDraft.idleStates = [...sanitizeIdleStates(config.personal.idle_states)];
   settingsDraft.excludeTables = (config.shared.search.exclude_tables || []).join(",");
   settingsDraft.perTableTimeoutSec = config.shared.search.per_table_timeout_sec;
@@ -1127,6 +1135,7 @@ async function saveSettings() {
 
   config.personal.hotkey = normalizeHotkeyDisplay(settingsDraft.hotkey.trim() || "Ctrl+Shift+F");
   config.personal.idle_states = sanitizeIdleStates(settingsDraft.idleStates);
+  config.personal.table_default_view = normalizeTableDefaultView(settingsDraft.tableDefaultView);
   if (isModifierOnlyHotkey(config.personal.hotkey)) {
     settingsMsg.value = "✗ 快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F";
     return;
@@ -1929,7 +1938,7 @@ async function openTable(tableName, rowIndex = null, columnName = null, hitConte
   clearColumnWidths();
   stopTableLayoutObserver();
   resultZoomOpen.value = false;
-  tableDetailView.value = "full";
+  tableDetailView.value = normalizeTableDefaultView(config.personal.table_default_view);
   schemaCollapsed.value = true;
   dataCollapsed.value = false;
   hitCollectToken += 1;
@@ -1945,6 +1954,9 @@ async function openTable(tableName, rowIndex = null, columnName = null, hitConte
   tableView.page = rowIndex !== null && rowIndex >= 0 ? Math.floor(rowIndex / tableView.pageSize) + 1 : 1;
   await loadTablePage({ resetFocus: true, clearHitCache: true });
   tableOpen.value = true;
+  if (tableDetailView.value === "hits") {
+    collectAllHitRows().catch(() => {});
+  }
   await startTableLayoutObserver();
   scheduleAdaptiveTablePageSize();
 }
@@ -1995,7 +2007,7 @@ function closeTableDialog() {
   stopTableLayoutObserver();
   exitTableFullscreen().catch(() => {});
   tableOpen.value = false;
-  tableDetailView.value = "full";
+  tableDetailView.value = normalizeTableDefaultView(config.personal.table_default_view);
   hitCollectToken += 1;
   allHitRows.value = [];
   allHitRowsLoading.value = false;
@@ -2015,6 +2027,7 @@ async function loadConfig() {
   }
   config.personal.idle_states = sanitizeIdleStates(config.personal.idle_states);
   config.personal.ui_scale = normalizeUiScale(config.personal.ui_scale);
+  config.personal.table_default_view = normalizeTableDefaultView(config.personal.table_default_view);
 }
 
 async function persistConfig() {
@@ -2401,6 +2414,7 @@ function escapeRegExp(str) {
       </section>
 
       <div class="table-content">
+      <div class="table-content-viewport">
       <div class="table-content-scale" :style="tableContentScaleStyle">
       <template v-if="tableDetailView === 'full'">
         <section class="schema-box">
@@ -2590,6 +2604,7 @@ function escapeRegExp(str) {
       </template>
       </div>
       </div>
+      </div>
     </section>
   </div>
 
@@ -2615,6 +2630,12 @@ function escapeRegExp(str) {
           <h4>系统设置</h4>
           <div class="form-grid">
             <label>快捷键<input v-model="settingsDraft.hotkey" type="text" readonly :placeholder="hotkeyPlaceholder" @keydown="onHotkeyInputKeydown" /></label>
+            <label>小窗口默认视图
+              <select v-model="settingsDraft.tableDefaultView">
+                <option value="hits">Tab 页面（只看命中）</option>
+                <option value="full">正常页面</option>
+              </select>
+            </label>
             <label><input v-model="settingsDraft.autoStart" type="checkbox" />开机自启</label>
           </div>
         </section>

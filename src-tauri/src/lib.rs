@@ -89,6 +89,7 @@ struct PersonalConfig {
     always_on_top: bool,
     auto_start: bool,
     ui_scale: f32,
+    table_default_view: String,
     pet_locked: bool,
     pet_position: Option<WindowPosition>,
     idle_states: Vec<String>,
@@ -101,6 +102,7 @@ impl Default for PersonalConfig {
             always_on_top: true,
             auto_start: false,
             ui_scale: 1.0,
+            table_default_view: "hits".into(),
             pet_locked: false,
             pet_position: None,
             idle_states: vec![
