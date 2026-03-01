@@ -1,4 +1,5 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
+use enigo::{Enigo, Keyboard, Settings};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
@@ -35,6 +36,7 @@ struct RuntimeState {
     config: AppConfig,
     panel_open_settings_pending: bool,
     registered_hotkey: Option<String>,
+    registered_quick_date_hotkey: Option<String>,
 }
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -583,7 +585,16 @@ async fn register_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
-    let previous = state.runtime.lock().await.registered_hotkey.clone();
+    let (previous, quick_date) = {
+        let rt = state.runtime.lock().await;
+        (
+            rt.registered_hotkey.clone(),
+            rt.registered_quick_date_hotkey.clone(),
+        )
+    };
+    if quick_date.as_deref() == Some(normalized.as_str()) {
+        return Err("主快捷键不能与日期快捷键重复".into());
+    }
     let manager = app.global_shortcut();
 
     if previous.as_deref() == Some(normalized.as_str())
@@ -603,6 +614,45 @@ async fn register_hotkey(
     }
 
     state.runtime.lock().await.registered_hotkey = Some(normalized.clone());
+    Ok(normalized)
+}
+
+#[tauri::command]
+async fn register_quick_date_hotkey(
+    hotkey: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let normalized = normalize_hotkey_for_plugin(&hotkey)?;
+    let (previous, panel_hotkey) = {
+        let rt = state.runtime.lock().await;
+        (
+            rt.registered_quick_date_hotkey.clone(),
+            rt.registered_hotkey.clone(),
+        )
+    };
+    if panel_hotkey.as_deref() == Some(normalized.as_str()) {
+        return Err("日期快捷键不能与主快捷键重复".into());
+    }
+    let manager = app.global_shortcut();
+
+    if previous.as_deref() == Some(normalized.as_str())
+        && manager.is_registered(normalized.as_str())
+    {
+        return Ok(normalized);
+    }
+
+    manager
+        .register(normalized.as_str())
+        .map_err(|e| format!("日期快捷键注册失败: {e}"))?;
+
+    if let Some(prev) = previous {
+        if prev != normalized {
+            let _ = manager.unregister(prev.as_str());
+        }
+    }
+
+    state.runtime.lock().await.registered_quick_date_hotkey = Some(normalized.clone());
     Ok(normalized)
 }
 
@@ -921,6 +971,14 @@ fn open_panel_from_global_shortcut(app: tauri::AppHandle) {
             }
         }
     });
+}
+
+fn input_today_date_globally() -> Result<(), String> {
+    let text = Local::now().format("%Y%m%d").to_string();
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| format!("failed to init input driver: {e}"))?;
+    enigo
+        .text(text.as_str())
+        .map_err(|e| format!("failed to input date: {e}"))
 }
 
 async fn search_table_data_in_db(
@@ -1325,8 +1383,31 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    if event.state == ShortcutState::Pressed {
+                .with_handler(|app, shortcut, event| {
+                    if event.state != ShortcutState::Pressed {
+                        return;
+                    }
+                    let triggered = match normalize_hotkey_for_plugin(shortcut.to_string().as_str()) {
+                        Ok(value) => value,
+                        Err(_) => return,
+                    };
+                    let state = app.state::<AppState>().inner().clone();
+                    let (panel_hotkey, quick_date_hotkey) = tauri::async_runtime::block_on(async {
+                        let rt = state.runtime.lock().await;
+                        (
+                            rt.registered_hotkey.clone(),
+                            rt.registered_quick_date_hotkey.clone(),
+                        )
+                    });
+
+                    if quick_date_hotkey.as_deref() == Some(triggered.as_str()) {
+                        if let Err(e) = input_today_date_globally() {
+                            eprintln!("failed to input quick date: {e}");
+                        }
+                        return;
+                    }
+
+                    if panel_hotkey.as_deref() == Some(triggered.as_str()) {
                         open_panel_from_global_shortcut(app.clone());
                     }
                 })
@@ -1337,7 +1418,10 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             let st = app.state::<AppState>().clone();
-            let loaded = load_config_from_disk(&app.handle()).unwrap_or_default();
+            let mut loaded = load_config_from_disk(&app.handle()).unwrap_or_default();
+            if loaded.personal.quick_date_hotkey.trim().is_empty() {
+                loaded.personal.quick_date_hotkey = "F9".into();
+            }
             let pet_position = loaded.personal.pet_position.clone();
             let registered_hotkey = match normalize_hotkey_for_plugin(&loaded.personal.hotkey) {
                 Ok(shortcut) => match app.global_shortcut().register(shortcut.as_str()) {
@@ -1352,11 +1436,33 @@ pub fn run() {
                     None
                 }
             };
+            let registered_quick_date_hotkey =
+                match normalize_hotkey_for_plugin(&loaded.personal.quick_date_hotkey) {
+                    Ok(shortcut) => {
+                        if registered_hotkey.as_deref() == Some(shortcut.as_str()) {
+                            eprintln!("quick date hotkey is same as main hotkey, skipped");
+                            None
+                        } else {
+                            match app.global_shortcut().register(shortcut.as_str()) {
+                                Ok(()) => Some(shortcut),
+                                Err(e) => {
+                                    eprintln!("failed to register quick date hotkey: {e}");
+                                    None
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("invalid quick date hotkey config: {e}");
+                        None
+                    }
+                };
             tauri::async_runtime::block_on(async move {
                 let mut rt = st.runtime.lock().await;
                 rt.config = loaded;
                 rt.schema_cache = mock_schema_cache();
                 rt.registered_hotkey = registered_hotkey;
+                rt.registered_quick_date_hotkey = registered_quick_date_hotkey;
             });
 
             if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -1384,6 +1490,7 @@ pub fn run() {
             get_config,
             save_config,
             register_hotkey,
+            register_quick_date_hotkey,
             show_panel_window,
             hide_panel_window,
             toggle_panel_window,

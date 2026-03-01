@@ -1393,11 +1393,6 @@ function onTableTabsWheel(event) {
   const maxScroll = el.scrollWidth - el.clientWidth;
   if (maxScroll <= 0) return;
 
-  const rect = el.getBoundingClientRect();
-  const zoneHeight = 10;
-  const pointerInScrollbarZone = event.clientY >= rect.bottom - zoneHeight;
-  if (!pointerInScrollbarZone) return;
-
   if (event.deltaY === 0) return;
   event.preventDefault();
   el.scrollLeft += event.deltaY;
@@ -1407,7 +1402,7 @@ function onWindowKeydown(event) {
   const lower = String(event.key || "").toLowerCase();
   const withPrimary = event.ctrlKey || event.metaKey;
 
-  if (!event.repeat && isEventMatchingHotkey(event, config.personal.quick_date_hotkey)) {
+  if (!isTauriWindow && !event.repeat && isEventMatchingHotkey(event, config.personal.quick_date_hotkey)) {
     if (!resolveEditableTarget(document.activeElement)) return;
     event.preventDefault();
     insertTodayDateToken();
@@ -1762,6 +1757,7 @@ async function testConnect() {
 
 async function saveSettings() {
   const previousHotkey = config.personal.hotkey;
+  const previousQuickDateHotkey = config.personal.quick_date_hotkey;
   config.shared.db.host = settingsDraft.host.trim();
   config.shared.db.port = Number(settingsDraft.port) || 3306;
   config.shared.db.username = settingsDraft.username.trim();
@@ -1780,6 +1776,10 @@ async function saveSettings() {
     settingsMsg.value = "✗ 日期快捷键必须包含至少一个非修饰键，例如 F9";
     return;
   }
+  if (config.personal.quick_date_hotkey === config.personal.hotkey) {
+    settingsMsg.value = "✗ 日期快捷键不能与主快捷键重复";
+    return;
+  }
   config.shared.search.exclude_tables = settingsDraft.excludeTables
     .split(",")
     .map((item) => item.trim())
@@ -1793,6 +1793,16 @@ async function saveSettings() {
     } catch (error) {
       config.personal.hotkey = previousHotkey;
       settingsMsg.value = `✗ 快捷键注册失败：${String(error)}`;
+      return;
+    }
+
+    try {
+      await invoke("register_quick_date_hotkey", { hotkey: config.personal.quick_date_hotkey });
+    } catch (error) {
+      config.personal.quick_date_hotkey = previousQuickDateHotkey;
+      config.personal.hotkey = previousHotkey;
+      await invoke("register_hotkey", { hotkey: previousHotkey }).catch(() => {});
+      settingsMsg.value = `✗ 日期快捷键注册失败：${String(error)}`;
       return;
     }
   }

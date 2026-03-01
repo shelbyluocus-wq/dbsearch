@@ -1309,6 +1309,18 @@ mark {
   padding-right: 56px;
 }
 
+.table-command-item .badge {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  font-size: 11px;
+  color: var(--accent-text);
+  background: var(--accent-tint);
+  border: 1px solid var(--accent-line);
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+
 .table-find-bar input {
   flex: 1;
   min-width: 0;
@@ -2197,10 +2209,12 @@ mark {
 }
 [data-theme="midnight"] .table-command-palette {
   background: rgba(15, 23, 42, 0.99);
+  color-scheme: dark;
 }
 [data-theme="midnight"] .table-command-header {
   background: rgba(15, 23, 42, 0.95);
   border-bottom-color: rgba(255, 255, 255, 0.08);
+  color: #cbd5e1;
 }
 [data-theme="midnight"] .table-command-input-wrap {
   background: rgba(30, 41, 59, 0.9);
@@ -2209,6 +2223,31 @@ mark {
 [data-theme="midnight"] .table-command-input-wrap input {
   background: rgba(15, 23, 42, 0.92);
   border-color: rgba(34, 211, 238, 0.34);
+  color: #e2e8f0;
+}
+[data-theme="midnight"] .table-command-input-wrap input::placeholder {
+  color: #94a3b8;
+}
+[data-theme="midnight"] .table-command-main {
+  color: #f1f5f9;
+}
+[data-theme="midnight"] .table-command-sub {
+  color: #94a3b8;
+}
+[data-theme="midnight"] .table-command-item .badge {
+  color: #67e8f9;
+  border-color: rgba(34, 211, 238, 0.38);
+  background: rgba(34, 211, 238, 0.18);
+}
+[data-theme="midnight"] .table-command-list::-webkit-scrollbar-track {
+  background: rgba(15, 23, 42, 0.76);
+}
+[data-theme="midnight"] .table-command-list::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.4);
+  border-color: rgba(15, 23, 42, 0.76);
+}
+[data-theme="midnight"] .table-command-list::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.62);
 }
 [data-theme="midnight"] .data-table th {
   background: rgba(30, 41, 59, 0.98);
