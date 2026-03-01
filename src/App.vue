@@ -131,16 +131,27 @@ const petIdleActive = ref(false);
 const currentIdleState = ref("float_breathe");
 const petIdlePreviewing = ref(false);
 const petFound = ref(false);
+const tableModalRef = ref(null);
+const tableGridWrapRef = ref(null);
+const tableFullscreenMode = ref("none");
+const tableFullscreenRestoreMaximized = ref(false);
 let idleTimer = null;
 let idleStateTimer = null;
 let resetIdleHandler = null;
 const columnWidthMap = reactive({});
 let columnResizeState = null;
+let tableLayoutObserver = null;
+let tableLayoutRaf = 0;
+let tablePageSizeAdjustToken = 0;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const IDLE_STATE_CHANGE_MS = 7 * 1000;
 const UI_SCALE_MIN = 0.8;
 const UI_SCALE_MAX = 1.4;
 const UI_SCALE_STEP = 0.1;
+const TABLE_PAGE_SIZE_MIN = 1;
+const TABLE_PAGE_SIZE_MAX = 200;
+const TABLE_ROW_HEIGHT_FALLBACK = 28;
+const TABLE_HEADER_HEIGHT_FALLBACK = 32;
 const ALLOWED_IDLE_STATES = ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"];
 
 const tableView = reactive({
@@ -678,6 +689,7 @@ onBeforeUnmount(() => {
   clearTimeout(idleStateTimer);
   clearTimeout(copyToastTimer);
   clearTimeout(uiScalePersistTimer);
+  stopTableLayoutObserver();
   stopColumnResize();
 });
 
@@ -698,8 +710,12 @@ watch(
 watch(tableDetailView, (view) => {
   if (!tableOpen.value) return;
   if (view === "hits") {
+    stopTableLayoutObserver();
     collectAllHitRows().catch(() => {});
+  } else {
+    startTableLayoutObserver().catch(() => {});
   }
+  scheduleAdaptiveTablePageSize();
 });
 
 watch(slashCandidates, (items) => {
@@ -720,6 +736,36 @@ watch(slashActiveIndex, async () => {
 watch(tableFindKeyword, () => {
   runTableFind().catch(() => {});
 });
+
+watch(
+  () => config.personal.ui_scale,
+  () => {
+    scheduleAdaptiveTablePageSize();
+  },
+);
+
+watch(
+  () => [tableOpen.value, dataCollapsed.value, schemaCollapsed.value, tableFullscreen.value],
+  ([open]) => {
+    if (!open) {
+      stopTableLayoutObserver();
+      return;
+    }
+    if (tableDetailView.value === "full" && !dataCollapsed.value) {
+      startTableLayoutObserver().catch(() => {});
+    } else {
+      stopTableLayoutObserver();
+    }
+    scheduleAdaptiveTablePageSize();
+  },
+);
+
+watch(
+  () => [tableView.rows.length, tableView.columns.length, tableView.page],
+  () => {
+    scheduleAdaptiveTablePageSize();
+  },
+);
 
 watch(selectedTables, () => {
   if (!isPanelWindow.value) return;
@@ -742,6 +788,7 @@ function bindPanelListeners() {
   window.addEventListener("click", onWindowClick);
   window.addEventListener("keydown", onWindowKeydown);
   window.addEventListener("wheel", onWindowWheel, { passive: false });
+  window.addEventListener("resize", onWindowResize);
   document.addEventListener("dragover", onDocDragover);
   document.addEventListener("drop", onDocDrop);
 }
@@ -750,6 +797,7 @@ function detachPanelListeners() {
   window.removeEventListener("click", onWindowClick);
   window.removeEventListener("keydown", onWindowKeydown);
   window.removeEventListener("wheel", onWindowWheel);
+  window.removeEventListener("resize", onWindowResize);
   document.removeEventListener("dragover", onDocDragover);
   document.removeEventListener("drop", onDocDrop);
 }
@@ -772,6 +820,10 @@ function onWindowWheel(event) {
   event.preventDefault();
   const delta = event.deltaY < 0 ? UI_SCALE_STEP : -UI_SCALE_STEP;
   setUiScale(config.personal.ui_scale + delta, { persist: true });
+}
+
+function onWindowResize() {
+  scheduleAdaptiveTablePageSize();
 }
 
 function onWindowKeydown(event) {
@@ -1140,13 +1192,74 @@ function closeResultZoom() {
 
 function toggleTableDetailView() {
   tableDetailView.value = tableDetailView.value === "full" ? "hits" : "full";
+  if (tableDetailView.value === "full") {
+    startTableLayoutObserver().catch(() => {});
+  } else {
+    stopTableLayoutObserver();
+  }
+  scheduleAdaptiveTablePageSize();
 }
 
-function toggleTableFullscreen() {
-  tableFullscreen.value = !tableFullscreen.value;
-  if (isTauriWindow && isPanelWindow.value) {
-    getCurrentWindow().setFullscreen(tableFullscreen.value).catch(() => {});
+function resetTableFullscreenTracking() {
+  tableFullscreenMode.value = "none";
+  tableFullscreenRestoreMaximized.value = false;
+}
+
+async function enterTableFullscreen() {
+  tableFullscreen.value = true;
+  if (!isTauriWindow || !isPanelWindow.value) {
+    resetTableFullscreenTracking();
+    return;
   }
+
+  const appWindow = getCurrentWindow();
+  tableFullscreenRestoreMaximized.value = await appWindow.isMaximized().catch(() => false);
+
+  try {
+    await appWindow.setFullscreen(true);
+    tableFullscreenMode.value = "system";
+    return;
+  } catch {
+    // Fall back to maximize if system fullscreen is unavailable.
+  }
+
+  if (!tableFullscreenRestoreMaximized.value) {
+    await appWindow.maximize().catch(() => {});
+  }
+  tableFullscreenMode.value = "maximize";
+}
+
+async function exitTableFullscreen() {
+  if (!tableFullscreen.value && tableFullscreenMode.value === "none") {
+    return;
+  }
+
+  if (!isTauriWindow || !isPanelWindow.value) {
+    tableFullscreen.value = false;
+    resetTableFullscreenTracking();
+    return;
+  }
+
+  const appWindow = getCurrentWindow();
+  if (tableFullscreenMode.value === "system") {
+    await appWindow.setFullscreen(false).catch(() => {});
+  } else if (tableFullscreenMode.value === "maximize") {
+    if (!tableFullscreenRestoreMaximized.value) {
+      await appWindow.unmaximize().catch(() => {});
+    }
+  }
+
+  tableFullscreen.value = false;
+  resetTableFullscreenTracking();
+}
+
+async function toggleTableFullscreen() {
+  if (tableFullscreen.value) {
+    await exitTableFullscreen();
+  } else {
+    await enterTableFullscreen();
+  }
+  scheduleAdaptiveTablePageSize();
 }
 
 function getTargetColumns(columnNames = null) {
@@ -1258,9 +1371,7 @@ function clearTableFindFocus() {
   tableFindFocus.columnName = "";
 }
 
-function resetTableFindState() {
-  tableFindOpen.value = false;
-  tableFindKeyword.value = "";
+function invalidateTableFindIndex() {
   tableFindIndexing.value = false;
   tableFindMatches.value = [];
   tableFindCursor.value = -1;
@@ -1269,6 +1380,12 @@ function resetTableFindState() {
   tableFindCacheVersion.value += 1;
   tableFindIndexPromise = null;
   clearTableFindFocus();
+}
+
+function resetTableFindState() {
+  tableFindOpen.value = false;
+  tableFindKeyword.value = "";
+  invalidateTableFindIndex();
 }
 
 function openTableFind() {
@@ -1283,9 +1400,94 @@ function openTableFind() {
 function closeTableFind() {
   tableFindOpen.value = false;
   tableFindKeyword.value = "";
-  tableFindMatches.value = [];
-  tableFindCursor.value = -1;
-  clearTableFindFocus();
+  invalidateTableFindIndex();
+}
+
+function shouldAutoAdjustTablePageSize() {
+  return tableOpen.value && tableDetailView.value === "full" && !dataCollapsed.value && !!tableView.tableName;
+}
+
+function readAdaptiveTablePageSize() {
+  if (!shouldAutoAdjustTablePageSize()) return null;
+  const wrap = tableGridWrapRef.value;
+  if (!(wrap instanceof HTMLElement)) return null;
+
+  const tableEl = wrap.querySelector("table.data-table");
+  if (!(tableEl instanceof HTMLElement)) return null;
+
+  const headerRow = tableEl.querySelector("thead tr");
+  const bodyRow = tableEl.querySelector("tbody tr");
+  const headerHeight = Math.max(
+    1,
+    Math.round(headerRow?.getBoundingClientRect?.().height || TABLE_HEADER_HEIGHT_FALLBACK),
+  );
+  const rowHeight = Math.max(
+    1,
+    Math.round(bodyRow?.getBoundingClientRect?.().height || TABLE_ROW_HEIGHT_FALLBACK),
+  );
+  const visibleHeight = Math.round(wrap.clientHeight || 0);
+  const bodyVisible = visibleHeight - headerHeight;
+  if (bodyVisible <= 0) return null;
+  const rows = Math.floor(bodyVisible / rowHeight);
+  if (!Number.isFinite(rows) || rows <= 0) return null;
+  return Math.max(TABLE_PAGE_SIZE_MIN, Math.min(TABLE_PAGE_SIZE_MAX, rows));
+}
+
+async function applyAdaptiveTablePageSize() {
+  const nextPageSize = readAdaptiveTablePageSize();
+  if (!nextPageSize || nextPageSize === tableView.pageSize) return;
+  const token = ++tablePageSizeAdjustToken;
+  const anchorGlobalStart = Math.max(0, (tableView.page - 1) * tableView.pageSize);
+  tableView.pageSize = nextPageSize;
+  const expectedTotalPages = Math.max(1, Math.ceil(tableView.totalRows / tableView.pageSize));
+  tableView.page = Math.min(expectedTotalPages, Math.floor(anchorGlobalStart / tableView.pageSize) + 1);
+  invalidateTableFindIndex();
+  await loadTablePage({ resetFocus: true, clearHitCache: true });
+  if (token !== tablePageSizeAdjustToken) return;
+  if (tableFindOpen.value && tableFindKeyword.value.trim()) {
+    runTableFind().catch(() => {});
+  }
+}
+
+function scheduleAdaptiveTablePageSize() {
+  if (tableLayoutRaf) {
+    cancelAnimationFrame(tableLayoutRaf);
+  }
+  tableLayoutRaf = requestAnimationFrame(() => {
+    tableLayoutRaf = 0;
+    nextTick(() => {
+      applyAdaptiveTablePageSize().catch(() => {});
+    });
+  });
+}
+
+function stopTableLayoutObserver() {
+  if (tableLayoutObserver) {
+    tableLayoutObserver.disconnect();
+    tableLayoutObserver = null;
+  }
+  if (tableLayoutRaf) {
+    cancelAnimationFrame(tableLayoutRaf);
+    tableLayoutRaf = 0;
+  }
+}
+
+async function startTableLayoutObserver() {
+  stopTableLayoutObserver();
+  if (!shouldAutoAdjustTablePageSize()) return;
+  if (typeof ResizeObserver === "undefined") return;
+  await nextTick();
+
+  const targets = [tableModalRef.value, tableGridWrapRef.value].filter(
+    (item) => item instanceof HTMLElement,
+  );
+  if (targets.length === 0) return;
+
+  tableLayoutObserver = new ResizeObserver(() => {
+    scheduleAdaptiveTablePageSize();
+  });
+  targets.forEach((target) => tableLayoutObserver.observe(target));
+  scheduleAdaptiveTablePageSize();
 }
 
 async function ensureTableFindIndex() {
@@ -1725,6 +1927,7 @@ function toggleDataCollapsed() {
 async function openTable(tableName, rowIndex = null, columnName = null, hitContext = {}) {
   resetTableFindState();
   clearColumnWidths();
+  stopTableLayoutObserver();
   resultZoomOpen.value = false;
   tableDetailView.value = "full";
   schemaCollapsed.value = true;
@@ -1734,10 +1937,7 @@ async function openTable(tableName, rowIndex = null, columnName = null, hitConte
   allHitRowsLoading.value = false;
   tableView.hitNavCursor = -1;
   tableView.focusedHitLocalIndex = null;
-  if (tableFullscreen.value && isTauriWindow && isPanelWindow.value) {
-    getCurrentWindow().setFullscreen(false).catch(() => {});
-  }
-  tableFullscreen.value = false;
+  await exitTableFullscreen();
   tableView.tableName = tableName;
   tableView.hitRowIndex = rowIndex;
   tableView.hitColumn = columnName;
@@ -1745,6 +1945,8 @@ async function openTable(tableName, rowIndex = null, columnName = null, hitConte
   tableView.page = rowIndex !== null && rowIndex >= 0 ? Math.floor(rowIndex / tableView.pageSize) + 1 : 1;
   await loadTablePage({ resetFocus: true, clearHitCache: true });
   tableOpen.value = true;
+  await startTableLayoutObserver();
+  scheduleAdaptiveTablePageSize();
 }
 
 async function loadTablePage(options = {}) {
@@ -1790,12 +1992,10 @@ async function nextPage() {
 function closeTableDialog() {
   resetTableFindState();
   clearColumnWidths();
-  if (tableFullscreen.value && isTauriWindow && isPanelWindow.value) {
-    getCurrentWindow().setFullscreen(false).catch(() => {});
-  }
+  stopTableLayoutObserver();
+  exitTableFullscreen().catch(() => {});
   tableOpen.value = false;
   tableDetailView.value = "full";
-  tableFullscreen.value = false;
   hitCollectToken += 1;
   allHitRows.value = [];
   allHitRowsLoading.value = false;
@@ -1988,6 +2188,7 @@ function escapeRegExp(str) {
         </div>
       </header>
 
+      <div class="panel-content-viewport">
       <div class="panel-content-scale" :style="contentScaleStyle">
       <section class="search-panel">
         <div class="search-input-wrap">
@@ -2081,6 +2282,7 @@ function escapeRegExp(str) {
         </section>
       </div>
       </div>
+      </div>
       <div class="panel-footer">
         <div class="theme-switcher">
           <button
@@ -2172,7 +2374,7 @@ function escapeRegExp(str) {
   </div>
 
   <div v-if="tableOpen" class="dialog-mask" @mousedown.self="closeTableDialog">
-    <section :class="['modal-card', 'wide', 'table-modal', { fullscreen: tableFullscreen }]">
+    <section ref="tableModalRef" :class="['modal-card', 'wide', 'table-modal', { fullscreen: tableFullscreen }]">
       <header class="modal-header" @pointerdown="panelHeaderPointerDown">
         <div class="modal-title-row" @pointerdown.stop>
           <h3
@@ -2258,7 +2460,7 @@ function escapeRegExp(str) {
               </div>
             </div>
 
-            <div class="grid-wrap">
+            <div ref="tableGridWrapRef" class="grid-wrap">
               <table class="data-table">
                 <thead>
                   <tr>
