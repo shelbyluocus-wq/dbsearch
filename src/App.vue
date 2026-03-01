@@ -113,10 +113,18 @@ const selectedTables = ref([]);
 const slashModeOpen = ref(false);
 const slashQuery = ref("");
 const slashActiveIndex = ref(0);
+const tableTabs = ref([]);
+const activeTableTabId = ref("");
+const tableCommandOpen = ref(false);
+const tableCommandQuery = ref("");
+const tableCommandActiveIndex = ref(0);
+const tableCommandSlashMode = ref(false);
 let debounceTimer = null;
 let currentSearchToken = 0;
 let hitCollectToken = 0;
 let tableFindIndexPromise = null;
+let tableTabIdSeed = 0;
+let tableTabRestoring = false;
 let unlistenProgress = null;
 let unlistenPanelOpenSettings = null;
 let unlistenPetLockChanged = null;
@@ -154,6 +162,8 @@ const TABLE_PAGE_SIZE_MAX = 200;
 const TABLE_ROW_HEIGHT_FALLBACK = 28;
 const TABLE_HEADER_HEIGHT_FALLBACK = 32;
 const ALLOWED_IDLE_STATES = ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"];
+const TABLE_TAB_LIMIT = 8;
+const TABLE_COMMAND_LIMIT = 12;
 
 const tableView = reactive({
   tableName: "",
@@ -255,6 +265,39 @@ const filteredResults = computed(() => {
     ];
   }
 });
+const tableSwitchCandidates = computed(() => {
+  const seen = new Set();
+  const out = [];
+  for (const item of filteredResults.value) {
+    const tableName = String(item?.table_name || "").trim();
+    if (!tableName) continue;
+    const key = tableName.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(tableName);
+  }
+  return out;
+});
+const tableCommandCandidates = computed(() => {
+  const query = tableCommandQuery.value.trim().toLowerCase();
+  const base = Array.isArray(tableOptions.value) ? tableOptions.value : [];
+  if (!query) return base.slice(0, TABLE_COMMAND_LIMIT);
+  const starts = base.filter((item) => item.table_name.toLowerCase().startsWith(query));
+  const includes = base.filter(
+    (item) =>
+      !item.table_name.toLowerCase().startsWith(query) &&
+      item.table_name.toLowerCase().includes(query),
+  );
+  const comments = base.filter(
+    (item) =>
+      !item.table_name.toLowerCase().includes(query) &&
+      String(item.table_comment || "").toLowerCase().includes(query),
+  );
+  return [...starts, ...includes, ...comments].slice(0, TABLE_COMMAND_LIMIT);
+});
+const tableCommandHint = computed(() =>
+  tableCommandSlashMode.value ? "Slash 模式 / 选择表" : "Ctrl+P 输入表名，Enter 打开",
+);
 const totalPages = computed(() => Math.max(1, Math.ceil(tableView.totalRows / tableView.pageSize)));
 const resultZoomTitle = computed(() => {
   if (resultZoomType.value === "table") return "表名匹配";
@@ -533,6 +576,413 @@ function setDetailHitContext({ source = "none", columns = [], terms = [], extern
   detailHitContext.externalHitCount = Number(externalHitCount) || 0;
 }
 
+function normalizeHitContext(context = {}) {
+  return {
+    source: String(context?.source || "none"),
+    columns: [...new Set((Array.isArray(context?.columns) ? context.columns : []).filter(Boolean))],
+    terms: sanitizeTerms(context?.terms),
+    externalHitCount: Number(context?.externalHitCount) || 0,
+  };
+}
+
+function cloneRows(rows) {
+  return Array.isArray(rows) ? rows.map((row) => ({ ...(row || {}) })) : [];
+}
+
+function cloneColumns(columns) {
+  return Array.isArray(columns) ? columns.map((column) => ({ ...(column || {}) })) : [];
+}
+
+function cloneFindEntries(entries) {
+  return Array.isArray(entries) ? entries.map((item) => ({ ...(item || {}) })) : [];
+}
+
+function cloneHitRows(rows) {
+  return Array.isArray(rows)
+    ? rows.map((item) => ({
+        ...(item || {}),
+        row: { ...(item?.row || {}) },
+      }))
+    : [];
+}
+
+function cloneTableFindFocus(input = tableFindFocus) {
+  return {
+    type: String(input?.type || "none"),
+    schemaKey: String(input?.schemaKey || ""),
+    page: Number(input?.page) || 0,
+    localIndex: input?.localIndex ?? null,
+    columnName: String(input?.columnName || ""),
+  };
+}
+
+function cloneColumnWidthMap(input = columnWidthMap) {
+  const out = {};
+  Object.entries(input || {}).forEach(([key, value]) => {
+    const width = Number(value);
+    if (Number.isFinite(width) && width > 0) out[key] = width;
+  });
+  return out;
+}
+
+function nextTableTabId() {
+  tableTabIdSeed += 1;
+  return `table-tab-${tableTabIdSeed}`;
+}
+
+function createLiveTableSnapshot({ id, tableName } = {}) {
+  return {
+    id: id || nextTableTabId(),
+    tableName: tableName || tableView.tableName,
+    tableComment: tableView.tableComment,
+    columns: cloneColumns(tableView.columns),
+    rows: cloneRows(tableView.rows),
+    page: tableView.page,
+    pageSize: tableView.pageSize,
+    totalRows: tableView.totalRows,
+    hitRowIndex: tableView.hitRowIndex,
+    hitColumn: tableView.hitColumn,
+    hitNavCursor: tableView.hitNavCursor,
+    focusedHitLocalIndex: tableView.focusedHitLocalIndex,
+    tableDetailView: tableDetailView.value,
+    tableFullscreen: tableFullscreen.value,
+    schemaCollapsed: schemaCollapsed.value,
+    dataCollapsed: dataCollapsed.value,
+    tableFind: {
+      open: tableFindOpen.value,
+      keyword: tableFindKeyword.value,
+      indexing: tableFindIndexing.value,
+      matches: cloneFindEntries(tableFindMatches.value),
+      cursor: tableFindCursor.value,
+      index: cloneFindEntries(tableFindIndex.value),
+      table: tableFindTable.value,
+      cacheVersion: tableFindCacheVersion.value,
+      focus: cloneTableFindFocus(tableFindFocus),
+    },
+    detailHitContext: normalizeHitContext(detailHitContext),
+    allHitRows: cloneHitRows(allHitRows.value),
+    allHitRowsLoading: allHitRowsLoading.value,
+    columnWidthMap: cloneColumnWidthMap(columnWidthMap),
+  };
+}
+
+function createNewTableSnapshot(tableName, rowIndex = null, columnName = null, hitContext = {}) {
+  const pageSize = Math.max(TABLE_PAGE_SIZE_MIN, Number(tableView.pageSize) || 50);
+  const normalizedHit = normalizeHitContext(hitContext);
+  return {
+    id: nextTableTabId(),
+    tableName,
+    tableComment: "",
+    columns: [],
+    rows: [],
+    page: rowIndex !== null && rowIndex >= 0 ? Math.floor(rowIndex / pageSize) + 1 : 1,
+    pageSize,
+    totalRows: 0,
+    hitRowIndex: rowIndex,
+    hitColumn: columnName,
+    hitNavCursor: -1,
+    focusedHitLocalIndex: null,
+    tableDetailView: normalizeTableDefaultView(config.personal.table_default_view),
+    tableFullscreen: false,
+    schemaCollapsed: true,
+    dataCollapsed: false,
+    tableFind: {
+      open: false,
+      keyword: "",
+      indexing: false,
+      matches: [],
+      cursor: -1,
+      index: [],
+      table: "",
+      cacheVersion: 0,
+      focus: cloneTableFindFocus(),
+    },
+    detailHitContext: normalizedHit,
+    allHitRows: [],
+    allHitRowsLoading: false,
+    columnWidthMap: {},
+  };
+}
+
+function applyColumnWidthMap(nextMap = {}) {
+  clearColumnWidths();
+  Object.entries(nextMap || {}).forEach(([key, value]) => {
+    const width = Number(value);
+    if (Number.isFinite(width) && width > 0) {
+      columnWidthMap[key] = width;
+    }
+  });
+}
+
+function restoreLiveStateFromTableSnapshot(tab) {
+  if (!tab) return;
+  tableTabRestoring = true;
+  tableDetailView.value = normalizeTableDefaultView(tab.tableDetailView);
+  schemaCollapsed.value = !!tab.schemaCollapsed;
+  dataCollapsed.value = !!tab.dataCollapsed;
+  tableView.tableName = String(tab.tableName || "");
+  tableView.tableComment = String(tab.tableComment || "");
+  tableView.columns = cloneColumns(tab.columns);
+  tableView.rows = cloneRows(tab.rows);
+  tableView.page = Number(tab.page) || 1;
+  tableView.pageSize = Math.max(TABLE_PAGE_SIZE_MIN, Number(tab.pageSize) || 50);
+  tableView.totalRows = Number(tab.totalRows) || 0;
+  tableView.hitRowIndex = tab.hitRowIndex ?? null;
+  tableView.hitColumn = tab.hitColumn ?? null;
+  tableView.hitNavCursor = Number(tab.hitNavCursor ?? -1);
+  tableView.focusedHitLocalIndex = tab.focusedHitLocalIndex ?? null;
+  tableFindOpen.value = !!tab.tableFind?.open;
+  tableFindKeyword.value = String(tab.tableFind?.keyword || "");
+  tableFindIndexing.value = false;
+  tableFindMatches.value = cloneFindEntries(tab.tableFind?.matches);
+  tableFindCursor.value = Number(tab.tableFind?.cursor ?? -1);
+  tableFindIndex.value = cloneFindEntries(tab.tableFind?.index);
+  tableFindTable.value = String(tab.tableFind?.table || tab.tableName || "");
+  tableFindCacheVersion.value = Math.max(
+    Number(tab.tableFind?.cacheVersion) || 0,
+    Date.now(),
+  );
+  tableFindIndexPromise = null;
+  const focus = cloneTableFindFocus(tab.tableFind?.focus || {});
+  tableFindFocus.type = focus.type;
+  tableFindFocus.schemaKey = focus.schemaKey;
+  tableFindFocus.page = focus.page;
+  tableFindFocus.localIndex = focus.localIndex;
+  tableFindFocus.columnName = focus.columnName;
+  setDetailHitContext(tab.detailHitContext || {});
+  allHitRows.value = cloneHitRows(tab.allHitRows);
+  allHitRowsLoading.value = !!tab.allHitRowsLoading;
+  applyColumnWidthMap(tab.columnWidthMap || {});
+  tableTabRestoring = false;
+}
+
+function snapshotActiveTableTab() {
+  if (!tableOpen.value || !activeTableTabId.value || tableTabRestoring) return;
+  const index = tableTabs.value.findIndex((item) => item.id === activeTableTabId.value);
+  if (index < 0) return;
+  const current = tableTabs.value[index];
+  tableTabs.value[index] = createLiveTableSnapshot({
+    id: current.id,
+    tableName: current.tableName,
+  });
+}
+
+async function syncTableFullscreenForSwitch(targetFullscreen) {
+  if (targetFullscreen) {
+    if (!tableFullscreen.value) {
+      await enterTableFullscreen();
+    }
+  } else if (tableFullscreen.value) {
+    await exitTableFullscreen();
+  }
+}
+
+async function activateTableTab(tabId, { skipSnapshot = false } = {}) {
+  const next = tableTabs.value.find((item) => item.id === tabId);
+  if (!next) return;
+  if (activeTableTabId.value === tabId) return;
+  if (!skipSnapshot) {
+    snapshotActiveTableTab();
+  }
+  hitCollectToken += 1;
+  activeTableTabId.value = next.id;
+  const targetFullscreen = !!next.tableFullscreen;
+  restoreLiveStateFromTableSnapshot(next);
+  tableOpen.value = true;
+  await syncTableFullscreenForSwitch(targetFullscreen);
+  if (tableDetailView.value === "hits" && allHitRows.value.length === 0 && tableView.totalRows > 0) {
+    collectAllHitRows().catch(() => {});
+  }
+  if (tableDetailView.value === "full" && !dataCollapsed.value) {
+    startTableLayoutObserver().catch(() => {});
+  } else {
+    stopTableLayoutObserver();
+  }
+  scheduleAdaptiveTablePageSize();
+}
+
+async function openOrActivateTableTab(tableName, rowIndex = null, columnName = null, hitContext = {}) {
+  const normalizedName = String(tableName || "").trim();
+  if (!normalizedName) return;
+
+  const exists = tableTabs.value.find(
+    (item) => item.tableName.toLowerCase() === normalizedName.toLowerCase(),
+  );
+  if (exists) {
+    await activateTableTab(exists.id);
+    return;
+  }
+
+  if (tableTabs.value.length >= TABLE_TAB_LIMIT) {
+    summaryText.value = `最多只能同时打开 ${TABLE_TAB_LIMIT} 个表标签`;
+    showCopyToast(`最多打开 ${TABLE_TAB_LIMIT} 个标签`, "error");
+    return;
+  }
+
+  snapshotActiveTableTab();
+  hitCollectToken += 1;
+  const nextTab = createNewTableSnapshot(normalizedName, rowIndex, columnName, hitContext);
+  tableTabs.value.push(nextTab);
+  activeTableTabId.value = nextTab.id;
+
+  resultZoomOpen.value = false;
+  restoreLiveStateFromTableSnapshot(nextTab);
+  tableOpen.value = true;
+  await syncTableFullscreenForSwitch(false);
+  await loadTablePage({ resetFocus: true, clearHitCache: true });
+  if (tableDetailView.value === "hits") {
+    collectAllHitRows().catch(() => {});
+  }
+  await startTableLayoutObserver();
+  scheduleAdaptiveTablePageSize();
+  snapshotActiveTableTab();
+}
+
+async function switchTableByStep(step = 1) {
+  if (!tableOpen.value) return;
+  const candidates = tableSwitchCandidates.value;
+  if (candidates.length === 0) {
+    summaryText.value = "当前结果中无可切换表";
+    return;
+  }
+  const current = String(tableView.tableName || "").toLowerCase();
+  const delta = step >= 0 ? 1 : -1;
+  const currentIndex = candidates.findIndex((name) => name.toLowerCase() === current);
+  const seed = currentIndex >= 0 ? currentIndex : delta > 0 ? -1 : 0;
+  const nextIndex = ((seed + delta) % candidates.length + candidates.length) % candidates.length;
+  await openOrActivateTableTab(candidates[nextIndex]);
+}
+
+async function closeTableTab(tabId) {
+  const index = tableTabs.value.findIndex((item) => item.id === tabId);
+  if (index < 0) return;
+
+  snapshotActiveTableTab();
+  const wasActive = activeTableTabId.value === tabId;
+  tableTabs.value.splice(index, 1);
+
+  if (tableTabs.value.length === 0) {
+    closeTableDialog();
+    return;
+  }
+
+  if (!wasActive) return;
+  const nextIndex = Math.min(index, tableTabs.value.length - 1);
+  const nextTab = tableTabs.value[nextIndex];
+  if (!nextTab) {
+    closeTableDialog();
+    return;
+  }
+  await activateTableTab(nextTab.id, { skipSnapshot: true });
+}
+
+function clearTableTabs() {
+  tableTabs.value = [];
+  activeTableTabId.value = "";
+}
+
+function openTableCommandPalette({ slash = false } = {}) {
+  if (!isPanelWindow.value || settingsOpen.value) return;
+  tableCommandOpen.value = true;
+  tableCommandQuery.value = "";
+  tableCommandActiveIndex.value = 0;
+  tableCommandSlashMode.value = !!slash;
+  historyOpen.value = false;
+  closeSlashMode();
+  nextTick(() => {
+    const input = document.getElementById("tableCommandInput");
+    input?.focus();
+  });
+}
+
+function closeTableCommandPalette() {
+  tableCommandOpen.value = false;
+  tableCommandQuery.value = "";
+  tableCommandActiveIndex.value = 0;
+  tableCommandSlashMode.value = false;
+}
+
+function resolveTableCommandTarget() {
+  if (tableCommandCandidates.value.length > 0) {
+    return tableCommandCandidates.value[tableCommandActiveIndex.value] || tableCommandCandidates.value[0];
+  }
+  const query = tableCommandQuery.value.trim().toLowerCase();
+  if (!query) return null;
+  return tableOptions.value.find((item) => item.table_name.toLowerCase() === query) || null;
+}
+
+async function chooseTableCommandCandidate(item) {
+  if (!item?.table_name) return;
+  closeTableCommandPalette();
+  await openOrActivateTableTab(item.table_name);
+}
+
+function isTableOpenedInTabs(tableName) {
+  const normalized = String(tableName || "").trim().toLowerCase();
+  if (!normalized) return false;
+  return tableTabs.value.some((tab) => tab.tableName.toLowerCase() === normalized);
+}
+
+async function submitTableCommand() {
+  const target = resolveTableCommandTarget();
+  if (!target) {
+    summaryText.value = "未匹配到可打开的表";
+    return;
+  }
+  await chooseTableCommandCandidate(target);
+}
+
+function onTableCommandInputKeydown(event) {
+  if (!tableCommandOpen.value) return;
+
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    if (tableCommandCandidates.value.length > 0) {
+      tableCommandActiveIndex.value =
+        (tableCommandActiveIndex.value + 1) % tableCommandCandidates.value.length;
+    }
+    return;
+  }
+
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    if (tableCommandCandidates.value.length > 0) {
+      tableCommandActiveIndex.value =
+        (tableCommandActiveIndex.value - 1 + tableCommandCandidates.value.length) %
+        tableCommandCandidates.value.length;
+    }
+    return;
+  }
+
+  if (event.key === "Enter") {
+    event.preventDefault();
+    submitTableCommand().catch(() => {});
+    return;
+  }
+
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeTableCommandPalette();
+    return;
+  }
+
+  if (event.key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    if (!tableCommandSlashMode.value && tableCommandQuery.value.length === 0) {
+      event.preventDefault();
+      tableCommandSlashMode.value = true;
+    }
+    return;
+  }
+
+  if (
+    event.key === "Backspace" &&
+    tableCommandSlashMode.value &&
+    tableCommandQuery.value.length === 0
+  ) {
+    tableCommandSlashMode.value = false;
+  }
+}
+
 onMounted(async () => {
   if (isTauriWindow) {
     windowLabel.value = getCurrentWindow().label;
@@ -715,6 +1165,7 @@ watch(
 );
 
 watch(tableDetailView, (view) => {
+  if (tableTabRestoring) return;
   if (!tableOpen.value) return;
   if (view === "hits") {
     stopTableLayoutObserver();
@@ -741,6 +1192,7 @@ watch(slashActiveIndex, async () => {
 });
 
 watch(tableFindKeyword, () => {
+  if (tableTabRestoring) return;
   runTableFind().catch(() => {});
 });
 
@@ -779,6 +1231,21 @@ watch(selectedTables, () => {
   if (!keyword.value.trim()) return;
   runMetaSearch();
 }, { deep: true });
+
+watch(tableCommandCandidates, (items) => {
+  if (items.length === 0) {
+    tableCommandActiveIndex.value = 0;
+  } else if (tableCommandActiveIndex.value >= items.length) {
+    tableCommandActiveIndex.value = 0;
+  }
+});
+
+watch(tableCommandActiveIndex, async () => {
+  if (!tableCommandOpen.value || tableCommandCandidates.value.length === 0) return;
+  await nextTick();
+  const active = document.getElementById(`table-command-item-${tableCommandActiveIndex.value}`);
+  active?.scrollIntoView?.({ block: "nearest" });
+});
 
 function onDocDragover(e) { e.preventDefault(); }
 
@@ -819,6 +1286,17 @@ function onWindowClick(event) {
   if (historyPanel && !historyPanel.contains(event.target) && event.target.id !== "historyBtn") {
     historyOpen.value = false;
   }
+
+  if (tableCommandOpen.value) {
+    const commandPanel = document.getElementById("tableCommandPalette");
+    if (
+      commandPanel &&
+      !commandPanel.contains(event.target) &&
+      !event.target?.closest?.(".table-tab-add")
+    ) {
+      closeTableCommandPalette();
+    }
+  }
 }
 
 function onWindowWheel(event) {
@@ -834,6 +1312,39 @@ function onWindowResize() {
 }
 
 function onWindowKeydown(event) {
+  const lower = String(event.key || "").toLowerCase();
+  const withPrimary = event.ctrlKey || event.metaKey;
+
+  if (withPrimary && !event.altKey && !event.shiftKey && lower === "p") {
+    if (settingsOpen.value) {
+      event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    openTableCommandPalette();
+    return;
+  }
+
+  if (
+    tableOpen.value &&
+    withPrimary &&
+    !event.altKey &&
+    !event.shiftKey &&
+    (event.key === "[" || event.key === "]") &&
+    !isEditableTarget(event.target)
+  ) {
+    event.preventDefault();
+    switchTableByStep(event.key === "]" ? 1 : -1).catch(() => {});
+    return;
+  }
+
+  if (tableCommandOpen.value && event.key === "Escape") {
+    closeTableCommandPalette();
+    return;
+  }
+
+  if (tableCommandOpen.value) return;
+
   if (tableOpen.value && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
     event.preventDefault();
     openTableFind();
@@ -863,7 +1374,6 @@ function onWindowKeydown(event) {
     !event.altKey &&
     !isEditableTarget(event.target)
   ) {
-    const lower = String(event.key || "").toLowerCase();
     if (lower === "q") {
       event.preventDefault();
       jumpHitRow(-1).catch(() => {});
@@ -1905,7 +2415,7 @@ async function openFromMeta(item) {
   else if (item.match_type === "ColumnName") externalHitCount = results.column.length;
   else externalHitCount = results.comment.length;
 
-  await openTable(item.table_name, null, item.column_name || null, {
+  await openOrActivateTableTab(item.table_name, null, item.column_name || null, {
     source: "meta",
     columns: item.column_name ? [item.column_name] : [],
     terms: splitKeywordTerms(keyword.value),
@@ -1917,7 +2427,7 @@ async function openFromData(item) {
   const rowIndex = item.first_row_index ?? null;
   const columns = Array.isArray(item.matched_columns) ? item.matched_columns.filter(Boolean) : [];
   const col = columns[0] || null;
-  await openTable(item.table_name, rowIndex, col, {
+  await openOrActivateTableTab(item.table_name, rowIndex, col, {
     source: "data",
     columns,
     terms: splitKeywordTerms(keyword.value),
@@ -1934,31 +2444,7 @@ function toggleDataCollapsed() {
 }
 
 async function openTable(tableName, rowIndex = null, columnName = null, hitContext = {}) {
-  resetTableFindState();
-  clearColumnWidths();
-  stopTableLayoutObserver();
-  resultZoomOpen.value = false;
-  tableDetailView.value = normalizeTableDefaultView(config.personal.table_default_view);
-  schemaCollapsed.value = true;
-  dataCollapsed.value = false;
-  hitCollectToken += 1;
-  allHitRows.value = [];
-  allHitRowsLoading.value = false;
-  tableView.hitNavCursor = -1;
-  tableView.focusedHitLocalIndex = null;
-  await exitTableFullscreen();
-  tableView.tableName = tableName;
-  tableView.hitRowIndex = rowIndex;
-  tableView.hitColumn = columnName;
-  setDetailHitContext(hitContext);
-  tableView.page = rowIndex !== null && rowIndex >= 0 ? Math.floor(rowIndex / tableView.pageSize) + 1 : 1;
-  await loadTablePage({ resetFocus: true, clearHitCache: true });
-  tableOpen.value = true;
-  if (tableDetailView.value === "hits") {
-    collectAllHitRows().catch(() => {});
-  }
-  await startTableLayoutObserver();
-  scheduleAdaptiveTablePageSize();
+  await openOrActivateTableTab(tableName, rowIndex, columnName, hitContext);
 }
 
 async function loadTablePage(options = {}) {
@@ -2006,6 +2492,8 @@ function closeTableDialog() {
   clearColumnWidths();
   stopTableLayoutObserver();
   exitTableFullscreen().catch(() => {});
+  closeTableCommandPalette();
+  clearTableTabs();
   tableOpen.value = false;
   tableDetailView.value = normalizeTableDefaultView(config.personal.table_default_view);
   hitCollectToken += 1;
@@ -2405,6 +2893,19 @@ function escapeRegExp(str) {
           <button class="icon-btn" @click="closeTableDialog">✕</button>
         </div>
       </header>
+      <section class="table-tabs">
+        <button
+          v-for="tab in tableTabs"
+          :key="tab.id"
+          :class="['table-tab', { active: tab.id === activeTableTabId }]"
+          :title="tab.tableName"
+          @click="activateTableTab(tab.id)"
+        >
+          <span class="table-tab-label">{{ tab.tableName }}</span>
+          <span class="table-tab-close" title="关闭标签" @click.stop="closeTableTab(tab.id)">✕</span>
+        </button>
+        <button class="table-tab-add" title="打开表 (Ctrl+P)" @click="openTableCommandPalette({ slash: true })">+</button>
+      </section>
       <section v-if="tableFindOpen" class="table-find-bar">
         <input id="tableFindInput" v-model="tableFindKeyword" type="text" placeholder="检索当前表的全部分页文本..." @keydown="onTableFindInputKeydown" />
         <span class="find-counter">{{ tableFindCounterText }}</span>
@@ -2604,6 +3105,41 @@ function escapeRegExp(str) {
       </template>
       </div>
       </div>
+      </div>
+    </section>
+  </div>
+
+  <div v-if="tableCommandOpen && isPanelWindow" class="table-command-mask" @mousedown.self="closeTableCommandPalette">
+    <section id="tableCommandPalette" class="table-command-palette">
+      <header class="table-command-header">
+        <span>{{ tableCommandHint }}</span>
+        <button class="icon-btn" @click="closeTableCommandPalette">✕</button>
+      </header>
+      <div class="table-command-input-wrap">
+        <span class="table-command-prefix">Ctrl+P</span>
+        <input
+          id="tableCommandInput"
+          v-model="tableCommandQuery"
+          type="text"
+          :placeholder="tableCommandSlashMode ? 'Slash: 输入表名或备注筛选' : '输入表名，按 Enter 打开'"
+          autocomplete="off"
+          @keydown="onTableCommandInputKeydown"
+        />
+      </div>
+      <div class="table-command-list">
+        <button
+          v-for="(item, idx) in tableCommandCandidates"
+          :id="`table-command-item-${idx}`"
+          :key="item.table_name"
+          :class="['table-command-item', { active: idx === tableCommandActiveIndex }]"
+          @mouseenter="tableCommandActiveIndex = idx"
+          @click="chooseTableCommandCandidate(item)"
+        >
+          <div class="table-command-main">{{ item.table_name }}</div>
+          <div class="table-command-sub">{{ item.table_comment || "-" }}</div>
+          <span class="badge" v-if="isTableOpenedInTabs(item.table_name)">已打开</span>
+        </button>
+        <div v-if="tableCommandCandidates.length === 0" class="muted p-12">暂无可选表</div>
       </div>
     </section>
   </div>

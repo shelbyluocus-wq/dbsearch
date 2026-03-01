@@ -1066,6 +1066,90 @@ mark {
   gap: 8px;
 }
 
+.table-tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 34px;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(248, 250, 252, 0.96);
+  overflow-x: auto;
+  overflow-y: hidden;
+  white-space: nowrap;
+}
+
+.table-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 120px;
+  max-width: 220px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.26);
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--text-sub);
+  font-size: 12px;
+}
+
+.table-tab:hover {
+  border-color: var(--accent-line);
+  color: var(--text-main);
+  background: var(--accent-soft);
+}
+
+.table-tab.active {
+  border-color: var(--accent-ring);
+  background: var(--accent-chip);
+  color: var(--accent-text);
+}
+
+.table-tab-label {
+  display: block;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.table-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  color: var(--text-dim);
+  font-size: 12px;
+  line-height: 1;
+}
+
+.table-tab-close:hover {
+  color: var(--red);
+  background: rgba(220, 38, 38, 0.1);
+}
+
+.table-tab-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  border: 1px dashed var(--accent-line);
+  background: rgba(255, 255, 255, 0.86);
+  color: var(--accent-text);
+  font-size: 16px;
+}
+
+.table-tab-add:hover {
+  border-color: var(--accent-ring);
+  background: var(--accent-soft);
+}
+
 .table-find-bar {
   display: flex;
   align-items: center;
@@ -1073,6 +1157,111 @@ mark {
   padding: 8px 12px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   background: rgba(248, 250, 252, 0.96);
+}
+
+.table-command-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 85;
+  background: rgba(15, 23, 42, 0.22);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 12vh;
+}
+
+.table-command-palette {
+  width: min(520px, calc(100vw - 24px));
+  max-height: 60vh;
+  border: 1px solid var(--border-glass);
+  border-radius: 12px;
+  background: var(--bg-panel);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.22);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.table-command-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(248, 250, 252, 0.9);
+  font-size: 12px;
+  color: var(--text-sub);
+}
+
+.table-command-input-wrap {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+  background: rgba(255, 255, 255, 0.84);
+}
+
+.table-command-prefix {
+  flex: 0 0 auto;
+  padding: 0 8px;
+  height: 26px;
+  line-height: 26px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: var(--accent-text);
+  border: 1px solid var(--accent-line);
+  background: var(--accent-soft);
+}
+
+.table-command-input-wrap input {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid var(--accent-line);
+  background: rgba(255, 255, 255, 0.95);
+  padding: 0 10px;
+  color: var(--text-main);
+  font-size: 14px;
+  outline: none;
+}
+
+.table-command-input-wrap input:focus {
+  border-color: var(--accent-ring);
+}
+
+.table-command-list {
+  overflow: auto;
+  padding: 6px;
+}
+
+.table-command-item {
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  text-align: left;
+  background: transparent;
+  position: relative;
+}
+
+.table-command-item:hover,
+.table-command-item.active {
+  background: var(--accent-soft);
+}
+
+.table-command-main {
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.table-command-sub {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-dim);
+  padding-right: 56px;
 }
 
 .table-find-bar input {
@@ -1862,6 +2051,25 @@ mark {
     right: 12px;
   }
 
+  .table-header-actions .small-btn {
+    padding: 0 8px;
+    font-size: 12px;
+  }
+
+  .table-tabs {
+    padding: 6px 8px;
+    gap: 4px;
+  }
+
+  .table-tab {
+    min-width: 120px;
+    max-width: 180px;
+  }
+
+  .table-command-mask {
+    padding-top: 8vh;
+  }
+
   .form-grid {
     grid-template-columns: 1fr;
   }
@@ -1924,6 +2132,38 @@ mark {
 }
 [data-theme="midnight"] .slash-dropdown {
   background: rgba(15, 23, 42, 0.99);
+}
+[data-theme="midnight"] .table-tabs {
+  background: rgba(15, 23, 42, 0.96);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+[data-theme="midnight"] .table-tab {
+  background: rgba(30, 41, 59, 0.92);
+  border-color: rgba(148, 163, 184, 0.3);
+  color: #cbd5e1;
+}
+[data-theme="midnight"] .table-tab.active {
+  background: rgba(8, 145, 178, 0.22);
+  border-color: rgba(34, 211, 238, 0.42);
+  color: #67e8f9;
+}
+[data-theme="midnight"] .table-tab-add {
+  background: rgba(30, 41, 59, 0.9);
+}
+[data-theme="midnight"] .table-command-palette {
+  background: rgba(15, 23, 42, 0.99);
+}
+[data-theme="midnight"] .table-command-header {
+  background: rgba(15, 23, 42, 0.95);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+[data-theme="midnight"] .table-command-input-wrap {
+  background: rgba(30, 41, 59, 0.9);
+  border-bottom-color: rgba(255, 255, 255, 0.08);
+}
+[data-theme="midnight"] .table-command-input-wrap input {
+  background: rgba(15, 23, 42, 0.92);
+  border-color: rgba(34, 211, 238, 0.34);
 }
 [data-theme="midnight"] .data-table th {
   background: rgba(30, 41, 59, 0.98);
