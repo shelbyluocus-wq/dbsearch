@@ -87,6 +87,7 @@ const config = reactive({
   personal: {
     widget_mode: "tray",
     hotkey: "Ctrl+Shift+F",
+    quick_date_hotkey: "F9",
     always_on_top: true,
     auto_start: false,
     ui_scale: 1.0,
@@ -200,6 +201,7 @@ const settingsDraft = reactive({
   password: "",
   database: "",
   hotkey: "Ctrl+Shift+F",
+  quickDateHotkey: "F9",
   autoStart: false,
   tableDefaultView: "hits",
   idleStates: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
@@ -316,6 +318,7 @@ const petSpriteClasses = computed(() => ({
   "idle-ghost": petIdleActive.value && currentIdleState.value === "ghost_fade",
 }));
 const hotkeyPlaceholder = "点击后按下快捷键";
+const quickDateHotkeyPlaceholder = "点击后按下快捷键";
 const contentScaleStyle = computed(() => ({
   "--content-scale": String(normalizeUiScale(config.personal.ui_scale)),
 }));
@@ -1311,9 +1314,74 @@ function onWindowResize() {
   scheduleAdaptiveTablePageSize();
 }
 
+function formatTodayYmdByLocalTime() {
+  const now = new Date();
+  const y = String(now.getFullYear());
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const d = String(now.getDate()).padStart(2, "0");
+  return `${y}${m}${d}`;
+}
+
+function insertTextIntoEditable(target, text) {
+  if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
+    if (target.disabled || target.readOnly) return false;
+    if (target instanceof HTMLInputElement) {
+      const type = String(target.type || "").toLowerCase();
+      const allowed = new Set(["", "text", "search", "url", "tel", "password", "email", "number"]);
+      if (!allowed.has(type)) return false;
+    }
+    const start = Number.isInteger(target.selectionStart) ? target.selectionStart : target.value.length;
+    const end = Number.isInteger(target.selectionEnd) ? target.selectionEnd : target.value.length;
+    const nextValue = `${target.value.slice(0, start)}${text}${target.value.slice(end)}`;
+    target.value = nextValue;
+    const cursor = start + text.length;
+    target.setSelectionRange(cursor, cursor);
+    target.dispatchEvent(new Event("input", { bubbles: true }));
+    return true;
+  }
+
+  if (target instanceof HTMLElement && target.isContentEditable) {
+    target.focus();
+    if (document.queryCommandSupported?.("insertText")) {
+      document.execCommand("insertText", false, text);
+      return true;
+    }
+    const selection = window.getSelection();
+    if (!selection || selection.rangeCount === 0) return false;
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const node = document.createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.setEndAfter(node);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
+  }
+
+  return false;
+}
+
+function insertTodayDateToken() {
+  const token = formatTodayYmdByLocalTime();
+  const active = document.activeElement;
+  if (insertTextIntoEditable(active, token)) {
+    return true;
+  }
+  keyword.value = `${keyword.value}${token}`;
+  focusKeyword();
+  return true;
+}
+
 function onWindowKeydown(event) {
   const lower = String(event.key || "").toLowerCase();
   const withPrimary = event.ctrlKey || event.metaKey;
+
+  if (!settingsOpen.value && !event.repeat && isEventMatchingHotkey(event, config.personal.quick_date_hotkey)) {
+    event.preventDefault();
+    insertTodayDateToken();
+    return;
+  }
 
   if (withPrimary && !event.altKey && !event.shiftKey && lower === "p") {
     if (settingsOpen.value) {
@@ -1464,6 +1532,12 @@ function normalizeHotkeyDisplay(value) {
     .join("+");
 }
 
+function normalizeQuickDateHotkey(value) {
+  const normalized = normalizeHotkeyDisplay(value);
+  if (!normalized || isModifierOnlyHotkey(normalized)) return "F9";
+  return normalized;
+}
+
 function normalizeHotkeyToken(token) {
   const raw = String(token || "").trim();
   if (!raw) return "";
@@ -1541,26 +1615,43 @@ function mapEventKeyToHotkey(event) {
   return named[lower] || "";
 }
 
-function onHotkeyInputKeydown(event) {
-  if (event.key === "Tab") return;
-  event.preventDefault();
-  event.stopPropagation();
-
-  if (event.key === "Backspace" || event.key === "Delete") {
-    settingsDraft.hotkey = "";
-    return;
-  }
-
+function buildHotkeyFromEvent(event) {
   const parts = [];
   if (event.ctrlKey) parts.push("Ctrl");
   if (event.shiftKey) parts.push("Shift");
   if (event.altKey) parts.push("Alt");
   if (event.metaKey) parts.push("Meta");
-
   const key = mapEventKeyToHotkey(event);
   if (key) parts.push(key);
+  return parts.join("+");
+}
 
-  settingsDraft.hotkey = parts.join("+");
+function isEventMatchingHotkey(event, hotkey) {
+  const target = normalizeHotkeyDisplay(hotkey);
+  if (!target) return false;
+  const actual = buildHotkeyFromEvent(event);
+  return target === actual;
+}
+
+function onDraftHotkeyInputKeydown(event, draftKey) {
+  if (event.key === "Tab") return;
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (event.key === "Backspace" || event.key === "Delete") {
+    settingsDraft[draftKey] = "";
+    return;
+  }
+
+  settingsDraft[draftKey] = buildHotkeyFromEvent(event);
+}
+
+function onHotkeyInputKeydown(event) {
+  onDraftHotkeyInputKeydown(event, "hotkey");
+}
+
+function onQuickDateHotkeyInputKeydown(event) {
+  onDraftHotkeyInputKeydown(event, "quickDateHotkey");
 }
 
 async function panelClose() {
@@ -1601,6 +1692,7 @@ function openSettings() {
   settingsDraft.password = config.shared.db.password;
   settingsDraft.database = config.shared.db.database;
   settingsDraft.hotkey = normalizeHotkeyDisplay(config.personal.hotkey);
+  settingsDraft.quickDateHotkey = normalizeQuickDateHotkey(config.personal.quick_date_hotkey);
   settingsDraft.autoStart = config.personal.auto_start;
   settingsDraft.tableDefaultView = normalizeTableDefaultView(config.personal.table_default_view);
   settingsDraft.idleStates = [...sanitizeIdleStates(config.personal.idle_states)];
@@ -1644,10 +1736,15 @@ async function saveSettings() {
   config.shared.db.database = settingsDraft.database.trim();
 
   config.personal.hotkey = normalizeHotkeyDisplay(settingsDraft.hotkey.trim() || "Ctrl+Shift+F");
+  config.personal.quick_date_hotkey = normalizeQuickDateHotkey(settingsDraft.quickDateHotkey.trim() || "F9");
   config.personal.idle_states = sanitizeIdleStates(settingsDraft.idleStates);
   config.personal.table_default_view = normalizeTableDefaultView(settingsDraft.tableDefaultView);
   if (isModifierOnlyHotkey(config.personal.hotkey)) {
     settingsMsg.value = "✗ 快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F";
+    return;
+  }
+  if (isModifierOnlyHotkey(config.personal.quick_date_hotkey)) {
+    settingsMsg.value = "✗ 日期快捷键必须包含至少一个非修饰键，例如 F9";
     return;
   }
   config.shared.search.exclude_tables = settingsDraft.excludeTables
@@ -2516,6 +2613,7 @@ async function loadConfig() {
   config.personal.idle_states = sanitizeIdleStates(config.personal.idle_states);
   config.personal.ui_scale = normalizeUiScale(config.personal.ui_scale);
   config.personal.table_default_view = normalizeTableDefaultView(config.personal.table_default_view);
+  config.personal.quick_date_hotkey = normalizeQuickDateHotkey(config.personal.quick_date_hotkey);
 }
 
 async function persistConfig() {
@@ -2681,7 +2779,7 @@ function escapeRegExp(str) {
           <button class="traffic-btn traffic-green" title="最大化/还原" @click="panelToggleMaximize"></button>
         </div>
         <div class="title-drag" data-tauri-drag-region></div>
-        <span class="window-title">鹰捷</span>
+        <span class="window-title">鹰捷V2.0</span>
         <div class="header-actions">
           <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
           <span class="db-name" id="dbName">{{ dbName }}</span>
@@ -3166,6 +3264,7 @@ function escapeRegExp(str) {
           <h4>系统设置</h4>
           <div class="form-grid">
             <label>快捷键<input v-model="settingsDraft.hotkey" type="text" readonly :placeholder="hotkeyPlaceholder" @keydown="onHotkeyInputKeydown" /></label>
+            <label>日期快捷键<input v-model="settingsDraft.quickDateHotkey" type="text" readonly :placeholder="quickDateHotkeyPlaceholder" @keydown="onQuickDateHotkeyInputKeydown" /></label>
             <label>小窗口默认视图
               <select v-model="settingsDraft.tableDefaultView">
                 <option value="hits">Tab 页面（只看命中）</option>

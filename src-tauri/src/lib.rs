@@ -86,6 +86,7 @@ impl Default for SearchConfig {
 struct PersonalConfig {
     widget_mode: String,
     hotkey: String,
+    quick_date_hotkey: String,
     always_on_top: bool,
     auto_start: bool,
     ui_scale: f32,
@@ -99,6 +100,7 @@ impl Default for PersonalConfig {
         Self {
             widget_mode: "tray".into(),
             hotkey: "Ctrl+Shift+F".into(),
+            quick_date_hotkey: "F9".into(),
             always_on_top: true,
             auto_start: false,
             ui_scale: 1.0,

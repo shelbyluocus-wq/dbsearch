@@ -1077,6 +1077,25 @@ mark {
   overflow-x: auto;
   overflow-y: hidden;
   white-space: nowrap;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.table-tabs::-webkit-scrollbar {
+  height: 6px;
+}
+
+.table-tabs::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.table-tabs::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb);
+  border-radius: 999px;
+}
+
+.table-tabs::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
 }
 
 .table-tab {
