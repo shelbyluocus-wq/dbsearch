@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { invoke } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { save } from "@tauri-apps/plugin-dialog";
+import { save, open } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
 
 const isTauriWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -123,6 +123,8 @@ const config = reactive({
     pet_locked: false,
     pet_position: null,
     idle_states: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
+    export_hotkey: "Ctrl+E",
+    batch_export_hotkey: "Ctrl+Shift+E",
   },
 });
 
@@ -237,6 +239,8 @@ const settingsDraft = reactive({
   excludeTables: "^t_log_.*,^tmp_.*",
   perTableTimeoutSec: 10,
   perTableMaxRows: 50,
+  exportHotkey: "Ctrl+E",
+  batchExportHotkey: "Ctrl+Shift+E",
 });
 
 const totalMetaCount = computed(() => results.table.length + results.column.length + results.comment.length);
@@ -1501,6 +1505,19 @@ function onWindowKeydown(event) {
     return;
   }
 
+  if (tableOpen.value && !isEditableTarget(event.target)) {
+    if (isEventMatchingHotkey(event, config.personal.export_hotkey)) {
+      event.preventDefault();
+      exportCurrentTable();
+      return;
+    }
+    if (isEventMatchingHotkey(event, config.personal.batch_export_hotkey)) {
+      event.preventDefault();
+      openBatchExport();
+      return;
+    }
+  }
+
   if (!tableOpen.value && event.key === "Escape" && slashModeOpen.value) {
     closeSlashMode();
     return;
@@ -1542,11 +1559,6 @@ function onWindowKeydown(event) {
     if (event.key === '`') {
       event.preventDefault();
       onEditToggleClick();
-      return;
-    }
-    if (lower === "d") {
-      event.preventDefault();
-      exportCurrentTable();
       return;
     }
   }
@@ -1798,6 +1810,8 @@ function openSettings() {
   settingsDraft.excludeTables = (config.shared.search.exclude_tables || []).join(",");
   settingsDraft.perTableTimeoutSec = config.shared.search.per_table_timeout_sec;
   settingsDraft.perTableMaxRows = config.shared.search.per_table_max_rows;
+  settingsDraft.exportHotkey = normalizeHotkeyDisplay(config.personal.export_hotkey);
+  settingsDraft.batchExportHotkey = normalizeHotkeyDisplay(config.personal.batch_export_hotkey);
   settingsMsg.value = "";
   settingsOpen.value = true;
 }
@@ -1839,6 +1853,8 @@ async function saveSettings() {
   config.personal.quick_date_hotkey = normalizeQuickDateHotkey(settingsDraft.quickDateHotkey.trim() || "F9");
   config.personal.idle_states = sanitizeIdleStates(settingsDraft.idleStates);
   config.personal.table_default_view = normalizeTableDefaultView(settingsDraft.tableDefaultView);
+  config.personal.export_hotkey = normalizeHotkeyDisplay(settingsDraft.exportHotkey.trim() || "Ctrl+E");
+  config.personal.batch_export_hotkey = normalizeHotkeyDisplay(settingsDraft.batchExportHotkey.trim() || "Ctrl+Shift+E");
   if (isModifierOnlyHotkey(config.personal.hotkey)) {
     settingsMsg.value = "✗ 快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F";
     return;
@@ -3164,16 +3180,13 @@ function toggleExportSelectAll() {
 
 async function doBatchExport() {
   if (exportSelectedTables.size === 0) return;
-  const filePath = await save({
-    defaultPath: "export.xlsx",
-    filters: [{ name: "Excel", extensions: ["xlsx"] }],
-  });
-  if (!filePath) return;
+  const dirPath = await open({ directory: true, title: "选择导出目录" });
+  if (!dirPath) return;
   exportLoading.value = true;
   try {
-    const result = await invoke("export_tables_xlsx", {
+    const result = await invoke("export_tables_xlsx_batch", {
       tables: [...exportSelectedTables],
-      filePath,
+      dirPath,
     });
     showToast(`导出完成：${result.tableCount} 张表，${result.totalRows} 行`, "success");
     exportDialogOpen.value = false;
@@ -3517,8 +3530,6 @@ function escapeRegExp(str) {
             :title="editMode ? '退出编辑模式' : '进入编辑模式'">
             {{ editMode ? '退出编辑(\`)' : '编辑(\`)' }}
           </button>
-          <button class="small-btn" :disabled="!dbConnected || exportLoading" @click="exportCurrentTable" title="导出当前表为 XLSX">导出(D)</button>
-          <button class="small-btn" :disabled="!dbConnected" @click="openBatchExport" title="批量导出多张表">批量导出</button>
           <button class="icon-btn" @click="closeTableDialog">✕</button>
         </div>
       </header>
@@ -3856,6 +3867,8 @@ function escapeRegExp(str) {
           <div class="form-grid">
             <label>快捷键<input v-model="settingsDraft.hotkey" type="text" readonly :placeholder="hotkeyPlaceholder" @keydown="onHotkeyInputKeydown" /></label>
             <label>日期快捷键<input v-model="settingsDraft.quickDateHotkey" type="text" readonly :placeholder="quickDateHotkeyPlaceholder" @keydown="onQuickDateHotkeyInputKeydown" /></label>
+            <label>导出快捷键<input v-model="settingsDraft.exportHotkey" type="text" readonly placeholder="Ctrl+E" @keydown="onDraftHotkeyInputKeydown($event, 'exportHotkey')" /></label>
+            <label>批量导出快捷键<input v-model="settingsDraft.batchExportHotkey" type="text" readonly placeholder="Ctrl+Shift+E" @keydown="onDraftHotkeyInputKeydown($event, 'batchExportHotkey')" /></label>
             <label>小窗口默认视图
               <select v-model="settingsDraft.tableDefaultView">
                 <option value="hits">Tab 页面（只看命中）</option>

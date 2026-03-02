@@ -100,6 +100,8 @@ struct PersonalConfig {
     pet_locked: bool,
     pet_position: Option<WindowPosition>,
     idle_states: Vec<String>,
+    export_hotkey: String,
+    batch_export_hotkey: String,
 }
 impl Default for PersonalConfig {
     fn default() -> Self {
@@ -119,6 +121,8 @@ impl Default for PersonalConfig {
                 "look_around".into(),
                 "ghost_fade".into(),
             ],
+            export_hotkey: "Ctrl+E".into(),
+            batch_export_hotkey: "Ctrl+Shift+E".into(),
         }
     }
 }
@@ -847,6 +851,93 @@ async fn export_tables_xlsx(
     workbook
         .save(&file_path)
         .map_err(|e| format!("保存文件失败: {e}"))?;
+
+    Ok(ExportResult {
+        total_rows,
+        table_count,
+    })
+}
+
+#[tauri::command]
+async fn export_tables_xlsx_batch(
+    tables: Vec<String>,
+    dir_path: String,
+    state: State<'_, AppState>,
+) -> Result<ExportResult, String> {
+    use rust_xlsxwriter::{Format, Workbook};
+
+    let (pool, schema) = {
+        let rt = state.runtime.lock().await;
+        (
+            rt.pool
+                .clone()
+                .ok_or_else(|| "数据库未连接".to_string())?,
+            rt.schema_cache.clone(),
+        )
+    };
+
+    let bold = Format::new().set_bold();
+    let mut total_rows: u64 = 0;
+    let table_count = tables.len();
+
+    for table_name in &tables {
+        let table_meta = schema
+            .tables
+            .iter()
+            .find(|t| &t.table_name == table_name)
+            .ok_or_else(|| format!("表 {} 不存在", table_name))?;
+
+        let mut workbook = Workbook::new();
+        let sheet_name: String = table_name.chars().take(31).collect();
+        let worksheet = workbook
+            .add_worksheet()
+            .set_name(&sheet_name)
+            .map_err(|e| format!("创建工作表失败: {e}"))?;
+
+        for (col_idx, col) in table_meta.columns.iter().enumerate() {
+            worksheet
+                .write_string_with_format(0, col_idx as u16, &col.column_name, &bold)
+                .map_err(|e| format!("写入表头失败: {e}"))?;
+        }
+
+        let select_cols = table_meta
+            .columns
+            .iter()
+            .map(|c| {
+                format!(
+                    "CAST(`{}` AS CHAR) AS `{}`",
+                    escape_ident(&c.column_name),
+                    escape_ident(&c.column_name)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT {} FROM `{}`",
+            select_cols,
+            escape_ident(table_name)
+        );
+        let rows = sqlx::query(&sql)
+            .fetch_all(&pool)
+            .await
+            .map_err(|e| format!("读取表 {} 失败: {e}", table_name))?;
+
+        total_rows += rows.len() as u64;
+
+        for (row_idx, row) in rows.iter().enumerate() {
+            for (col_idx, col) in table_meta.columns.iter().enumerate() {
+                let val: Option<String> = row.try_get(col.column_name.as_str()).unwrap_or(None);
+                if let Some(v) = val {
+                    let _ = worksheet.write_string((row_idx + 1) as u32, col_idx as u16, &v);
+                }
+            }
+        }
+
+        let file_path = format!("{}/{}.xlsx", dir_path.trim_end_matches(['/', '\\']), table_name);
+        workbook
+            .save(&file_path)
+            .map_err(|e| format!("保存文件 {} 失败: {e}", file_path))?;
+    }
 
     Ok(ExportResult {
         total_rows,
@@ -1825,7 +1916,8 @@ pub fn run() {
             quit_app,
             set_autostart,
             save_table_changes,
-            export_tables_xlsx
+            export_tables_xlsx,
+            export_tables_xlsx_batch
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
