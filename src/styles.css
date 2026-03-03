@@ -36,13 +36,21 @@
   box-sizing: border-box;
 }
 
+button,
+input,
+select,
+textarea,
+optgroup {
+  font-family: inherit;
+}
+
 html,
 body,
 #app {
   margin: 0;
   width: 100%;
   height: 100%;
-  font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--app-font, "Noto Sans SC", "Microsoft YaHei", sans-serif);
   color: var(--text-main);
   background: transparent;
   overflow: hidden;
@@ -3127,4 +3135,262 @@ mark {
     calc(6*var(--px)) calc(1*var(--px)) 0 0 #f5dada,
     calc(9*var(--px)) calc(1*var(--px)) 0 0 #f5dada,
     calc(10*var(--px)) calc(1*var(--px)) 0 0 #f5dada;
+}
+
+/* ── 狐狸皮肤 ── */
+.eagle-sprite.skin-fox::before {
+  box-shadow:
+    /* 耳朵 */
+    calc(4*var(--px)) calc(0*var(--px)) 0 0 #c45e1a,
+    calc(5*var(--px)) calc(0*var(--px)) 0 0 #c45e1a,
+    calc(10*var(--px)) calc(0*var(--px)) 0 0 #c45e1a,
+    calc(11*var(--px)) calc(0*var(--px)) 0 0 #c45e1a,
+    calc(3*var(--px)) calc(1*var(--px)) 0 0 #c45e1a,
+    calc(4*var(--px)) calc(1*var(--px)) 0 0 #e88a3a,
+    calc(5*var(--px)) calc(1*var(--px)) 0 0 #e88a3a,
+    calc(10*var(--px)) calc(1*var(--px)) 0 0 #e88a3a,
+    calc(11*var(--px)) calc(1*var(--px)) 0 0 #e88a3a,
+    calc(12*var(--px)) calc(1*var(--px)) 0 0 #c45e1a,
+    /* 头 */
+    calc(4*var(--px)) calc(2*var(--px)) 0 0 #e88a3a,
+    calc(5*var(--px)) calc(2*var(--px)) 0 0 #f0a050,
+    calc(6*var(--px)) calc(2*var(--px)) 0 0 #f0a050,
+    calc(7*var(--px)) calc(2*var(--px)) 0 0 #f0a050,
+    calc(8*var(--px)) calc(2*var(--px)) 0 0 #f0a050,
+    calc(9*var(--px)) calc(2*var(--px)) 0 0 #f0a050,
+    calc(10*var(--px)) calc(2*var(--px)) 0 0 #f0a050,
+    calc(11*var(--px)) calc(2*var(--px)) 0 0 #e88a3a,
+    /* 眼睛 */
+    calc(3*var(--px)) calc(3*var(--px)) 0 0 #e88a3a,
+    calc(4*var(--px)) calc(3*var(--px)) 0 0 #f0a050,
+    calc(5*var(--px)) calc(3*var(--px)) 0 0 #fff,
+    calc(6*var(--px)) calc(3*var(--px)) 0 0 #2d1b00,
+    calc(7*var(--px)) calc(3*var(--px)) 0 0 #f0a050,
+    calc(8*var(--px)) calc(3*var(--px)) 0 0 #f0a050,
+    calc(9*var(--px)) calc(3*var(--px)) 0 0 #fff,
+    calc(10*var(--px)) calc(3*var(--px)) 0 0 #2d1b00,
+    calc(11*var(--px)) calc(3*var(--px)) 0 0 #f0a050,
+    calc(12*var(--px)) calc(3*var(--px)) 0 0 #e88a3a,
+    /* 鼻嘴 */
+    calc(3*var(--px)) calc(4*var(--px)) 0 0 #e88a3a,
+    calc(4*var(--px)) calc(4*var(--px)) 0 0 #f0a050,
+    calc(5*var(--px)) calc(4*var(--px)) 0 0 #ffe0c0,
+    calc(6*var(--px)) calc(4*var(--px)) 0 0 #ffe0c0,
+    calc(7*var(--px)) calc(4*var(--px)) 0 0 #2d1b00,
+    calc(8*var(--px)) calc(4*var(--px)) 0 0 #2d1b00,
+    calc(9*var(--px)) calc(4*var(--px)) 0 0 #ffe0c0,
+    calc(10*var(--px)) calc(4*var(--px)) 0 0 #ffe0c0,
+    calc(11*var(--px)) calc(4*var(--px)) 0 0 #f0a050,
+    calc(12*var(--px)) calc(4*var(--px)) 0 0 #e88a3a,
+    /* 身体 */
+    calc(4*var(--px)) calc(5*var(--px)) 0 0 #e88a3a,
+    calc(5*var(--px)) calc(5*var(--px)) 0 0 #f0a050,
+    calc(6*var(--px)) calc(5*var(--px)) 0 0 #ffe0c0,
+    calc(7*var(--px)) calc(5*var(--px)) 0 0 #fff0e0,
+    calc(8*var(--px)) calc(5*var(--px)) 0 0 #fff0e0,
+    calc(9*var(--px)) calc(5*var(--px)) 0 0 #ffe0c0,
+    calc(10*var(--px)) calc(5*var(--px)) 0 0 #f0a050,
+    calc(11*var(--px)) calc(5*var(--px)) 0 0 #e88a3a,
+    calc(3*var(--px)) calc(6*var(--px)) 0 0 #c45e1a,
+    calc(4*var(--px)) calc(6*var(--px)) 0 0 #e88a3a,
+    calc(5*var(--px)) calc(6*var(--px)) 0 0 #f0a050,
+    calc(6*var(--px)) calc(6*var(--px)) 0 0 #ffe0c0,
+    calc(7*var(--px)) calc(6*var(--px)) 0 0 #fff0e0,
+    calc(8*var(--px)) calc(6*var(--px)) 0 0 #fff0e0,
+    calc(9*var(--px)) calc(6*var(--px)) 0 0 #ffe0c0,
+    calc(10*var(--px)) calc(6*var(--px)) 0 0 #f0a050,
+    calc(11*var(--px)) calc(6*var(--px)) 0 0 #e88a3a,
+    calc(12*var(--px)) calc(6*var(--px)) 0 0 #c45e1a,
+    calc(3*var(--px)) calc(7*var(--px)) 0 0 #c45e1a,
+    calc(4*var(--px)) calc(7*var(--px)) 0 0 #e88a3a,
+    calc(5*var(--px)) calc(7*var(--px)) 0 0 #f0a050,
+    calc(6*var(--px)) calc(7*var(--px)) 0 0 #f0a050,
+    calc(7*var(--px)) calc(7*var(--px)) 0 0 #ffe0c0,
+    calc(8*var(--px)) calc(7*var(--px)) 0 0 #ffe0c0,
+    calc(9*var(--px)) calc(7*var(--px)) 0 0 #f0a050,
+    calc(10*var(--px)) calc(7*var(--px)) 0 0 #f0a050,
+    calc(11*var(--px)) calc(7*var(--px)) 0 0 #e88a3a,
+    calc(12*var(--px)) calc(7*var(--px)) 0 0 #c45e1a,
+    /* 下半身 */
+    calc(4*var(--px)) calc(8*var(--px)) 0 0 #e88a3a,
+    calc(5*var(--px)) calc(8*var(--px)) 0 0 #f0a050,
+    calc(6*var(--px)) calc(8*var(--px)) 0 0 #f0a050,
+    calc(7*var(--px)) calc(8*var(--px)) 0 0 #f0a050,
+    calc(8*var(--px)) calc(8*var(--px)) 0 0 #f0a050,
+    calc(9*var(--px)) calc(8*var(--px)) 0 0 #f0a050,
+    calc(10*var(--px)) calc(8*var(--px)) 0 0 #f0a050,
+    calc(11*var(--px)) calc(8*var(--px)) 0 0 #e88a3a,
+    calc(4*var(--px)) calc(9*var(--px)) 0 0 #e88a3a,
+    calc(5*var(--px)) calc(9*var(--px)) 0 0 #e88a3a,
+    calc(6*var(--px)) calc(9*var(--px)) 0 0 #f0a050,
+    calc(7*var(--px)) calc(9*var(--px)) 0 0 #f0a050,
+    calc(8*var(--px)) calc(9*var(--px)) 0 0 #f0a050,
+    calc(9*var(--px)) calc(9*var(--px)) 0 0 #f0a050,
+    calc(10*var(--px)) calc(9*var(--px)) 0 0 #e88a3a,
+    calc(11*var(--px)) calc(9*var(--px)) 0 0 #e88a3a,
+    /* 脚 */
+    calc(4*var(--px)) calc(10*var(--px)) 0 0 #c45e1a,
+    calc(5*var(--px)) calc(10*var(--px)) 0 0 #c45e1a,
+    calc(10*var(--px)) calc(10*var(--px)) 0 0 #c45e1a,
+    calc(11*var(--px)) calc(10*var(--px)) 0 0 #c45e1a,
+    calc(3*var(--px)) calc(11*var(--px)) 0 0 #c45e1a,
+    calc(4*var(--px)) calc(11*var(--px)) 0 0 #e88a3a,
+    calc(5*var(--px)) calc(11*var(--px)) 0 0 #e88a3a,
+    calc(6*var(--px)) calc(11*var(--px)) 0 0 #c45e1a,
+    calc(9*var(--px)) calc(11*var(--px)) 0 0 #c45e1a,
+    calc(10*var(--px)) calc(11*var(--px)) 0 0 #e88a3a,
+    calc(11*var(--px)) calc(11*var(--px)) 0 0 #e88a3a,
+    calc(12*var(--px)) calc(11*var(--px)) 0 0 #c45e1a;
+}
+.eagle-sprite.skin-fox::after {
+  box-shadow:
+    calc(12*var(--px)) calc(8*var(--px)) 0 0 #e88a3a,
+    calc(13*var(--px)) calc(9*var(--px)) 0 0 #e88a3a,
+    calc(14*var(--px)) calc(9*var(--px)) 0 0 #f0a050,
+    calc(15*var(--px)) calc(10*var(--px)) 0 0 #f0a050,
+    calc(16*var(--px)) calc(10*var(--px)) 0 0 #fff;
+  animation: fox-tail-sway 2s ease-in-out infinite;
+}
+.eagle-sprite.skin-fox .blink-overlay {
+  box-shadow:
+    calc(5*var(--px)) calc(3*var(--px)) 0 0 #f0a050,
+    calc(6*var(--px)) calc(3*var(--px)) 0 0 #f0a050,
+    calc(9*var(--px)) calc(3*var(--px)) 0 0 #f0a050,
+    calc(10*var(--px)) calc(3*var(--px)) 0 0 #f0a050;
+}
+@keyframes fox-tail-sway {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(calc(-1 * var(--px))); }
+}
+
+/* ── 熊猫皮肤 ── */
+.eagle-sprite.skin-panda::before {
+  box-shadow:
+    /* 耳朵 */
+    calc(3*var(--px)) calc(0*var(--px)) 0 0 #1a1a1a,
+    calc(4*var(--px)) calc(0*var(--px)) 0 0 #1a1a1a,
+    calc(11*var(--px)) calc(0*var(--px)) 0 0 #1a1a1a,
+    calc(12*var(--px)) calc(0*var(--px)) 0 0 #1a1a1a,
+    calc(3*var(--px)) calc(1*var(--px)) 0 0 #1a1a1a,
+    calc(4*var(--px)) calc(1*var(--px)) 0 0 #333,
+    calc(11*var(--px)) calc(1*var(--px)) 0 0 #333,
+    calc(12*var(--px)) calc(1*var(--px)) 0 0 #1a1a1a,
+    /* 头 */
+    calc(4*var(--px)) calc(2*var(--px)) 0 0 #f0f0f0,
+    calc(5*var(--px)) calc(2*var(--px)) 0 0 #fff,
+    calc(6*var(--px)) calc(2*var(--px)) 0 0 #fff,
+    calc(7*var(--px)) calc(2*var(--px)) 0 0 #fff,
+    calc(8*var(--px)) calc(2*var(--px)) 0 0 #fff,
+    calc(9*var(--px)) calc(2*var(--px)) 0 0 #fff,
+    calc(10*var(--px)) calc(2*var(--px)) 0 0 #fff,
+    calc(11*var(--px)) calc(2*var(--px)) 0 0 #f0f0f0,
+    /* 眼圈+眼睛 */
+    calc(3*var(--px)) calc(3*var(--px)) 0 0 #f0f0f0,
+    calc(4*var(--px)) calc(3*var(--px)) 0 0 #1a1a1a,
+    calc(5*var(--px)) calc(3*var(--px)) 0 0 #fff,
+    calc(6*var(--px)) calc(3*var(--px)) 0 0 #1a1a1a,
+    calc(7*var(--px)) calc(3*var(--px)) 0 0 #fff,
+    calc(8*var(--px)) calc(3*var(--px)) 0 0 #fff,
+    calc(9*var(--px)) calc(3*var(--px)) 0 0 #1a1a1a,
+    calc(10*var(--px)) calc(3*var(--px)) 0 0 #fff,
+    calc(11*var(--px)) calc(3*var(--px)) 0 0 #1a1a1a,
+    calc(12*var(--px)) calc(3*var(--px)) 0 0 #f0f0f0,
+    /* 鼻嘴 */
+    calc(3*var(--px)) calc(4*var(--px)) 0 0 #f0f0f0,
+    calc(4*var(--px)) calc(4*var(--px)) 0 0 #fff,
+    calc(5*var(--px)) calc(4*var(--px)) 0 0 #fff,
+    calc(6*var(--px)) calc(4*var(--px)) 0 0 #fff,
+    calc(7*var(--px)) calc(4*var(--px)) 0 0 #1a1a1a,
+    calc(8*var(--px)) calc(4*var(--px)) 0 0 #1a1a1a,
+    calc(9*var(--px)) calc(4*var(--px)) 0 0 #fff,
+    calc(10*var(--px)) calc(4*var(--px)) 0 0 #fff,
+    calc(11*var(--px)) calc(4*var(--px)) 0 0 #fff,
+    calc(12*var(--px)) calc(4*var(--px)) 0 0 #f0f0f0,
+    /* 身体 */
+    calc(4*var(--px)) calc(5*var(--px)) 0 0 #f0f0f0,
+    calc(5*var(--px)) calc(5*var(--px)) 0 0 #fff,
+    calc(6*var(--px)) calc(5*var(--px)) 0 0 #fff,
+    calc(7*var(--px)) calc(5*var(--px)) 0 0 #fff,
+    calc(8*var(--px)) calc(5*var(--px)) 0 0 #fff,
+    calc(9*var(--px)) calc(5*var(--px)) 0 0 #fff,
+    calc(10*var(--px)) calc(5*var(--px)) 0 0 #fff,
+    calc(11*var(--px)) calc(5*var(--px)) 0 0 #f0f0f0,
+    calc(3*var(--px)) calc(6*var(--px)) 0 0 #1a1a1a,
+    calc(4*var(--px)) calc(6*var(--px)) 0 0 #333,
+    calc(5*var(--px)) calc(6*var(--px)) 0 0 #fff,
+    calc(6*var(--px)) calc(6*var(--px)) 0 0 #fff,
+    calc(7*var(--px)) calc(6*var(--px)) 0 0 #fff,
+    calc(8*var(--px)) calc(6*var(--px)) 0 0 #fff,
+    calc(9*var(--px)) calc(6*var(--px)) 0 0 #fff,
+    calc(10*var(--px)) calc(6*var(--px)) 0 0 #fff,
+    calc(11*var(--px)) calc(6*var(--px)) 0 0 #333,
+    calc(12*var(--px)) calc(6*var(--px)) 0 0 #1a1a1a,
+    calc(3*var(--px)) calc(7*var(--px)) 0 0 #1a1a1a,
+    calc(4*var(--px)) calc(7*var(--px)) 0 0 #333,
+    calc(5*var(--px)) calc(7*var(--px)) 0 0 #fff,
+    calc(6*var(--px)) calc(7*var(--px)) 0 0 #fff,
+    calc(7*var(--px)) calc(7*var(--px)) 0 0 #fff,
+    calc(8*var(--px)) calc(7*var(--px)) 0 0 #fff,
+    calc(9*var(--px)) calc(7*var(--px)) 0 0 #fff,
+    calc(10*var(--px)) calc(7*var(--px)) 0 0 #fff,
+    calc(11*var(--px)) calc(7*var(--px)) 0 0 #333,
+    calc(12*var(--px)) calc(7*var(--px)) 0 0 #1a1a1a,
+    /* 下半身 */
+    calc(4*var(--px)) calc(8*var(--px)) 0 0 #1a1a1a,
+    calc(5*var(--px)) calc(8*var(--px)) 0 0 #f0f0f0,
+    calc(6*var(--px)) calc(8*var(--px)) 0 0 #fff,
+    calc(7*var(--px)) calc(8*var(--px)) 0 0 #fff,
+    calc(8*var(--px)) calc(8*var(--px)) 0 0 #fff,
+    calc(9*var(--px)) calc(8*var(--px)) 0 0 #fff,
+    calc(10*var(--px)) calc(8*var(--px)) 0 0 #f0f0f0,
+    calc(11*var(--px)) calc(8*var(--px)) 0 0 #1a1a1a,
+    calc(4*var(--px)) calc(9*var(--px)) 0 0 #1a1a1a,
+    calc(5*var(--px)) calc(9*var(--px)) 0 0 #1a1a1a,
+    calc(6*var(--px)) calc(9*var(--px)) 0 0 #f0f0f0,
+    calc(7*var(--px)) calc(9*var(--px)) 0 0 #f0f0f0,
+    calc(8*var(--px)) calc(9*var(--px)) 0 0 #f0f0f0,
+    calc(9*var(--px)) calc(9*var(--px)) 0 0 #f0f0f0,
+    calc(10*var(--px)) calc(9*var(--px)) 0 0 #1a1a1a,
+    calc(11*var(--px)) calc(9*var(--px)) 0 0 #1a1a1a,
+    /* 脚 */
+    calc(3*var(--px)) calc(10*var(--px)) 0 0 #1a1a1a,
+    calc(4*var(--px)) calc(10*var(--px)) 0 0 #333,
+    calc(5*var(--px)) calc(10*var(--px)) 0 0 #333,
+    calc(6*var(--px)) calc(10*var(--px)) 0 0 #1a1a1a,
+    calc(9*var(--px)) calc(10*var(--px)) 0 0 #1a1a1a,
+    calc(10*var(--px)) calc(10*var(--px)) 0 0 #333,
+    calc(11*var(--px)) calc(10*var(--px)) 0 0 #333,
+    calc(12*var(--px)) calc(10*var(--px)) 0 0 #1a1a1a;
+}
+.eagle-sprite.skin-panda::after {
+  box-shadow: none;
+  animation: none;
+}
+.eagle-sprite.skin-panda .blink-overlay {
+  box-shadow:
+    calc(5*var(--px)) calc(3*var(--px)) 0 0 #1a1a1a,
+    calc(6*var(--px)) calc(3*var(--px)) 0 0 #1a1a1a,
+    calc(9*var(--px)) calc(3*var(--px)) 0 0 #1a1a1a,
+    calc(10*var(--px)) calc(3*var(--px)) 0 0 #1a1a1a;
+}
+
+/* ── 皮肤通用 idle 动画增强 ── */
+.eagle-sprite.skin-cat.idle-float { animation: eagle-idle 1.8s steps(2) infinite, pet-bob 2.4s ease-in-out infinite; }
+.eagle-sprite.skin-bunny.idle-float { animation: eagle-idle 1.8s steps(2) infinite, pet-bob 1.8s ease-in-out infinite; }
+.eagle-sprite.skin-fox.idle-float { animation: eagle-idle 1.5s steps(2) infinite, pet-bob 2s ease-in-out infinite; }
+.eagle-sprite.skin-panda.idle-float { animation: eagle-idle 2s steps(2) infinite, pet-bob 3s ease-in-out infinite; }
+.eagle-sprite.skin-cat.idle-look { animation: pet-look 2.5s steps(1) infinite; }
+.eagle-sprite.skin-bunny.idle-look { animation: pet-look 2s steps(1) infinite; }
+.eagle-sprite.skin-fox.idle-look { animation: pet-look 1.8s steps(1) infinite; }
+.eagle-sprite.skin-panda.idle-look { animation: pet-look 3s steps(1) infinite; }
+
+@keyframes pet-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(calc(-2 * var(--px))); }
+}
+@keyframes pet-look {
+  0%, 40% { transform: translateX(0); }
+  45%, 55% { transform: translateX(calc(2 * var(--px))); }
+  60%, 90% { transform: translateX(calc(-2 * var(--px))); }
+  95%, 100% { transform: translateX(0); }
 }

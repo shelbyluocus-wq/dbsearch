@@ -126,6 +126,7 @@ const config = reactive({
     idle_states: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
     export_hotkey: "Ctrl+E",
     batch_export_hotkey: "Ctrl+Shift+E",
+    always_on_top_hotkey: "P",
     pet_skin: "eagle",
     custom_font: null,
   },
@@ -245,6 +246,7 @@ const settingsDraft = reactive({
   exportHotkey: "Ctrl+E",
   batchExportHotkey: "Ctrl+Shift+E",
   alwaysOnTop: true,
+  alwaysOnTopHotkey: "P",
   templateName: "",
   petSkin: "eagle",
   customFont: null,
@@ -1157,6 +1159,13 @@ onMounted(async () => {
       }
     });
 
+    await listen("pet-skin-changed", (event) => {
+      const skin = event.payload?.skin;
+      if (typeof skin === "string") {
+        config.personal.pet_skin = skin;
+      }
+    });
+
     resetIdleHandler = () => {
       exitIdleMode();
       clearTimeout(idleTimer);
@@ -1598,6 +1607,14 @@ function onWindowKeydown(event) {
     }
   }
 
+  if (!isEditableTarget(event.target) && isEventMatchingHotkey(event, config.personal.always_on_top_hotkey)) {
+    event.preventDefault();
+    config.personal.always_on_top = !config.personal.always_on_top;
+    invoke("set_panel_always_on_top", { alwaysOnTop: config.personal.always_on_top }).catch(() => {});
+    showCopyToast(config.personal.always_on_top ? "已置顶" : "已取消置顶", "success");
+    return;
+  }
+
   if (event.key !== "Escape") return;
 
   if (exportDialogOpen.value) {
@@ -1848,6 +1865,7 @@ function openSettings() {
   settingsDraft.exportHotkey = normalizeHotkeyDisplay(config.personal.export_hotkey);
   settingsDraft.batchExportHotkey = normalizeHotkeyDisplay(config.personal.batch_export_hotkey);
   settingsDraft.alwaysOnTop = config.personal.always_on_top;
+  settingsDraft.alwaysOnTopHotkey = normalizeHotkeyDisplay(config.personal.always_on_top_hotkey || "P");
   settingsDraft.templateName = "";
   settingsDraft.petSkin = config.personal.pet_skin || "eagle";
   settingsDraft.customFont = config.personal.custom_font || null;
@@ -1897,6 +1915,7 @@ async function saveSettings() {
   config.personal.table_default_view = normalizeTableDefaultView(settingsDraft.tableDefaultView);
   config.personal.export_hotkey = normalizeHotkeyDisplay(settingsDraft.exportHotkey.trim() || "Ctrl+E");
   config.personal.batch_export_hotkey = normalizeHotkeyDisplay(settingsDraft.batchExportHotkey.trim() || "Ctrl+Shift+E");
+  config.personal.always_on_top_hotkey = normalizeHotkeyDisplay(settingsDraft.alwaysOnTopHotkey.trim() || "P");
   if (isModifierOnlyHotkey(config.personal.hotkey)) {
     settingsMsg.value = "✗ 快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F";
     return;
@@ -1947,6 +1966,9 @@ async function saveSettings() {
   if (isTauriWindow) {
     emit("pet-idle-states-changed", {
       idleStates: config.personal.idle_states,
+    }).catch(() => {});
+    emit("pet-skin-changed", {
+      skin: config.personal.pet_skin,
     }).catch(() => {});
   }
   await invoke("set_autostart", { enable: config.personal.auto_start }).catch(() => {});
@@ -2017,9 +2039,9 @@ const systemFonts = ref([]);
 function applyCustomFont() {
   const font = config.personal.custom_font;
   if (font) {
-    document.documentElement.style.setProperty("font-family", `"${font}", "Noto Sans SC", "Microsoft YaHei", sans-serif`);
+    document.documentElement.style.setProperty("--app-font", `"${font}", "Noto Sans SC", "Microsoft YaHei", sans-serif`);
   } else {
-    document.documentElement.style.removeProperty("font-family");
+    document.documentElement.style.removeProperty("--app-font");
   }
 }
 
@@ -3187,6 +3209,7 @@ async function loadConfig() {
     const loaded = await invoke("get_config");
     if (loaded?.shared?.db) Object.assign(config.shared.db, loaded.shared.db);
     if (loaded?.shared?.search) Object.assign(config.shared.search, loaded.shared.search);
+    if (Array.isArray(loaded?.shared?.db_templates)) config.shared.db_templates = loaded.shared.db_templates;
     if (loaded?.personal) Object.assign(config.personal, loaded.personal);
   } catch {
     // keep default
@@ -3996,6 +4019,7 @@ function escapeRegExp(str) {
             <label>日期快捷键<input v-model="settingsDraft.quickDateHotkey" type="text" readonly :placeholder="quickDateHotkeyPlaceholder" @keydown="onQuickDateHotkeyInputKeydown" /></label>
             <label>导出快捷键<input v-model="settingsDraft.exportHotkey" type="text" readonly placeholder="Ctrl+E" @keydown="onDraftHotkeyInputKeydown($event, 'exportHotkey')" /></label>
             <label>批量导出快捷键<input v-model="settingsDraft.batchExportHotkey" type="text" readonly placeholder="Ctrl+Shift+E" @keydown="onDraftHotkeyInputKeydown($event, 'batchExportHotkey')" /></label>
+            <label>置顶快捷键<input v-model="settingsDraft.alwaysOnTopHotkey" type="text" readonly placeholder="P" @keydown="onDraftHotkeyInputKeydown($event, 'alwaysOnTopHotkey')" /></label>
             <label>小窗口默认视图
               <select v-model="settingsDraft.tableDefaultView">
                 <option value="hits">Tab 页面（只看命中）</option>
@@ -4052,6 +4076,8 @@ function escapeRegExp(str) {
                 <option value="eagle">鹰（默认）</option>
                 <option value="cat">猫</option>
                 <option value="bunny">兔</option>
+                <option value="fox">狐狸</option>
+                <option value="panda">熊猫</option>
               </select>
             </label>
             <label>全局字体

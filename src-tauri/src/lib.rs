@@ -105,10 +105,15 @@ struct PersonalConfig {
     idle_states: Vec<String>,
     export_hotkey: String,
     batch_export_hotkey: String,
+    #[serde(default = "default_always_on_top_hotkey")]
+    always_on_top_hotkey: String,
     #[serde(default = "default_pet_skin")]
     pet_skin: String,
     #[serde(default)]
     custom_font: Option<String>,
+}
+fn default_always_on_top_hotkey() -> String {
+    "P".into()
 }
 fn default_pet_skin() -> String {
     "eagle".into()
@@ -133,6 +138,7 @@ impl Default for PersonalConfig {
             ],
             export_hotkey: "Ctrl+E".into(),
             batch_export_hotkey: "Ctrl+Shift+E".into(),
+            always_on_top_hotkey: "P".into(),
             pet_skin: "eagle".into(),
             custom_font: None,
         }
