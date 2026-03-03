@@ -111,6 +111,7 @@ const config = reactive({
       per_table_timeout_sec: 10,
       per_table_max_rows: 50,
     },
+    db_templates: [],
   },
   personal: {
     widget_mode: "tray",
@@ -125,6 +126,8 @@ const config = reactive({
     idle_states: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
     export_hotkey: "Ctrl+E",
     batch_export_hotkey: "Ctrl+Shift+E",
+    pet_skin: "eagle",
+    custom_font: null,
   },
 });
 
@@ -241,6 +244,10 @@ const settingsDraft = reactive({
   perTableMaxRows: 50,
   exportHotkey: "Ctrl+E",
   batchExportHotkey: "Ctrl+Shift+E",
+  alwaysOnTop: true,
+  templateName: "",
+  petSkin: "eagle",
+  customFont: null,
 });
 
 const totalMetaCount = computed(() => results.table.length + results.column.length + results.comment.length);
@@ -323,18 +330,30 @@ const tableCommandCandidates = computed(() => {
   const query = tableCommandQuery.value.trim().toLowerCase();
   const base = Array.isArray(tableOptions.value) ? tableOptions.value : [];
   if (!query) return base.slice(0, TABLE_COMMAND_LIMIT);
-  const starts = base.filter((item) => item.table_name.toLowerCase().startsWith(query));
-  const includes = base.filter(
-    (item) =>
-      !item.table_name.toLowerCase().startsWith(query) &&
-      item.table_name.toLowerCase().includes(query),
-  );
-  const comments = base.filter(
-    (item) =>
-      !item.table_name.toLowerCase().includes(query) &&
-      String(item.table_comment || "").toLowerCase().includes(query),
-  );
-  return [...starts, ...includes, ...comments].slice(0, TABLE_COMMAND_LIMIT);
+
+  const scored = [];
+  for (const item of base) {
+    const name = item.table_name.toLowerCase();
+    const comment = String(item.table_comment || "").toLowerCase();
+
+    if (name.startsWith(query)) {
+      scored.push({ item, score: 3000 + (1000 - name.length) });
+    } else if (name.includes(query)) {
+      scored.push({ item, score: 2000 + (1000 - name.length) });
+    } else {
+      const nameMatch = fuzzyMatch(query, name);
+      const commentMatch = fuzzyMatch(query, comment);
+      if (nameMatch.matched) {
+        scored.push({ item, score: 1000 + nameMatch.score });
+      } else if (comment.includes(query)) {
+        scored.push({ item, score: 500 });
+      } else if (commentMatch.matched) {
+        scored.push({ item, score: commentMatch.score });
+      }
+    }
+  }
+  scored.sort((a, b) => b.score - a.score);
+  return scored.map((s) => s.item).slice(0, TABLE_COMMAND_LIMIT);
 });
 const tableCommandHint = computed(() =>
   tableCommandSlashMode.value ? "Slash 模式 / 选择表" : "Ctrl+P 输入表名，Enter 打开",
@@ -689,7 +708,6 @@ function createLiveTableSnapshot({ id, tableName } = {}) {
     hitNavCursor: tableView.hitNavCursor,
     focusedHitLocalIndex: tableView.focusedHitLocalIndex,
     tableDetailView: tableDetailView.value,
-    tableFullscreen: tableFullscreen.value,
     schemaCollapsed: schemaCollapsed.value,
     dataCollapsed: dataCollapsed.value,
     tableFind: {
@@ -727,7 +745,6 @@ function createNewTableSnapshot(tableName, rowIndex = null, columnName = null, h
     hitNavCursor: -1,
     focusedHitLocalIndex: null,
     tableDetailView: normalizeTableDefaultView(config.personal.table_default_view),
-    tableFullscreen: false,
     schemaCollapsed: true,
     dataCollapsed: false,
     tableFind: {
@@ -847,10 +864,8 @@ async function activateTableTab(tabId, { skipSnapshot = false } = {}) {
   }
   hitCollectToken += 1;
   activeTableTabId.value = next.id;
-  const targetFullscreen = !!next.tableFullscreen;
   restoreLiveStateFromTableSnapshot(next);
   tableOpen.value = true;
-  await syncTableFullscreenForSwitch(targetFullscreen);
   if (tableDetailView.value === "hits" && allHitRows.value.length === 0 && tableView.totalRows > 0) {
     collectAllHitRows().catch(() => {});
   }
@@ -890,7 +905,6 @@ async function openOrActivateTableTab(tableName, rowIndex = null, columnName = n
   resultZoomOpen.value = false;
   restoreLiveStateFromTableSnapshot(nextTab);
   tableOpen.value = true;
-  await syncTableFullscreenForSwitch(false);
   await loadTablePage({ resetFocus: true, clearHitCache: true });
   if (tableDetailView.value === "hits") {
     collectAllHitRows().catch(() => {});
@@ -1054,6 +1068,7 @@ onMounted(async () => {
 
   applyTheme(themeId.value)
   await loadConfig();
+  applyCustomFont();
   tableDetailView.value = normalizeTableDefaultView(config.personal.table_default_view);
 
   if (isPanelWindow.value) {
@@ -1511,9 +1526,19 @@ function onWindowKeydown(event) {
       exportCurrentTable();
       return;
     }
-    if (isEventMatchingHotkey(event, config.personal.batch_export_hotkey)) {
+  }
+
+  if (!isEditableTarget(event.target) && isEventMatchingHotkey(event, config.personal.batch_export_hotkey)) {
+    event.preventDefault();
+    openBatchExport();
+    return;
+  }
+
+  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && ["1", "2", "3"].includes(event.key)) {
+    const tplIdx = Number(event.key) - 1;
+    if (tplIdx < config.shared.db_templates.length) {
       event.preventDefault();
-      openBatchExport();
+      switchToTemplate(tplIdx);
       return;
     }
   }
@@ -1525,6 +1550,16 @@ function onWindowKeydown(event) {
 
   if (tableOpen.value && tableFindOpen.value && event.key === "Escape") {
     closeTableFind();
+    return;
+  }
+
+  if (tableOpen.value && event.key === "Tab" && (event.ctrlKey || event.metaKey)) {
+    event.preventDefault();
+    const tabs = tableTabs.value;
+    if (tabs.length <= 1) return;
+    const idx = tabs.findIndex((t) => t.id === activeTableTabId.value);
+    const next = (idx + (event.shiftKey ? -1 : 1) + tabs.length) % tabs.length;
+    activateTableTab(tabs[next].id).catch(() => {});
     return;
   }
 
@@ -1812,6 +1847,13 @@ function openSettings() {
   settingsDraft.perTableMaxRows = config.shared.search.per_table_max_rows;
   settingsDraft.exportHotkey = normalizeHotkeyDisplay(config.personal.export_hotkey);
   settingsDraft.batchExportHotkey = normalizeHotkeyDisplay(config.personal.batch_export_hotkey);
+  settingsDraft.alwaysOnTop = config.personal.always_on_top;
+  settingsDraft.templateName = "";
+  settingsDraft.petSkin = config.personal.pet_skin || "eagle";
+  settingsDraft.customFont = config.personal.custom_font || null;
+  if (isTauriWindow) {
+    invoke("list_system_fonts").then((fonts) => { systemFonts.value = fonts; }).catch(() => {});
+  }
   settingsMsg.value = "";
   settingsOpen.value = true;
 }
@@ -1873,6 +1915,8 @@ async function saveSettings() {
     .filter(Boolean);
   config.shared.search.per_table_timeout_sec = Number(settingsDraft.perTableTimeoutSec) || 10;
   config.shared.search.per_table_max_rows = Number(settingsDraft.perTableMaxRows) || 50;
+  config.personal.pet_skin = settingsDraft.petSkin || "eagle";
+  config.personal.custom_font = settingsDraft.customFont || null;
 
   if (isTauriWindow) {
     try {
@@ -1895,6 +1939,10 @@ async function saveSettings() {
   }
 
   config.personal.auto_start = !!settingsDraft.autoStart;
+  config.personal.always_on_top = !!settingsDraft.alwaysOnTop;
+  if (isTauriWindow) {
+    await invoke("set_panel_always_on_top", { alwaysOnTop: config.personal.always_on_top }).catch(() => {});
+  }
   await persistConfig();
   if (isTauriWindow) {
     emit("pet-idle-states-changed", {
@@ -1918,8 +1966,61 @@ async function saveSettings() {
   }
 
   await refreshConnectionStatus();
+  applyCustomFont();
   clearIdlePreview();
   settingsOpen.value = false;
+}
+
+// ── 数据库模板 ──
+function saveAsTemplate(name) {
+  const trimmed = String(name || "").trim();
+  if (!trimmed) return;
+  const db = {
+    host: config.shared.db.host,
+    port: config.shared.db.port,
+    username: config.shared.db.username,
+    password: config.shared.db.password,
+    database: config.shared.db.database,
+  };
+  config.shared.db_templates.push({ name: trimmed, db });
+  persistConfig();
+}
+
+function deleteTemplate(idx) {
+  config.shared.db_templates.splice(idx, 1);
+  persistConfig();
+}
+
+async function switchToTemplate(idx) {
+  const tpl = config.shared.db_templates[idx];
+  if (!tpl) return;
+  config.shared.db.host = tpl.db.host;
+  config.shared.db.port = tpl.db.port;
+  config.shared.db.username = tpl.db.username;
+  config.shared.db.password = tpl.db.password;
+  config.shared.db.database = tpl.db.database;
+  await persistConfig();
+  try {
+    await invoke("disconnect_db");
+  } catch { /* ignore */ }
+  try {
+    await invoke("connect_db", { config: { ...tpl.db } });
+  } catch (e) {
+    showCopyToast(`连接失败：${e}`, "error");
+  }
+  await refreshConnectionStatus();
+}
+
+// ── 字体 ──
+const systemFonts = ref([]);
+
+function applyCustomFont() {
+  const font = config.personal.custom_font;
+  if (font) {
+    document.documentElement.style.setProperty("font-family", `"${font}", "Noto Sans SC", "Microsoft YaHei", sans-serif`);
+  } else {
+    document.documentElement.style.removeProperty("font-family");
+  }
 }
 
 function toggleHistory() {
@@ -1989,6 +2090,9 @@ async function exitTableFullscreen() {
   const appWindow = getCurrentWindow();
   if (tableFullscreenMode.value === "system") {
     await appWindow.setFullscreen(false).catch(() => {});
+    if (!tableFullscreenRestoreMaximized.value) {
+      await appWindow.unmaximize().catch(() => {});
+    }
   } else if (tableFullscreenMode.value === "maximize") {
     if (!tableFullscreenRestoreMaximized.value) {
       await appWindow.unmaximize().catch(() => {});
@@ -2191,7 +2295,12 @@ async function applyAdaptiveTablePageSize() {
   await loadTablePage({ resetFocus: true, clearHitCache: true });
   if (token !== tablePageSizeAdjustToken) return;
   if (tableFindOpen.value && tableFindKeyword.value.trim()) {
-    runTableFind().catch(() => {});
+    const prevCursor = tableFindCursor.value;
+    await runTableFind().catch(() => {});
+    if (prevCursor >= 0 && tableFindMatches.value.length > 0) {
+      tableFindCursor.value = Math.min(prevCursor, tableFindMatches.value.length - 1);
+      focusTableFindMatch(tableFindMatches.value[tableFindCursor.value]).catch(() => {});
+    }
   }
 }
 
@@ -2598,6 +2707,24 @@ function containsAllTerms(text, terms) {
   if (normalizedTerms.length === 0) return false;
   const value = String(text || "").toLowerCase();
   return normalizedTerms.every((term) => value.includes(term));
+}
+
+function fuzzyMatch(query, text) {
+  if (!query || !text) return { matched: false, score: 0 };
+  let qi = 0;
+  let score = 0;
+  let lastMatchIdx = -1;
+  for (let ti = 0; ti < text.length && qi < query.length; ti++) {
+    if (text[ti] === query[qi]) {
+      score += 1;
+      if (ti === 0) score += 5;
+      if (lastMatchIdx >= 0 && ti === lastMatchIdx + 1) score += 3;
+      if (ti > 0 && /[_\-.\s]/.test(text[ti - 1])) score += 3;
+      lastMatchIdx = ti;
+      qi++;
+    }
+  }
+  return { matched: qi === query.length, score };
 }
 
 function containsAnyTerms(text, terms) {
@@ -3154,9 +3281,9 @@ async function exportCurrentTable() {
       tables: [tableView.tableName],
       filePath,
     });
-    showToast(`导出完成：${result.totalRows} 行`, "success");
+    showCopyToast(`导出完成：${result.totalRows} 行`, "success");
   } catch (e) {
-    showToast(`导出失败：${e}`, "error");
+    showCopyToast(`导出失败：${e}`, "error");
   } finally {
     exportLoading.value = false;
   }
@@ -3188,10 +3315,10 @@ async function doBatchExport() {
       tables: [...exportSelectedTables],
       dirPath,
     });
-    showToast(`导出完成：${result.tableCount} 张表，${result.totalRows} 行`, "success");
+    showCopyToast(`导出完成：${result.tableCount} 张表，${result.totalRows} 行`, "success");
     exportDialogOpen.value = false;
   } catch (e) {
-    showToast(`导出失败：${e}`, "error");
+    showCopyToast(`导出失败：${e}`, "error");
   } finally {
     exportLoading.value = false;
   }
@@ -3304,13 +3431,13 @@ function escapeRegExp(str) {
 <template>
   <main v-if="isPanelWindow" class="app-shell open panel-shell" id="appShell" @contextmenu.prevent>
     <section class="widget" id="widget">
-      <header class="widget-header" @pointerdown="panelHeaderPointerDown">
-        <div class="traffic-lights">
+      <header class="widget-header" @pointerdown="panelHeaderPointerDown" @dblclick="panelToggleMaximize">
+        <div class="traffic-lights" @dblclick.stop>
           <button class="traffic-btn traffic-red" title="隐藏窗口" @click="panelClose"></button>
           <button class="traffic-btn traffic-yellow" title="最小化" @click="panelMinimize"></button>
           <button class="traffic-btn traffic-green" title="最大化/还原" @click="panelToggleMaximize"></button>
         </div>
-        <div class="title-drag" data-tauri-drag-region></div>
+        <div class="title-drag"></div>
         <span class="window-title">鹰捷V2.0</span>
         <div class="header-actions">
           <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
@@ -3441,7 +3568,7 @@ function escapeRegExp(str) {
       @pointerdown="petPointerDown"
     >
       <div class="eagle-container">
-        <div id="eagleSprite" class="eagle-sprite" :class="petSpriteClasses">
+        <div id="eagleSprite" class="eagle-sprite" :class="[petSpriteClasses, `skin-${config.personal.pet_skin}`]">
           <div class="blink-overlay"></div>
           <template v-if="petIdleActive && currentIdleState === 'sleep_zzz'">
             <div class="pixel-zzz">z</div>
@@ -3876,6 +4003,7 @@ function escapeRegExp(str) {
               </select>
             </label>
             <label><input v-model="settingsDraft.autoStart" type="checkbox" />开机自启</label>
+            <label><input v-model="settingsDraft.alwaysOnTop" type="checkbox" />窗口置顶</label>
           </div>
         </section>
 
@@ -3895,6 +4023,43 @@ function escapeRegExp(str) {
             <label class="full">排除表（正则，逗号分隔）<input v-model="settingsDraft.excludeTables" type="text" /></label>
             <label>单表超时(秒)<input v-model.number="settingsDraft.perTableTimeoutSec" type="number" /></label>
             <label>每表最大行数<input v-model.number="settingsDraft.perTableMaxRows" type="number" /></label>
+          </div>
+        </section>
+
+        <section class="form-group">
+          <h4>数据库模板 <span class="drop-hint">（Ctrl+1/2/3 快速切换）</span></h4>
+          <div v-if="config.shared.db_templates.length > 0" class="template-list">
+            <div v-for="(tpl, idx) in config.shared.db_templates" :key="idx" class="template-item">
+              <span class="template-name">{{ tpl.name }}</span>
+              <span class="template-info">{{ tpl.db.host }}:{{ tpl.db.port }}/{{ tpl.db.database }}</span>
+              <span v-if="idx < 3" class="template-hotkey">Ctrl+{{ idx + 1 }}</span>
+              <button class="ghost-btn" @click="switchToTemplate(idx)">加载</button>
+              <button class="ghost-btn danger" @click="deleteTemplate(idx)">删除</button>
+            </div>
+          </div>
+          <div v-else class="muted" style="margin-bottom:6px">暂无模板</div>
+          <div class="template-add">
+            <input v-model="settingsDraft.templateName" type="text" placeholder="模板名称" style="flex:1" />
+            <button class="small-btn" :disabled="!settingsDraft.templateName.trim()" @click="saveAsTemplate(settingsDraft.templateName); settingsDraft.templateName = ''">保存当前连接为模板</button>
+          </div>
+        </section>
+
+        <section class="form-group">
+          <h4>外观</h4>
+          <div class="form-grid">
+            <label>宠物皮肤
+              <select v-model="settingsDraft.petSkin">
+                <option value="eagle">鹰（默认）</option>
+                <option value="cat">猫</option>
+                <option value="bunny">兔</option>
+              </select>
+            </label>
+            <label>全局字体
+              <select v-model="settingsDraft.customFont">
+                <option :value="null">默认字体</option>
+                <option v-for="font in systemFonts" :key="font" :value="font">{{ font }}</option>
+              </select>
+            </label>
           </div>
         </section>
 

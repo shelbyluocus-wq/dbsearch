@@ -62,12 +62,15 @@ struct AppConfig {
 struct SharedConfig {
     db: DbConfig,
     search: SearchConfig,
+    #[serde(default)]
+    db_templates: Vec<DbTemplate>,
 }
 impl Default for SharedConfig {
     fn default() -> Self {
         Self {
             db: DbConfig::default(),
             search: SearchConfig::default(),
+            db_templates: Vec::new(),
         }
     }
 }
@@ -102,6 +105,13 @@ struct PersonalConfig {
     idle_states: Vec<String>,
     export_hotkey: String,
     batch_export_hotkey: String,
+    #[serde(default = "default_pet_skin")]
+    pet_skin: String,
+    #[serde(default)]
+    custom_font: Option<String>,
+}
+fn default_pet_skin() -> String {
+    "eagle".into()
 }
 impl Default for PersonalConfig {
     fn default() -> Self {
@@ -123,6 +133,8 @@ impl Default for PersonalConfig {
             ],
             export_hotkey: "Ctrl+E".into(),
             batch_export_hotkey: "Ctrl+Shift+E".into(),
+            pet_skin: "eagle".into(),
+            custom_font: None,
         }
     }
 }
@@ -149,6 +161,11 @@ impl Default for DbConfig {
             database: "".into(),
         }
     }
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DbTemplate {
+    name: String,
+    db: DbConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -767,6 +784,19 @@ async fn list_tables(state: State<'_, AppState>) -> Result<Vec<TableOption>, Str
         .collect::<Vec<_>>();
     out.sort_by(|a, b| a.table_name.cmp(&b.table_name));
     Ok(out)
+}
+
+#[tauri::command]
+fn list_system_fonts() -> Result<Vec<String>, String> {
+    use font_kit::source::SystemSource;
+    let source = SystemSource::new();
+    let families = source
+        .all_families()
+        .map_err(|e| format!("Failed to list fonts: {}", e))?;
+    let mut sorted = families;
+    sorted.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
+    sorted.dedup();
+    Ok(sorted)
 }
 
 #[tauri::command]
@@ -1917,7 +1947,8 @@ pub fn run() {
             set_autostart,
             save_table_changes,
             export_tables_xlsx,
-            export_tables_xlsx_batch
+            export_tables_xlsx_batch,
+            list_system_fonts
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
