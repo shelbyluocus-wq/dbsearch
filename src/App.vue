@@ -154,6 +154,8 @@ const tableCommandOpen = ref(false);
 const tableCommandQuery = ref("");
 const tableCommandActiveIndex = ref(0);
 const tableCommandSlashMode = ref(false);
+const templateSwitching = ref(false);
+const templateSwitchingIndex = ref(-1);
 let debounceTimer = null;
 let currentSearchToken = 0;
 let hitCollectToken = 0;
@@ -540,6 +542,43 @@ async function loadTableOptions() {
     tableOptions.value = Array.isArray(list) ? list : [];
   } catch {
     tableOptions.value = [];
+  }
+}
+
+function syncSettingsDraftDbFields(db = config.shared.db) {
+  settingsDraft.host = String(db?.host || "");
+  settingsDraft.port = Number(db?.port) || 3306;
+  settingsDraft.username = String(db?.username || "");
+  settingsDraft.password = String(db?.password || "");
+  settingsDraft.database = String(db?.database || "");
+}
+
+function applyDbConfigToShared(db = {}) {
+  config.shared.db.host = String(db?.host || "");
+  config.shared.db.port = Number(db?.port) || 3306;
+  config.shared.db.username = String(db?.username || "");
+  config.shared.db.password = String(db?.password || "");
+  config.shared.db.database = String(db?.database || "");
+}
+
+function resetContextAfterDbSwitch() {
+  selectedTables.value = [];
+  closeSlashMode();
+  closeTableCommandPalette();
+  forceExitEditMode();
+  doCloseTableDialog();
+  clearTableTabs();
+  results.table = [];
+  results.column = [];
+  results.comment = [];
+  results.data = [];
+}
+
+async function onDbConnectionChanged({ resetContext = false } = {}) {
+  await refreshConnectionStatus();
+  await loadTableOptions();
+  if (resetContext) {
+    resetContextAfterDbSwitch();
   }
 }
 
@@ -1547,7 +1586,7 @@ function onWindowKeydown(event) {
     const tplIdx = Number(event.key) - 1;
     if (tplIdx < config.shared.db_templates.length) {
       event.preventDefault();
-      switchToTemplate(tplIdx);
+      switchToTemplate(tplIdx).catch(() => {});
       return;
     }
   }
@@ -1849,11 +1888,7 @@ function panelHeaderPointerDown(event) {
 }
 
 function openSettings() {
-  settingsDraft.host = config.shared.db.host;
-  settingsDraft.port = config.shared.db.port;
-  settingsDraft.username = config.shared.db.username;
-  settingsDraft.password = config.shared.db.password;
-  settingsDraft.database = config.shared.db.database;
+  syncSettingsDraftDbFields();
   settingsDraft.hotkey = normalizeHotkeyDisplay(config.personal.hotkey);
   settingsDraft.quickDateHotkey = normalizeQuickDateHotkey(config.personal.quick_date_hotkey);
   settingsDraft.autoStart = config.personal.auto_start;
@@ -1894,7 +1929,7 @@ async function testConnect() {
       },
     });
     settingsMsg.value = `✓ ${msg}`;
-    await refreshConnectionStatus();
+    await onDbConnectionChanged();
   } catch (error) {
     settingsMsg.value = `✗ 连接失败：${String(error)}`;
   }
@@ -1903,11 +1938,13 @@ async function testConnect() {
 async function saveSettings() {
   const previousHotkey = config.personal.hotkey;
   const previousQuickDateHotkey = config.personal.quick_date_hotkey;
-  config.shared.db.host = settingsDraft.host.trim();
-  config.shared.db.port = Number(settingsDraft.port) || 3306;
-  config.shared.db.username = settingsDraft.username.trim();
-  config.shared.db.password = settingsDraft.password;
-  config.shared.db.database = settingsDraft.database.trim();
+  applyDbConfigToShared({
+    host: settingsDraft.host.trim(),
+    port: Number(settingsDraft.port) || 3306,
+    username: settingsDraft.username.trim(),
+    password: settingsDraft.password,
+    database: settingsDraft.database.trim(),
+  });
 
   config.personal.hotkey = normalizeHotkeyDisplay(settingsDraft.hotkey.trim() || "Ctrl+Shift+F");
   config.personal.quick_date_hotkey = normalizeQuickDateHotkey(settingsDraft.quickDateHotkey.trim() || "F9");
@@ -1973,6 +2010,7 @@ async function saveSettings() {
   }
   await invoke("set_autostart", { enable: config.personal.auto_start }).catch(() => {});
 
+  let connected = false;
   try {
     await invoke("connect_db", {
       config: {
@@ -1983,11 +2021,16 @@ async function saveSettings() {
         database: config.shared.db.database,
       },
     });
+    connected = true;
   } catch {
     // keep saved config even if connect failed
   }
 
-  await refreshConnectionStatus();
+  if (connected) {
+    await onDbConnectionChanged();
+  } else {
+    await refreshConnectionStatus();
+  }
   applyCustomFont();
   clearIdlePreview();
   settingsOpen.value = false;
@@ -2014,23 +2057,44 @@ function deleteTemplate(idx) {
 }
 
 async function switchToTemplate(idx) {
+  if (templateSwitching.value) return;
   const tpl = config.shared.db_templates[idx];
   if (!tpl) return;
-  config.shared.db.host = tpl.db.host;
-  config.shared.db.port = tpl.db.port;
-  config.shared.db.username = tpl.db.username;
-  config.shared.db.password = tpl.db.password;
-  config.shared.db.database = tpl.db.database;
-  await persistConfig();
-  try {
-    await invoke("disconnect_db");
-  } catch { /* ignore */ }
-  try {
-    await invoke("connect_db", { config: { ...tpl.db } });
-  } catch (e) {
-    showCopyToast(`连接失败：${e}`, "error");
+  if (editMode.value && editDirty.value) {
+    const blockedMsg = "当前有未保存编辑，请先保存或放弃后再切换模板";
+    settingsMsg.value = `✗ ${blockedMsg}`;
+    showCopyToast(blockedMsg, "error");
+    return;
   }
-  await refreshConnectionStatus();
+
+  const nextDb = {
+    host: String(tpl.db?.host || ""),
+    port: Number(tpl.db?.port) || 3306,
+    username: String(tpl.db?.username || ""),
+    password: String(tpl.db?.password || ""),
+    database: String(tpl.db?.database || ""),
+  };
+  templateSwitching.value = true;
+  templateSwitchingIndex.value = idx;
+
+  try {
+    await invoke("connect_db", { config: nextDb });
+    applyDbConfigToShared(nextDb);
+    syncSettingsDraftDbFields(nextDb);
+    await onDbConnectionChanged({ resetContext: true });
+    const detail = `${nextDb.host}:${nextDb.port}/${nextDb.database}`;
+    const msg = `已切换到模板 ${tpl.name}（${detail}）`;
+    summaryText.value = msg;
+    settingsMsg.value = `✓ ${msg}`;
+    showCopyToast(msg, "success");
+  } catch (e) {
+    const errorMsg = `模板切换失败，已保持当前连接：${String(e)}`;
+    settingsMsg.value = `✗ ${errorMsg}`;
+    showCopyToast(errorMsg, "error");
+  } finally {
+    templateSwitching.value = false;
+    templateSwitchingIndex.value = -1;
+  }
 }
 
 // ── 字体 ──
@@ -3461,7 +3525,7 @@ function escapeRegExp(str) {
           <button class="traffic-btn traffic-green" title="最大化/还原" @click="panelToggleMaximize"></button>
         </div>
         <div class="title-drag"></div>
-        <span class="window-title">鹰捷V2.0</span>
+        <span class="window-title">鹰捷V2.6</span>
         <div class="header-actions">
           <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
           <span class="db-name" id="dbName">{{ dbName }}</span>
@@ -4057,14 +4121,16 @@ function escapeRegExp(str) {
               <span class="template-name">{{ tpl.name }}</span>
               <span class="template-info">{{ tpl.db.host }}:{{ tpl.db.port }}/{{ tpl.db.database }}</span>
               <span v-if="idx < 3" class="template-hotkey">Ctrl+{{ idx + 1 }}</span>
-              <button class="ghost-btn" @click="switchToTemplate(idx)">加载</button>
-              <button class="ghost-btn danger" @click="deleteTemplate(idx)">删除</button>
+              <button class="ghost-btn" :disabled="templateSwitching" @click="switchToTemplate(idx)">
+                {{ templateSwitching && templateSwitchingIndex === idx ? "加载中..." : "加载" }}
+              </button>
+              <button class="ghost-btn danger" :disabled="templateSwitching" @click="deleteTemplate(idx)">删除</button>
             </div>
           </div>
           <div v-else class="muted" style="margin-bottom:6px">暂无模板</div>
           <div class="template-add">
             <input v-model="settingsDraft.templateName" type="text" placeholder="模板名称" style="flex:1" />
-            <button class="small-btn" :disabled="!settingsDraft.templateName.trim()" @click="saveAsTemplate(settingsDraft.templateName); settingsDraft.templateName = ''">保存当前连接为模板</button>
+            <button class="small-btn" :disabled="templateSwitching || !settingsDraft.templateName.trim()" @click="saveAsTemplate(settingsDraft.templateName); settingsDraft.templateName = ''">保存当前连接为模板</button>
           </div>
         </section>
 
