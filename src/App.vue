@@ -83,6 +83,8 @@ const THEMES = [
   { id: 'midnight', name: 'Midnight', color: '#334155' },
   { id: 'emerald',  name: 'Emerald',  color: '#059669' },
   { id: 'violet',   name: 'Violet',   color: '#7c3aed' },
+  { id: 'typewrite_dark', name: 'Typewrite Dark', color: '#d8a657' },
+  { id: 'typewrite_light', name: 'Typewrite Light', color: '#c08457' },
 ]
 
 function applyTheme(id) {
@@ -123,9 +125,21 @@ const config = reactive({
     table_default_view: "hits",
     pet_locked: false,
     pet_position: null,
-    idle_states: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
+    idle_states: [
+      "float_breathe",
+      "sleep_zzz",
+      "look_around",
+      "ghost_fade",
+      "wave_hello",
+      "charge_spell",
+      "jump_play",
+      "spin_show",
+    ],
     export_hotkey: "Ctrl+E",
     batch_export_hotkey: "Ctrl+Shift+E",
+    template_prev_hotkey: "Ctrl+Alt+Left",
+    template_next_hotkey: "Ctrl+Alt+Right",
+    reset_on_open_to_all_tables: true,
     always_on_top_hotkey: "P",
     pet_skin: "eagle",
     custom_font: null,
@@ -154,8 +168,11 @@ const tableCommandOpen = ref(false);
 const tableCommandQuery = ref("");
 const tableCommandActiveIndex = ref(0);
 const tableCommandSlashMode = ref(false);
+const navZone = ref("sidebar");
+const navResultIndex = ref(-1);
 const templateSwitching = ref(false);
 const templateSwitchingIndex = ref(-1);
+let panelWasHidden = false;
 let debounceTimer = null;
 let currentSearchToken = 0;
 let hitCollectToken = 0;
@@ -191,7 +208,7 @@ let tableLayoutObserver = null;
 let tableLayoutRaf = 0;
 let tablePageSizeAdjustToken = 0;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
-const IDLE_STATE_CHANGE_MS = 7 * 1000;
+const IDLE_STATE_CHANGE_MS = 6 * 1000;
 const UI_SCALE_MIN = 0.8;
 const UI_SCALE_MAX = 1.4;
 const UI_SCALE_STEP = 0.1;
@@ -199,7 +216,16 @@ const TABLE_PAGE_SIZE_MIN = 1;
 const TABLE_PAGE_SIZE_MAX = 200;
 const TABLE_ROW_HEIGHT_FALLBACK = 28;
 const TABLE_HEADER_HEIGHT_FALLBACK = 32;
-const ALLOWED_IDLE_STATES = ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"];
+const ALLOWED_IDLE_STATES = [
+  "float_breathe",
+  "sleep_zzz",
+  "look_around",
+  "ghost_fade",
+  "wave_hello",
+  "charge_spell",
+  "jump_play",
+  "spin_show",
+];
 const TABLE_TAB_LIMIT = 8;
 const TABLE_COMMAND_LIMIT = 12;
 
@@ -241,7 +267,16 @@ const settingsDraft = reactive({
   quickDateHotkey: "F9",
   autoStart: false,
   tableDefaultView: "hits",
-  idleStates: ["float_breathe", "sleep_zzz", "look_around", "ghost_fade"],
+  idleStates: [
+    "float_breathe",
+    "sleep_zzz",
+    "look_around",
+    "ghost_fade",
+    "wave_hello",
+    "charge_spell",
+    "jump_play",
+    "spin_show",
+  ],
   excludeTables: "^t_log_.*,^tmp_.*",
   perTableTimeoutSec: 10,
   perTableMaxRows: 50,
@@ -249,6 +284,9 @@ const settingsDraft = reactive({
   batchExportHotkey: "Ctrl+Shift+E",
   alwaysOnTop: true,
   alwaysOnTopHotkey: "P",
+  templatePrevHotkey: "Ctrl+Alt+Left",
+  templateNextHotkey: "Ctrl+Alt+Right",
+  resetOnOpenToAllTables: true,
   templateName: "",
   petSkin: "eagle",
   customFont: null,
@@ -256,6 +294,16 @@ const settingsDraft = reactive({
 
 const totalMetaCount = computed(() => results.table.length + results.column.length + results.comment.length);
 const canSearchData = computed(() => dbConnected.value && keyword.value.trim().length > 0);
+const isKeywordEmpty = computed(() => keyword.value.trim().length === 0);
+const defaultTableResults = computed(() =>
+  (Array.isArray(tableOptions.value) ? tableOptions.value : []).map((item) => ({
+    ...item,
+    match_type: "TableName",
+    matched_text: item.table_name,
+    score: 0,
+    _type: "table",
+  })),
+);
 
 const flatDataResults = computed(() => {
   const flat = [];
@@ -290,20 +338,31 @@ const flatDataResults = computed(() => {
 });
 
 const activeResultTab = ref('全部');
+const tableTabCount = computed(() => (isKeywordEmpty.value ? defaultTableResults.value.length : results.table.length));
 
 const totalResultCount = computed(() =>
-  results.table.length + results.column.length + results.comment.length + flatDataResults.value.length
+  tableTabCount.value +
+  results.column.length +
+  results.comment.length +
+  (isKeywordEmpty.value ? 0 : flatDataResults.value.length)
 );
 
 const resultTabs = computed(() => [
   { key: '全部',  label: '全部',  count: totalResultCount.value },
-  { key: '表名',  label: '表名',  count: results.table.length },
+  { key: '表名',  label: '表名',  count: tableTabCount.value },
   { key: '字段名', label: '字段名', count: results.column.length },
   { key: '备注',  label: '备注',  count: results.comment.length },
-  { key: '数据值', label: '数据值', count: flatDataResults.value.length },
+  { key: '数据值', label: '数据值', count: isKeywordEmpty.value ? 0 : flatDataResults.value.length },
 ]);
 
 const filteredResults = computed(() => {
+  if (isKeywordEmpty.value) {
+    if (activeResultTab.value === "全部" || activeResultTab.value === "表名") {
+      return defaultTableResults.value;
+    }
+    return [];
+  }
+
   switch (activeResultTab.value) {
     case '表名':  return results.table.map(i => ({ ...i, _type: 'table' }));
     case '字段名': return results.column.map(i => ({ ...i, _type: 'column' }));
@@ -316,6 +375,30 @@ const filteredResults = computed(() => {
       ...flatDataResults.value.map(i => ({ ...i, _type: 'data' })),
     ];
   }
+});
+const tableOptionCommentMap = computed(() => {
+  const out = new Map();
+  (Array.isArray(tableOptions.value) ? tableOptions.value : []).forEach((item) => {
+    out.set(String(item.table_name || "").toLowerCase(), String(item.table_comment || ""));
+  });
+  return out;
+});
+const activeTemplateIndex = computed(() => {
+  const list = Array.isArray(config.shared.db_templates) ? config.shared.db_templates : [];
+  const current = config.shared.db || {};
+  return list.findIndex((tpl) => {
+    const db = tpl?.db || {};
+    return String(db.host || "") === String(current.host || "")
+      && Number(db.port || 3306) === Number(current.port || 3306)
+      && String(db.username || "") === String(current.username || "")
+      && String(db.password || "") === String(current.password || "")
+      && String(db.database || "") === String(current.database || "");
+  });
+});
+const activeTemplateName = computed(() => {
+  const index = activeTemplateIndex.value;
+  if (index < 0) return "当前连接";
+  return String(config.shared.db_templates[index]?.name || "当前连接");
 });
 const tableSwitchCandidates = computed(() => {
   const seen = new Set();
@@ -380,7 +463,12 @@ const petSpriteClasses = computed(() => ({
   "idle-float": petIdleActive.value && currentIdleState.value === "float_breathe",
   "idle-look": petIdleActive.value && currentIdleState.value === "look_around",
   "idle-ghost": petIdleActive.value && currentIdleState.value === "ghost_fade",
+  "idle-wave": petIdleActive.value && currentIdleState.value === "wave_hello",
+  "idle-charge": petIdleActive.value && currentIdleState.value === "charge_spell",
+  "idle-jump": petIdleActive.value && currentIdleState.value === "jump_play",
+  "idle-spin": petIdleActive.value && currentIdleState.value === "spin_show",
 }));
+const isHdPetSkin = computed(() => false);
 const hotkeyPlaceholder = "点击后按下快捷键";
 const quickDateHotkeyPlaceholder = "点击后按下快捷键";
 const contentScaleStyle = computed(() => ({
@@ -526,9 +614,18 @@ function ensureDbConnectedForSearch() {
   return false;
 }
 
+function syncSummaryForDefaultTableBrowse() {
+  if (!isPanelWindow.value || !isKeywordEmpty.value) return;
+  if (!dbConnected.value) {
+    summaryText.value = "当前数据库未连接";
+    return;
+  }
+  summaryText.value = `共 ${defaultTableResults.value.length} 张表`;
+}
+
 function syncSummaryAfterConnectionCheck() {
   if (summaryText.value !== "正在连接数据库...") return;
-  summaryText.value = dbConnected.value ? "输入关键词开始搜索" : "当前数据库未连接";
+  syncSummaryForDefaultTableBrowse();
 }
 
 function currentSearchTargets() {
@@ -543,6 +640,7 @@ async function loadTableOptions() {
   } catch {
     tableOptions.value = [];
   }
+  syncSummaryForDefaultTableBrowse();
 }
 
 function syncSettingsDraftDbFields(db = config.shared.db) {
@@ -563,6 +661,8 @@ function applyDbConfigToShared(db = {}) {
 
 function resetContextAfterDbSwitch() {
   selectedTables.value = [];
+  navZone.value = "sidebar";
+  navResultIndex.value = -1;
   closeSlashMode();
   closeTableCommandPalette();
   forceExitEditMode();
@@ -574,11 +674,33 @@ function resetContextAfterDbSwitch() {
   results.data = [];
 }
 
+function resetPanelStateForDefaultBrowse() {
+  keyword.value = "";
+  activeResultTab.value = "全部";
+  navZone.value = "sidebar";
+  navResultIndex.value = -1;
+  historyOpen.value = false;
+  resultZoomOpen.value = false;
+  resetContextAfterDbSwitch();
+  syncSummaryForDefaultTableBrowse();
+}
+
+function handlePanelActivated({ reset = false } = {}) {
+  if (!isPanelWindow.value) return;
+  focusKeyword();
+  if (reset) {
+    resetPanelStateForDefaultBrowse();
+  } else {
+    syncSummaryForDefaultTableBrowse();
+  }
+}
+
 async function onDbConnectionChanged({ resetContext = false } = {}) {
   await refreshConnectionStatus();
   await loadTableOptions();
   if (resetContext) {
     resetContextAfterDbSwitch();
+    syncSummaryForDefaultTableBrowse();
   }
 }
 
@@ -606,6 +728,16 @@ function selectSlashCandidate(item) {
 
 function removeSelectedTable(tableName) {
   selectedTables.value = selectedTables.value.filter((item) => item !== tableName);
+}
+
+function isKeywordInputTarget(target) {
+  return target instanceof HTMLElement && target.id === "keywordInput";
+}
+
+function getTableComment(tableName) {
+  const key = String(tableName || "").toLowerCase();
+  if (!key) return "";
+  return tableOptionCommentMap.value.get(key) || "";
 }
 
 function onKeywordInputKeydown(event) {
@@ -669,6 +801,10 @@ function onKeywordInputKeydown(event) {
 
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
+    if (navZone.value === "results" && navResultIndex.value >= 0) {
+      openKeyboardFocusedResult().catch(() => {});
+      return;
+    }
     runDataSearch();
   }
 }
@@ -1131,6 +1267,9 @@ onMounted(async () => {
     await loadTableOptions();
     loadHistory();
     bindPanelListeners();
+    handlePanelActivated({
+      reset: config.personal.reset_on_open_to_all_tables,
+    });
     if (isTauriWindow) {
       unlistenPanelOpenSettings = await listen("panel-open-settings", async () => {
         await invoke("consume_panel_open_settings").catch(() => false);
@@ -1374,6 +1513,24 @@ watch(tableCommandActiveIndex, async () => {
   active?.scrollIntoView?.({ block: "nearest" });
 });
 
+watch(activeResultTab, () => {
+  resetKeyboardResultNav();
+  if (navZone.value === "results") {
+    scrollKeyboardResultIntoView();
+  }
+});
+
+watch(filteredResults, (items) => {
+  if (!Array.isArray(items) || items.length === 0) {
+    navResultIndex.value = -1;
+    return;
+  }
+  ensureKeyboardResultNav();
+  if (navZone.value === "results") {
+    scrollKeyboardResultIntoView();
+  }
+});
+
 function onDocDragover(e) { e.preventDefault(); }
 
 function onDocDrop(e) {
@@ -1385,11 +1542,29 @@ function onDocDrop(e) {
   onDropConfig(e);
 }
 
+function onPanelVisibilityChange() {
+  const hidden = document.hidden;
+  if (panelWasHidden && !hidden) {
+    handlePanelActivated({
+      reset: config.personal.reset_on_open_to_all_tables,
+    });
+  }
+  panelWasHidden = hidden;
+}
+
+function onPanelFocus() {
+  if (document.hidden) return;
+  handlePanelActivated({ reset: false });
+}
+
 function bindPanelListeners() {
+  panelWasHidden = document.hidden;
   window.addEventListener("click", onWindowClick);
   window.addEventListener("keydown", onWindowKeydown);
   window.addEventListener("wheel", onWindowWheel, { passive: false });
   window.addEventListener("resize", onWindowResize);
+  window.addEventListener("focus", onPanelFocus);
+  document.addEventListener("visibilitychange", onPanelVisibilityChange);
   document.addEventListener("dragover", onDocDragover);
   document.addEventListener("drop", onDocDrop);
 }
@@ -1399,6 +1574,8 @@ function detachPanelListeners() {
   window.removeEventListener("keydown", onWindowKeydown);
   window.removeEventListener("wheel", onWindowWheel);
   window.removeEventListener("resize", onWindowResize);
+  window.removeEventListener("focus", onPanelFocus);
+  document.removeEventListener("visibilitychange", onPanelVisibilityChange);
   document.removeEventListener("dragover", onDocDragover);
   document.removeEventListener("drop", onDocDrop);
 }
@@ -1521,9 +1698,71 @@ function onTableTabsWheel(event) {
   el.scrollLeft += event.deltaY;
 }
 
+function scrollTableContentHorizontally(delta) {
+  const wrap = document.querySelector(".table-content");
+  if (!(wrap instanceof HTMLElement)) return false;
+  wrap.scrollBy({ left: delta, behavior: "smooth" });
+  return true;
+}
+
+function resetKeyboardResultNav() {
+  navResultIndex.value = filteredResults.value.length > 0 ? 0 : -1;
+}
+
+function ensureKeyboardResultNav() {
+  if (filteredResults.value.length === 0) {
+    navResultIndex.value = -1;
+    return;
+  }
+  if (navResultIndex.value < 0 || navResultIndex.value >= filteredResults.value.length) {
+    navResultIndex.value = 0;
+  }
+}
+
+function scrollKeyboardResultIntoView() {
+  if (navResultIndex.value < 0) return;
+  nextTick(() => {
+    const row = document.getElementById(`result-item-${navResultIndex.value}`);
+    row?.scrollIntoView?.({ block: "nearest" });
+  });
+}
+
+function moveSidebarTabByStep(step = 1) {
+  const keys = resultTabs.value.map((item) => item.key);
+  if (keys.length === 0) return;
+  const current = keys.findIndex((key) => key === activeResultTab.value);
+  const base = current >= 0 ? current : 0;
+  const next = ((base + (step >= 0 ? 1 : -1)) % keys.length + keys.length) % keys.length;
+  activeResultTab.value = keys[next];
+}
+
+function moveResultNavByStep(step = 1) {
+  if (filteredResults.value.length === 0) {
+    navResultIndex.value = -1;
+    return;
+  }
+  ensureKeyboardResultNav();
+  const next = ((navResultIndex.value + (step >= 0 ? 1 : -1)) % filteredResults.value.length + filteredResults.value.length) % filteredResults.value.length;
+  navResultIndex.value = next;
+  scrollKeyboardResultIntoView();
+}
+
+async function openKeyboardFocusedResult() {
+  ensureKeyboardResultNav();
+  if (navResultIndex.value < 0) return;
+  const item = filteredResults.value[navResultIndex.value];
+  if (!item) return;
+  if (item._type === "data") {
+    await openFromData(item);
+    return;
+  }
+  await openFromMeta(item);
+}
+
 function onWindowKeydown(event) {
   const lower = String(event.key || "").toLowerCase();
   const withPrimary = event.ctrlKey || event.metaKey;
+  const allowPanelShortcut = !isEditableTarget(event.target) || isKeywordInputTarget(event.target);
 
   if (!isTauriWindow && !event.repeat && isEventMatchingHotkey(event, config.personal.quick_date_hotkey)) {
     if (!resolveEditableTarget(document.activeElement)) return;
@@ -1582,13 +1821,86 @@ function onWindowKeydown(event) {
     return;
   }
 
-  if ((event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey && ["1", "2", "3"].includes(event.key)) {
-    const tplIdx = Number(event.key) - 1;
-    if (tplIdx < config.shared.db_templates.length) {
+  if (
+    isPanelWindow.value &&
+    !document.hidden &&
+    !settingsOpen.value &&
+    allowPanelShortcut &&
+    isEventMatchingHotkey(event, config.personal.template_prev_hotkey)
+  ) {
+    event.preventDefault();
+    switchTemplateByStep(-1).catch(() => {});
+    return;
+  }
+
+  if (
+    isPanelWindow.value &&
+    !document.hidden &&
+    !settingsOpen.value &&
+    allowPanelShortcut &&
+    isEventMatchingHotkey(event, config.personal.template_next_hotkey)
+  ) {
+    event.preventDefault();
+    switchTemplateByStep(1).catch(() => {});
+    return;
+  }
+
+  if (
+    tableOpen.value &&
+    withPrimary &&
+    !event.altKey &&
+    !event.shiftKey &&
+    !settingsOpen.value &&
+    !isEditableTarget(event.target) &&
+    (lower === "arrowleft" || lower === "arrowright")
+  ) {
+    const moved = scrollTableContentHorizontally(lower === "arrowleft" ? -240 : 240);
+    if (moved) {
       event.preventDefault();
-      switchToTemplate(tplIdx).catch(() => {});
+    }
+    return;
+  }
+
+  if (
+    !tableOpen.value &&
+    withPrimary &&
+    !event.altKey &&
+    !event.shiftKey &&
+    !settingsOpen.value &&
+    allowPanelShortcut &&
+    (lower === "arrowleft" || lower === "arrowright" || lower === "arrowup" || lower === "arrowdown")
+  ) {
+    event.preventDefault();
+    if (lower === "arrowleft") {
+      navZone.value = "sidebar";
       return;
     }
+    if (lower === "arrowright") {
+      navZone.value = "results";
+      ensureKeyboardResultNav();
+      scrollKeyboardResultIntoView();
+      return;
+    }
+    if (navZone.value === "sidebar") {
+      moveSidebarTabByStep(lower === "arrowdown" ? 1 : -1);
+      return;
+    }
+    moveResultNavByStep(lower === "arrowdown" ? 1 : -1);
+    return;
+  }
+
+  if (
+    !tableOpen.value &&
+    event.key === "Enter" &&
+    !event.shiftKey &&
+    !event.altKey &&
+    !settingsOpen.value &&
+    !isEditableTarget(event.target) &&
+    navZone.value === "results"
+  ) {
+    event.preventDefault();
+    openKeyboardFocusedResult().catch(() => {});
+    return;
   }
 
   if (!tableOpen.value && event.key === "Escape" && slashModeOpen.value) {
@@ -1736,6 +2048,12 @@ function normalizeHotkeyDisplay(value) {
 function normalizeQuickDateHotkey(value) {
   const normalized = normalizeHotkeyDisplay(value);
   if (!normalized || isModifierOnlyHotkey(normalized)) return "F9";
+  return normalized;
+}
+
+function normalizeTemplateSwitchHotkey(value, fallback) {
+  const normalized = normalizeHotkeyDisplay(value);
+  if (!normalized || isModifierOnlyHotkey(normalized)) return fallback;
   return normalized;
 }
 
@@ -1901,6 +2219,15 @@ function openSettings() {
   settingsDraft.batchExportHotkey = normalizeHotkeyDisplay(config.personal.batch_export_hotkey);
   settingsDraft.alwaysOnTop = config.personal.always_on_top;
   settingsDraft.alwaysOnTopHotkey = normalizeHotkeyDisplay(config.personal.always_on_top_hotkey || "P");
+  settingsDraft.templatePrevHotkey = normalizeTemplateSwitchHotkey(
+    config.personal.template_prev_hotkey,
+    "Ctrl+Alt+Left",
+  );
+  settingsDraft.templateNextHotkey = normalizeTemplateSwitchHotkey(
+    config.personal.template_next_hotkey,
+    "Ctrl+Alt+Right",
+  );
+  settingsDraft.resetOnOpenToAllTables = config.personal.reset_on_open_to_all_tables !== false;
   settingsDraft.templateName = "";
   settingsDraft.petSkin = config.personal.pet_skin || "eagle";
   settingsDraft.customFont = config.personal.custom_font || null;
@@ -1953,6 +2280,14 @@ async function saveSettings() {
   config.personal.export_hotkey = normalizeHotkeyDisplay(settingsDraft.exportHotkey.trim() || "Ctrl+E");
   config.personal.batch_export_hotkey = normalizeHotkeyDisplay(settingsDraft.batchExportHotkey.trim() || "Ctrl+Shift+E");
   config.personal.always_on_top_hotkey = normalizeHotkeyDisplay(settingsDraft.alwaysOnTopHotkey.trim() || "P");
+  config.personal.template_prev_hotkey = normalizeTemplateSwitchHotkey(
+    settingsDraft.templatePrevHotkey.trim() || "Ctrl+Alt+Left",
+    "Ctrl+Alt+Left",
+  );
+  config.personal.template_next_hotkey = normalizeTemplateSwitchHotkey(
+    settingsDraft.templateNextHotkey.trim() || "Ctrl+Alt+Right",
+    "Ctrl+Alt+Right",
+  );
   if (isModifierOnlyHotkey(config.personal.hotkey)) {
     settingsMsg.value = "✗ 快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F";
     return;
@@ -1965,12 +2300,44 @@ async function saveSettings() {
     settingsMsg.value = "✗ 日期快捷键不能与主快捷键重复";
     return;
   }
+  if (config.personal.template_prev_hotkey === config.personal.template_next_hotkey) {
+    settingsMsg.value = "✗ 模板上一快捷键不能与模板下一快捷键重复";
+    return;
+  }
+
+  const fixedPanelHotkeys = new Set(["Ctrl+P", "Ctrl+O", "Ctrl+[", "Ctrl+]"]);
+  if (fixedPanelHotkeys.has(config.personal.template_prev_hotkey) || fixedPanelHotkeys.has(config.personal.template_next_hotkey)) {
+    settingsMsg.value = "✗ 模板切换快捷键不能与面板内置快捷键冲突";
+    return;
+  }
+
+  const duplicateCheck = new Map();
+  const configurableHotkeys = [
+    ["主快捷键", config.personal.hotkey],
+    ["日期快捷键", config.personal.quick_date_hotkey],
+    ["导出快捷键", config.personal.export_hotkey],
+    ["批量导出快捷键", config.personal.batch_export_hotkey],
+    ["置顶快捷键", config.personal.always_on_top_hotkey],
+    ["模板上一快捷键", config.personal.template_prev_hotkey],
+    ["模板下一快捷键", config.personal.template_next_hotkey],
+  ];
+  for (const [label, key] of configurableHotkeys) {
+    const normalizedKey = normalizeHotkeyDisplay(key);
+    if (!normalizedKey) continue;
+    if (duplicateCheck.has(normalizedKey)) {
+      settingsMsg.value = `✗ ${label}与${duplicateCheck.get(normalizedKey)}重复`;
+      return;
+    }
+    duplicateCheck.set(normalizedKey, label);
+  }
+
   config.shared.search.exclude_tables = settingsDraft.excludeTables
     .split(",")
     .map((item) => item.trim())
     .filter(Boolean);
   config.shared.search.per_table_timeout_sec = Number(settingsDraft.perTableTimeoutSec) || 10;
   config.shared.search.per_table_max_rows = Number(settingsDraft.perTableMaxRows) || 50;
+  config.personal.reset_on_open_to_all_tables = !!settingsDraft.resetOnOpenToAllTables;
   config.personal.pet_skin = settingsDraft.petSkin || "eagle";
   config.personal.custom_font = settingsDraft.customFont || null;
 
@@ -2095,6 +2462,22 @@ async function switchToTemplate(idx) {
     templateSwitching.value = false;
     templateSwitchingIndex.value = -1;
   }
+}
+
+async function switchTemplateByStep(step = 1) {
+  const list = Array.isArray(config.shared.db_templates) ? config.shared.db_templates : [];
+  if (list.length === 0) {
+    showCopyToast("暂无可切换模板", "error");
+    return;
+  }
+  const delta = step >= 0 ? 1 : -1;
+  const current = activeTemplateIndex.value >= 0 ? activeTemplateIndex.value : 0;
+  const next = ((current + delta) % list.length + list.length) % list.length;
+  if (list.length === 1 && next === current) {
+    showCopyToast("仅有一个模板", "success");
+    return;
+  }
+  await switchToTemplate(next);
 }
 
 // ── 字体 ──
@@ -2605,7 +2988,7 @@ async function runMetaSearch() {
     results.column = [];
     results.comment = [];
     results.data = [];
-    summaryText.value = "输入关键词开始搜索";
+    syncSummaryForDefaultTableBrowse();
     return;
   }
 
@@ -2851,7 +3234,7 @@ function isDataCellHit(row, columnName) {
 
 async function openFromMeta(item) {
   let externalHitCount = 0;
-  if (item.match_type === "TableName") externalHitCount = results.table.length;
+  if (item.match_type === "TableName") externalHitCount = isKeywordEmpty.value ? defaultTableResults.value.length : results.table.length;
   else if (item.match_type === "ColumnName") externalHitCount = results.column.length;
   else externalHitCount = results.comment.length;
 
@@ -3282,6 +3665,15 @@ async function loadConfig() {
   config.personal.ui_scale = normalizeUiScale(config.personal.ui_scale);
   config.personal.table_default_view = normalizeTableDefaultView(config.personal.table_default_view);
   config.personal.quick_date_hotkey = normalizeQuickDateHotkey(config.personal.quick_date_hotkey);
+  config.personal.template_prev_hotkey = normalizeTemplateSwitchHotkey(
+    config.personal.template_prev_hotkey,
+    "Ctrl+Alt+Left",
+  );
+  config.personal.template_next_hotkey = normalizeTemplateSwitchHotkey(
+    config.personal.template_next_hotkey,
+    "Ctrl+Alt+Right",
+  );
+  config.personal.reset_on_open_to_all_tables = config.personal.reset_on_open_to_all_tables !== false;
 }
 
 async function persistConfig() {
@@ -3525,7 +3917,7 @@ function escapeRegExp(str) {
           <button class="traffic-btn traffic-green" title="最大化/还原" @click="panelToggleMaximize"></button>
         </div>
         <div class="title-drag"></div>
-        <span class="window-title">鹰捷V2.6</span>
+        <span class="window-title">鹰捷V3.0</span>
         <div class="header-actions">
           <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
           <span class="db-name" id="dbName">{{ dbName }}</span>
@@ -3585,11 +3977,11 @@ function escapeRegExp(str) {
       </section>
 
       <div class="results-layout" id="resultsWrap">
-        <aside class="result-sidebar">
+        <aside :class="['result-sidebar', { 'kb-zone': navZone === 'sidebar' }]">
           <button
             v-for="tab in resultTabs" :key="tab.key"
             :class="['sidebar-item', { active: activeResultTab === tab.key }]"
-            @click="activeResultTab = tab.key"
+            @click="activeResultTab = tab.key; navZone = 'sidebar'"
           >
             <span>{{ tab.label }}</span>
             <span class="sidebar-count" v-if="tab.count > 0">{{ tab.count }}</span>
@@ -3598,24 +3990,45 @@ function escapeRegExp(str) {
 
         <section class="results-main">
           <div class="list list-main">
-            <template v-for="item in filteredResults" :key="getResultKey(item)">
-              <button v-if="item._type === 'table'" class="list-item" @click="openFromMeta(item)">
+            <template v-for="(item, idx) in filteredResults" :key="getResultKey(item)">
+              <button
+                v-if="item._type === 'table'"
+                :id="`result-item-${idx}`"
+                :class="['list-item', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
+                @click="navZone = 'results'; navResultIndex = idx; openFromMeta(item)"
+              >
                 <div class="main" v-html="renderHighlighted(item.table_name)"></div>
+                <div class="sub">{{ getTableComment(item.table_name) || "-" }}</div>
                 <span class="badge">TABLE</span>
                 <span class="copy-icon-btn" @click.stop="copyText(item.table_name)" title="复制">⎘</span>
               </button>
-              <button v-else-if="item._type === 'column'" class="list-item" @click="openFromMeta(item)">
+              <button
+                v-else-if="item._type === 'column'"
+                :id="`result-item-${idx}`"
+                :class="['list-item', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
+                @click="navZone = 'results'; navResultIndex = idx; openFromMeta(item)"
+              >
                 <div class="main" v-html="`${item.table_name}.` + renderHighlighted(item.column_name || '')"></div>
                 <span class="badge">FIELD</span>
                 <span class="copy-icon-btn" @click.stop="copyText(item.column_name || item.table_name)" title="复制">⎘</span>
               </button>
-              <button v-else-if="item._type === 'comment'" class="list-item" @click="openFromMeta(item)">
+              <button
+                v-else-if="item._type === 'comment'"
+                :id="`result-item-${idx}`"
+                :class="['list-item', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
+                @click="navZone = 'results'; navResultIndex = idx; openFromMeta(item)"
+              >
                 <div class="main">{{ item.table_name }}<span v-if="item.column_name">.{{ item.column_name }}</span></div>
                 <div class="sub" v-html="renderHighlighted(item.matched_text)"></div>
                 <span class="badge">{{ item.match_type === 'TableComment' ? '表备注' : '列备注' }}</span>
                 <span class="copy-icon-btn" @click.stop="copyText(item.column_name || item.table_name)" title="复制">⎘</span>
               </button>
-              <button v-else-if="item._type === 'data'" class="list-item" @click="openFromData(item)">
+              <button
+                v-else-if="item._type === 'data'"
+                :id="`result-item-${idx}`"
+                :class="['list-item', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
+                @click="navZone = 'results'; navResultIndex = idx; openFromData(item)"
+              >
                 <div class="main">{{ item.table_name }}</div>
                 <div class="sub" v-html="renderHighlighted(item.preview)"></div>
               </button>
@@ -3629,6 +4042,25 @@ function escapeRegExp(str) {
       </div>
       </div>
       <div class="panel-footer">
+        <div class="template-quick-switch">
+          <button
+            class="small-btn template-switch-btn"
+            :disabled="templateSwitching || config.shared.db_templates.length === 0"
+            title="上一模板"
+            @click="switchTemplateByStep(-1)"
+          >
+            ◀
+          </button>
+          <span class="template-current-name">{{ activeTemplateName }}</span>
+          <button
+            class="small-btn template-switch-btn"
+            :disabled="templateSwitching || config.shared.db_templates.length === 0"
+            title="下一模板"
+            @click="switchTemplateByStep(1)"
+          >
+            ▶
+          </button>
+        </div>
         <div class="theme-switcher">
           <button
             v-for="t in THEMES" :key="t.id"
@@ -3654,12 +4086,44 @@ function escapeRegExp(str) {
       @contextmenu="openContextMenu"
       @pointerdown="petPointerDown"
     >
-      <div class="eagle-container">
-        <div id="eagleSprite" class="eagle-sprite" :class="[petSpriteClasses, `skin-${config.personal.pet_skin}`]">
-          <div class="blink-overlay"></div>
-          <template v-if="petIdleActive && currentIdleState === 'sleep_zzz'">
-            <div class="pixel-zzz">z</div>
-            <div class="pixel-zzz">z</div>
+      <div class="eagle-container" :class="{ 'hd-container': isHdPetSkin }">
+        <div id="eagleSprite" class="eagle-sprite" :class="[petSpriteClasses, `skin-${config.personal.pet_skin}`, { 'hd-skin': isHdPetSkin }]">
+          <template v-if="isHdPetSkin">
+            <div class="hd-pet" :class="`hd-${config.personal.pet_skin}`">
+              <div class="hd-halo" v-if="config.personal.pet_skin === 'spirit'"></div>
+              <div class="hd-orbit">
+                <span></span>
+                <span></span>
+                <span></span>
+              </div>
+              <div class="hd-tail" v-if="config.personal.pet_skin === 'lion'">
+                <div class="hd-tail-core"></div>
+                <div class="hd-tail-tip"></div>
+              </div>
+              <div class="hd-sprout" v-if="config.personal.pet_skin === 'lion'"></div>
+              <div class="hd-orb" v-if="config.personal.pet_skin === 'spirit'"></div>
+              <div class="hd-body"></div>
+              <div class="hd-arm hd-arm-left"></div>
+              <div class="hd-arm hd-arm-right"></div>
+              <div class="hd-leg hd-leg-left"></div>
+              <div class="hd-leg hd-leg-right"></div>
+              <div class="hd-face">
+                <span class="hd-eye hd-eye-left"></span>
+                <span class="hd-eye hd-eye-right"></span>
+                <span class="hd-mouth"></span>
+              </div>
+            </div>
+            <template v-if="petIdleActive && currentIdleState === 'sleep_zzz'">
+              <div class="hd-zzz">z</div>
+              <div class="hd-zzz">z</div>
+            </template>
+          </template>
+          <template v-else>
+            <div class="blink-overlay"></div>
+            <template v-if="petIdleActive && currentIdleState === 'sleep_zzz'">
+              <div class="pixel-zzz">z</div>
+              <div class="pixel-zzz">z</div>
+            </template>
           </template>
         </div>
         <div class="eagle-shadow"></div>
@@ -4084,6 +4548,8 @@ function escapeRegExp(str) {
             <label>导出快捷键<input v-model="settingsDraft.exportHotkey" type="text" readonly placeholder="Ctrl+E" @keydown="onDraftHotkeyInputKeydown($event, 'exportHotkey')" /></label>
             <label>批量导出快捷键<input v-model="settingsDraft.batchExportHotkey" type="text" readonly placeholder="Ctrl+Shift+E" @keydown="onDraftHotkeyInputKeydown($event, 'batchExportHotkey')" /></label>
             <label>置顶快捷键<input v-model="settingsDraft.alwaysOnTopHotkey" type="text" readonly placeholder="P" @keydown="onDraftHotkeyInputKeydown($event, 'alwaysOnTopHotkey')" /></label>
+            <label>模板上一快捷键<input v-model="settingsDraft.templatePrevHotkey" type="text" readonly placeholder="Ctrl+Alt+Left" @keydown="onDraftHotkeyInputKeydown($event, 'templatePrevHotkey')" /></label>
+            <label>模板下一快捷键<input v-model="settingsDraft.templateNextHotkey" type="text" readonly placeholder="Ctrl+Alt+Right" @keydown="onDraftHotkeyInputKeydown($event, 'templateNextHotkey')" /></label>
             <label>小窗口默认视图
               <select v-model="settingsDraft.tableDefaultView">
                 <option value="hits">Tab 页面（只看命中）</option>
@@ -4092,6 +4558,7 @@ function escapeRegExp(str) {
             </label>
             <label><input v-model="settingsDraft.autoStart" type="checkbox" />开机自启</label>
             <label><input v-model="settingsDraft.alwaysOnTop" type="checkbox" />窗口置顶</label>
+            <label><input v-model="settingsDraft.resetOnOpenToAllTables" type="checkbox" />打开窗口重置为全表</label>
           </div>
         </section>
 
@@ -4102,6 +4569,10 @@ function escapeRegExp(str) {
             <label><input v-model="settingsDraft.idleStates" type="checkbox" value="sleep_zzz" @change="previewIdleState('sleep_zzz')" />打盹(zzz)</label>
             <label><input v-model="settingsDraft.idleStates" type="checkbox" value="look_around" @change="previewIdleState('look_around')" />左右张望</label>
             <label><input v-model="settingsDraft.idleStates" type="checkbox" value="ghost_fade" @change="previewIdleState('ghost_fade')" />半透明潜行</label>
+            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="wave_hello" @change="previewIdleState('wave_hello')" />挥手问好</label>
+            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="charge_spell" @change="previewIdleState('charge_spell')" />蓄力施法</label>
+            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="jump_play" @change="previewIdleState('jump_play')" />蹦跳庆祝</label>
+            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="spin_show" @change="previewIdleState('spin_show')" />旋转登场</label>
           </div>
         </section>
 
@@ -4115,12 +4586,11 @@ function escapeRegExp(str) {
         </section>
 
         <section class="form-group">
-          <h4>数据库模板 <span class="drop-hint">（Ctrl+1/2/3 快速切换）</span></h4>
+          <h4>数据库模板</h4>
           <div v-if="config.shared.db_templates.length > 0" class="template-list">
             <div v-for="(tpl, idx) in config.shared.db_templates" :key="idx" class="template-item">
               <span class="template-name">{{ tpl.name }}</span>
               <span class="template-info">{{ tpl.db.host }}:{{ tpl.db.port }}/{{ tpl.db.database }}</span>
-              <span v-if="idx < 3" class="template-hotkey">Ctrl+{{ idx + 1 }}</span>
               <button class="ghost-btn" :disabled="templateSwitching" @click="switchToTemplate(idx)">
                 {{ templateSwitching && templateSwitchingIndex === idx ? "加载中..." : "加载" }}
               </button>
@@ -4144,6 +4614,8 @@ function escapeRegExp(str) {
                 <option value="bunny">兔</option>
                 <option value="fox">狐狸</option>
                 <option value="panda">熊猫</option>
+                <option value="spirit">灵童（像素参考）</option>
+                <option value="lion">狮橙（像素参考）</option>
               </select>
             </label>
             <label>全局字体
