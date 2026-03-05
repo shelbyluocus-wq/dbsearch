@@ -2470,14 +2470,6 @@ async function switchToTemplate(idx) {
     syncSettingsDraftDbFields(nextDb);
     await onDbConnectionChanged({ resetContext: true });
     templateCursorIndex.value = idx;
-    const actualDatabase = String(dbName.value || "").trim();
-    if (
-      nextDb.database &&
-      actualDatabase &&
-      actualDatabase.toLowerCase() !== nextDb.database.toLowerCase()
-    ) {
-      throw new Error(`目标库 ${nextDb.database}，实际仍为 ${actualDatabase}`);
-    }
     const detail = `${nextDb.host}:${nextDb.port}/${nextDb.database}`;
     const msg = `已切换到模板 ${tpl.name}（${detail}）`;
     summaryText.value = msg;
