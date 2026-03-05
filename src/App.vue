@@ -172,6 +172,7 @@ const navZone = ref("sidebar");
 const navResultIndex = ref(-1);
 const templateSwitching = ref(false);
 const templateSwitchingIndex = ref(-1);
+const templateCursorIndex = ref(-1);
 let panelWasHidden = false;
 let debounceTimer = null;
 let currentSearchToken = 0;
@@ -383,22 +384,41 @@ const tableOptionCommentMap = computed(() => {
   });
   return out;
 });
-const activeTemplateIndex = computed(() => {
+
+function normalizeDbTemplateIdentity(db = {}) {
+  return {
+    host: String(db?.host || "").trim().toLowerCase(),
+    port: Number(db?.port) || 3306,
+    username: String(db?.username || "").trim(),
+    database: String(db?.database || "").trim(),
+  };
+}
+
+function findTemplateIndexByDb(db = config.shared.db) {
   const list = Array.isArray(config.shared.db_templates) ? config.shared.db_templates : [];
-  const current = config.shared.db || {};
+  if (list.length === 0) return -1;
+  const current = normalizeDbTemplateIdentity(db);
   return list.findIndex((tpl) => {
-    const db = tpl?.db || {};
-    return String(db.host || "") === String(current.host || "")
-      && Number(db.port || 3306) === Number(current.port || 3306)
-      && String(db.username || "") === String(current.username || "")
-      && String(db.password || "") === String(current.password || "")
-      && String(db.database || "") === String(current.database || "");
+    const target = normalizeDbTemplateIdentity(tpl?.db || {});
+    return target.host === current.host
+      && target.port === current.port
+      && target.username === current.username
+      && target.database === current.database;
   });
+}
+
+const activeTemplateIndex = computed(() => {
+  return findTemplateIndexByDb();
 });
 const activeTemplateName = computed(() => {
+  const list = Array.isArray(config.shared.db_templates) ? config.shared.db_templates : [];
+  const cursor = Number(templateCursorIndex.value);
+  if (cursor >= 0 && cursor < list.length) {
+    return String(list[cursor]?.name || "当前连接");
+  }
   const index = activeTemplateIndex.value;
   if (index < 0) return "当前连接";
-  return String(config.shared.db_templates[index]?.name || "当前连接");
+  return String(list[index]?.name || "当前连接");
 });
 const tableSwitchCandidates = computed(() => {
   const seen = new Set();
@@ -2449,6 +2469,15 @@ async function switchToTemplate(idx) {
     applyDbConfigToShared(nextDb);
     syncSettingsDraftDbFields(nextDb);
     await onDbConnectionChanged({ resetContext: true });
+    templateCursorIndex.value = idx;
+    const actualDatabase = String(dbName.value || "").trim();
+    if (
+      nextDb.database &&
+      actualDatabase &&
+      actualDatabase.toLowerCase() !== nextDb.database.toLowerCase()
+    ) {
+      throw new Error(`目标库 ${nextDb.database}，实际仍为 ${actualDatabase}`);
+    }
     const detail = `${nextDb.host}:${nextDb.port}/${nextDb.database}`;
     const msg = `已切换到模板 ${tpl.name}（${detail}）`;
     summaryText.value = msg;
@@ -2471,9 +2500,12 @@ async function switchTemplateByStep(step = 1) {
     return;
   }
   const delta = step >= 0 ? 1 : -1;
-  const current = activeTemplateIndex.value >= 0 ? activeTemplateIndex.value : 0;
+  const matchedIndex = activeTemplateIndex.value;
+  const cursor = Number(templateCursorIndex.value);
+  const hasCursor = cursor >= 0 && cursor < list.length;
+  const current = hasCursor ? cursor : (matchedIndex >= 0 ? matchedIndex : (delta > 0 ? -1 : 0));
   const next = ((current + delta) % list.length + list.length) % list.length;
-  if (list.length === 1 && next === current) {
+  if (list.length === 1 && matchedIndex >= 0 && next === matchedIndex) {
     showCopyToast("仅有一个模板", "success");
     return;
   }
@@ -3674,7 +3706,19 @@ async function loadConfig() {
     "Ctrl+Alt+Right",
   );
   config.personal.reset_on_open_to_all_tables = config.personal.reset_on_open_to_all_tables !== false;
+  templateCursorIndex.value = findTemplateIndexByDb(config.shared.db);
 }
+
+watch(activeTemplateIndex, (idx) => {
+  const list = Array.isArray(config.shared.db_templates) ? config.shared.db_templates : [];
+  if (idx >= 0 && idx < list.length && !templateSwitching.value) {
+    templateCursorIndex.value = idx;
+    return;
+  }
+  if (templateCursorIndex.value >= list.length) {
+    templateCursorIndex.value = list.length > 0 ? list.length - 1 : -1;
+  }
+});
 
 async function persistConfig() {
   await invoke("save_config", { config });

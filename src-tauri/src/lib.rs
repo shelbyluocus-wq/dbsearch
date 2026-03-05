@@ -362,14 +362,29 @@ async fn disconnect_db(state: State<'_, AppState>) -> Result<(), String> {
 }
 #[tauri::command]
 async fn get_connection_status(state: State<'_, AppState>) -> Result<ConnectionStatus, String> {
-    let rt = state.runtime.lock().await;
+    let (pool, configured_db) = {
+        let rt = state.runtime.lock().await;
+        (rt.pool.clone(), rt.config.shared.db.database.clone())
+    };
+    let mut database = if configured_db.is_empty() {
+        None
+    } else {
+        Some(configured_db)
+    };
+    if let Some(pool) = pool.as_ref() {
+        if let Ok(actual_db) =
+            sqlx::query_scalar::<_, Option<String>>("SELECT DATABASE()").fetch_one(pool).await
+        {
+            if let Some(db) = actual_db {
+                if !db.trim().is_empty() {
+                    database = Some(db);
+                }
+            }
+        }
+    }
     Ok(ConnectionStatus {
-        connected: rt.pool.is_some(),
-        database: if rt.config.shared.db.database.is_empty() {
-            None
-        } else {
-            Some(rt.config.shared.db.database.clone())
-        },
+        connected: pool.is_some(),
+        database,
     })
 }
 #[tauri::command]
