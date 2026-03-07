@@ -159,6 +159,23 @@ const tableFindTable = ref("");
 const tableFindCacheVersion = ref(0);
 const tableOptions = ref([]);
 const selectedTables = ref([]);
+
+// ── 表整理：排序 / 文件夹 / 星标 ──
+const sortMode = ref("name_asc"); // name_asc | name_desc | comment_asc | comment_desc
+const activeFolder = ref("all"); // "all" | "starred" | folder id
+const starredTables = reactive(new Set());
+const tableFolders = ref([]); // [{ id, name, tables: [] }]
+const sortMenuOpen = ref(false);
+const folderCtxTarget = ref(null); // folder id being right-clicked
+const folderCtxPos = reactive({ x: 0, y: 0 });
+const folderRenameId = ref(null);
+const folderRenameValue = ref("");
+const itemCtxOpen = ref(false);
+const itemCtxPos = reactive({ x: 0, y: 0 });
+const itemCtxTableName = ref("");
+const itemCtxSubMenuOpen = ref(false);
+const newFolderDialogOpen = ref(false);
+const newFolderName = ref("");
 const slashModeOpen = ref(false);
 const slashQuery = ref("");
 const slashActiveIndex = ref(0);
@@ -296,15 +313,118 @@ const settingsDraft = reactive({
 const totalMetaCount = computed(() => results.table.length + results.column.length + results.comment.length);
 const canSearchData = computed(() => dbConnected.value && keyword.value.trim().length > 0);
 const isKeywordEmpty = computed(() => keyword.value.trim().length === 0);
-const defaultTableResults = computed(() =>
-  (Array.isArray(tableOptions.value) ? tableOptions.value : []).map((item) => ({
+// ── 表整理：持久化 ──
+function orgStorageKey() {
+  const db = config.shared.db;
+  return `db_scout_org_v1_${db.host}_${db.port}_${db.database}`;
+}
+function loadOrgData() {
+  try {
+    const raw = localStorage.getItem(orgStorageKey());
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    starredTables.clear();
+    (Array.isArray(data.starred) ? data.starred : []).forEach((t) => starredTables.add(t));
+    tableFolders.value = Array.isArray(data.folders)
+      ? data.folders.map((f) => ({ id: f.id || crypto.randomUUID(), name: f.name || "", tables: Array.isArray(f.tables) ? f.tables : [] }))
+      : [];
+    if (data.sortMode) sortMode.value = data.sortMode;
+  } catch { /* ignore */ }
+}
+function saveOrgData() {
+  try {
+    localStorage.setItem(orgStorageKey(), JSON.stringify({
+      starred: [...starredTables],
+      folders: tableFolders.value,
+      sortMode: sortMode.value,
+    }));
+  } catch { /* ignore */ }
+}
+function toggleStar(tableName) {
+  if (starredTables.has(tableName)) starredTables.delete(tableName);
+  else starredTables.add(tableName);
+  saveOrgData();
+}
+function addTableToFolder(tableName, folderId) {
+  const folder = tableFolders.value.find((f) => f.id === folderId);
+  if (folder && !folder.tables.includes(tableName)) {
+    folder.tables.push(tableName);
+    saveOrgData();
+  }
+}
+function removeTableFromFolder(tableName, folderId) {
+  const folder = tableFolders.value.find((f) => f.id === folderId);
+  if (folder) {
+    folder.tables = folder.tables.filter((t) => t !== tableName);
+    saveOrgData();
+  }
+}
+function createFolder(name) {
+  const id = crypto.randomUUID();
+  tableFolders.value.push({ id, name, tables: [] });
+  saveOrgData();
+  return id;
+}
+function deleteFolder(id) {
+  tableFolders.value = tableFolders.value.filter((f) => f.id !== id);
+  if (activeFolder.value === id) activeFolder.value = "all";
+  saveOrgData();
+}
+function renameFolder(id, newName) {
+  const folder = tableFolders.value.find((f) => f.id === id);
+  if (folder) { folder.name = newName; saveOrgData(); }
+}
+function isTableInFolder(tableName, folderId) {
+  const folder = tableFolders.value.find((f) => f.id === folderId);
+  return folder ? folder.tables.includes(tableName) : false;
+}
+
+// ── 排序函数 ──
+function getCommentForSort(item) {
+  if (item.table_comment != null) return String(item.table_comment);
+  return getTableComment(item.table_name);
+}
+function sortTableItems(items, mode) {
+  const sorted = [...items];
+  const cmpName = (a, b) => String(a.table_name || "").localeCompare(String(b.table_name || ""), "zh-CN");
+  const cmpComment = (a, b) => getCommentForSort(a).localeCompare(getCommentForSort(b), "zh-CN");
+  switch (mode) {
+    case "name_asc":    sorted.sort(cmpName); break;
+    case "name_desc":   sorted.sort((a, b) => cmpName(b, a)); break;
+    case "comment_asc": sorted.sort((a, b) => cmpComment(a, b) || cmpName(a, b)); break;
+    case "comment_desc":sorted.sort((a, b) => cmpComment(b, a) || cmpName(a, b)); break;
+  }
+  return sorted;
+}
+function applyStarPinning(items) {
+  const starred = [];
+  const rest = [];
+  for (const item of items) {
+    if (starredTables.has(item.table_name)) starred.push(item);
+    else rest.push(item);
+  }
+  return [...starred, ...rest];
+}
+function applyFolderFilter(items) {
+  if (activeFolder.value === "all") return items;
+  if (activeFolder.value === "starred") return items.filter((i) => starredTables.has(i.table_name));
+  const folder = tableFolders.value.find((f) => f.id === activeFolder.value);
+  if (!folder) return items;
+  const set = new Set(folder.tables);
+  return items.filter((i) => set.has(i.table_name));
+}
+
+// ── 排序后的表结果（含文件夹筛选 + 星标置顶）──
+const defaultTableResults = computed(() => {
+  const base = (Array.isArray(tableOptions.value) ? tableOptions.value : []).map((item) => ({
     ...item,
     match_type: "TableName",
     matched_text: item.table_name,
     score: 0,
     _type: "table",
-  })),
-);
+  }));
+  return applyStarPinning(applyFolderFilter(sortTableItems(base, sortMode.value)));
+});
 
 const flatDataResults = computed(() => {
   const flat = [];
@@ -339,21 +459,38 @@ const flatDataResults = computed(() => {
 });
 
 const activeResultTab = ref('全部');
-const tableTabCount = computed(() => (isKeywordEmpty.value ? defaultTableResults.value.length : results.table.length));
+const tableTabCount = computed(() => (isKeywordEmpty.value ? defaultTableResults.value.length : sortedSearchTableResults.value.length));
+
+const sortedSearchTableResults = computed(() => {
+  const base = results.table.map((i) => ({ ...i, _type: "table" }));
+  return applyStarPinning(applyFolderFilter(sortTableItems(base, sortMode.value)));
+});
+const sortedSearchColumnResults = computed(() => {
+  const base = results.column.map((i) => ({ ...i, _type: "column" }));
+  return applyFolderFilter(base);
+});
+const sortedSearchCommentResults = computed(() => {
+  const base = results.comment.map((i) => ({ ...i, _type: "comment" }));
+  return applyFolderFilter(base);
+});
+const sortedSearchDataResults = computed(() => {
+  const base = flatDataResults.value.map((i) => ({ ...i, _type: "data" }));
+  return applyFolderFilter(base);
+});
 
 const totalResultCount = computed(() =>
   tableTabCount.value +
-  results.column.length +
-  results.comment.length +
-  (isKeywordEmpty.value ? 0 : flatDataResults.value.length)
+  sortedSearchColumnResults.value.length +
+  sortedSearchCommentResults.value.length +
+  (isKeywordEmpty.value ? 0 : sortedSearchDataResults.value.length)
 );
 
 const resultTabs = computed(() => [
   { key: '全部',  label: '全部',  count: totalResultCount.value },
   { key: '表名',  label: '表名',  count: tableTabCount.value },
-  { key: '字段名', label: '字段名', count: results.column.length },
-  { key: '备注',  label: '备注',  count: results.comment.length },
-  { key: '数据值', label: '数据值', count: isKeywordEmpty.value ? 0 : flatDataResults.value.length },
+  { key: '字段名', label: '字段名', count: sortedSearchColumnResults.value.length },
+  { key: '备注',  label: '备注',  count: sortedSearchCommentResults.value.length },
+  { key: '数据值', label: '数据值', count: isKeywordEmpty.value ? 0 : sortedSearchDataResults.value.length },
 ]);
 
 const filteredResults = computed(() => {
@@ -365,15 +502,15 @@ const filteredResults = computed(() => {
   }
 
   switch (activeResultTab.value) {
-    case '表名':  return results.table.map(i => ({ ...i, _type: 'table' }));
-    case '字段名': return results.column.map(i => ({ ...i, _type: 'column' }));
-    case '备注':  return results.comment.map(i => ({ ...i, _type: 'comment' }));
-    case '数据值': return flatDataResults.value.map(i => ({ ...i, _type: 'data' }));
+    case '表名':  return sortedSearchTableResults.value;
+    case '字段名': return sortedSearchColumnResults.value;
+    case '备注':  return sortedSearchCommentResults.value;
+    case '数据值': return sortedSearchDataResults.value;
     default: return [
-      ...results.table.map(i => ({ ...i, _type: 'table' })),
-      ...results.column.map(i => ({ ...i, _type: 'column' })),
-      ...results.comment.map(i => ({ ...i, _type: 'comment' })),
-      ...flatDataResults.value.map(i => ({ ...i, _type: 'data' })),
+      ...sortedSearchTableResults.value,
+      ...sortedSearchColumnResults.value,
+      ...sortedSearchCommentResults.value,
+      ...sortedSearchDataResults.value,
     ];
   }
 });
@@ -628,6 +765,100 @@ function clearIdlePreview() {
   emit("pet-idle-preview", { state: null }).catch(() => {});
 }
 
+// ── 表整理：UI 交互 ──
+function openItemCtxMenu(event, tableName) {
+  event.preventDefault();
+  event.stopPropagation();
+  itemCtxTableName.value = tableName;
+  itemCtxPos.x = event.clientX;
+  itemCtxPos.y = event.clientY;
+  itemCtxOpen.value = true;
+  itemCtxSubMenuOpen.value = false;
+  sortMenuOpen.value = false;
+  folderCtxTarget.value = null;
+}
+function closeItemCtxMenu() {
+  itemCtxOpen.value = false;
+  itemCtxSubMenuOpen.value = false;
+}
+function toggleSortMenu() {
+  sortMenuOpen.value = !sortMenuOpen.value;
+}
+function selectSortMode(mode) {
+  sortMode.value = mode;
+  sortMenuOpen.value = false;
+  saveOrgData();
+  syncSummaryForDefaultTableBrowse();
+}
+function openFolderCtxMenu(event, folderId) {
+  event.preventDefault();
+  event.stopPropagation();
+  folderCtxTarget.value = folderId;
+  folderCtxPos.x = event.clientX;
+  folderCtxPos.y = event.clientY;
+  sortMenuOpen.value = false;
+  itemCtxOpen.value = false;
+}
+function closeFolderCtxMenu() {
+  folderCtxTarget.value = null;
+}
+function startFolderRename(folderId) {
+  const folder = tableFolders.value.find((f) => f.id === folderId);
+  if (!folder) return;
+  folderRenameId.value = folderId;
+  folderRenameValue.value = folder.name;
+  closeFolderCtxMenu();
+}
+function commitFolderRename() {
+  if (folderRenameId.value && folderRenameValue.value.trim()) {
+    renameFolder(folderRenameId.value, folderRenameValue.value.trim());
+  }
+  folderRenameId.value = null;
+}
+function handleNewFolderConfirm() {
+  const name = newFolderName.value.trim();
+  if (name) createFolder(name);
+  newFolderDialogOpen.value = false;
+  newFolderName.value = "";
+}
+function handleItemCtxAddToFolder(folderId) {
+  addTableToFolder(itemCtxTableName.value, folderId);
+  closeItemCtxMenu();
+}
+function handleItemCtxRemoveFromFolder() {
+  if (activeFolder.value !== "all" && activeFolder.value !== "starred") {
+    removeTableFromFolder(itemCtxTableName.value, activeFolder.value);
+  }
+  closeItemCtxMenu();
+  syncSummaryForDefaultTableBrowse();
+}
+function handleNewFolderFromCtx() {
+  closeItemCtxMenu();
+  newFolderDialogOpen.value = true;
+  newFolderName.value = "";
+}
+function handleDeleteFolder(folderId) {
+  deleteFolder(folderId);
+  closeFolderCtxMenu();
+}
+function closeAllOrgMenus() {
+  sortMenuOpen.value = false;
+  closeItemCtxMenu();
+  closeFolderCtxMenu();
+}
+const SORT_OPTIONS = [
+  { key: "name_asc",    label: "表名 A → Z" },
+  { key: "name_desc",   label: "表名 Z → A" },
+  { key: "comment_asc", label: "备注 A → Z" },
+  { key: "comment_desc",label: "备注 Z → A" },
+];
+const sortLabel = computed(() => SORT_OPTIONS.find((o) => o.key === sortMode.value)?.label || "排序");
+const activeFolderName = computed(() => {
+  if (activeFolder.value === "all") return "全部";
+  if (activeFolder.value === "starred") return "星标";
+  return tableFolders.value.find((f) => f.id === activeFolder.value)?.name || "全部";
+});
+
 function ensureDbConnectedForSearch() {
   if (dbConnected.value) return true;
   summaryText.value = "当前数据库未连接";
@@ -640,7 +871,14 @@ function syncSummaryForDefaultTableBrowse() {
     summaryText.value = "当前数据库未连接";
     return;
   }
-  summaryText.value = `共 ${defaultTableResults.value.length} 张表`;
+  const total = (Array.isArray(tableOptions.value) ? tableOptions.value : []).length;
+  const shown = defaultTableResults.value.length;
+  if (activeFolder.value === "all") {
+    summaryText.value = `共 ${total} 张表`;
+  } else {
+    const folderName = activeFolder.value === "starred" ? "星标" : (tableFolders.value.find((f) => f.id === activeFolder.value)?.name || "文件夹");
+    summaryText.value = `${folderName}：${shown} 张表（共 ${total}）`;
+  }
 }
 
 function syncSummaryAfterConnectionCheck() {
@@ -683,6 +921,7 @@ function resetContextAfterDbSwitch() {
   selectedTables.value = [];
   navZone.value = "sidebar";
   navResultIndex.value = -1;
+  activeFolder.value = "all";
   closeSlashMode();
   closeTableCommandPalette();
   forceExitEditMode();
@@ -718,6 +957,7 @@ function handlePanelActivated({ reset = false } = {}) {
 async function onDbConnectionChanged({ resetContext = false } = {}) {
   await refreshConnectionStatus();
   await loadTableOptions();
+  loadOrgData();
   if (resetContext) {
     resetContextAfterDbSwitch();
     syncSummaryForDefaultTableBrowse();
@@ -1285,6 +1525,7 @@ onMounted(async () => {
     syncSummaryAfterConnectionCheck();
     await attachProgressListener();
     await loadTableOptions();
+    loadOrgData();
     loadHistory();
     bindPanelListeners();
     handlePanelActivated({
@@ -4012,6 +4253,54 @@ function escapeRegExp(str) {
         </div>
       </section>
 
+      <!-- 表整理工具栏 -->
+      <div v-if="dbConnected" class="org-toolbar" @click.self="closeAllOrgMenus">
+        <div class="org-folder-chips">
+          <button :class="['org-chip', { active: activeFolder === 'all' }]" @click="activeFolder = 'all'; syncSummaryForDefaultTableBrowse()">全部</button>
+          <button :class="['org-chip org-chip-star', { active: activeFolder === 'starred' }]" @click="activeFolder = 'starred'; syncSummaryForDefaultTableBrowse()">
+            <span class="org-chip-icon">★</span>星标
+          </button>
+          <template v-for="folder in tableFolders" :key="folder.id">
+            <button
+              v-if="folderRenameId !== folder.id"
+              :class="['org-chip', { active: activeFolder === folder.id }]"
+              @click="activeFolder = folder.id; syncSummaryForDefaultTableBrowse()"
+              @contextmenu.prevent.stop="openFolderCtxMenu($event, folder.id)"
+            >
+              <span class="org-chip-icon">📁</span>{{ folder.name }}
+            </button>
+            <input
+              v-else
+              class="org-chip-rename-input"
+              v-model="folderRenameValue"
+              @blur="commitFolderRename"
+              @keydown.enter="commitFolderRename"
+              @keydown.escape="folderRenameId = null"
+              @vue:mounted="({ el }) => nextTick(() => el.focus())"
+            />
+          </template>
+          <button class="org-chip org-chip-add" title="新建文件夹" @click="newFolderDialogOpen = true; newFolderName = ''">＋</button>
+        </div>
+        <div class="org-sort-wrap">
+          <button class="org-sort-btn" @click.stop="toggleSortMenu" title="排序">
+            <span class="org-sort-icon">↕</span>{{ sortLabel }}
+          </button>
+          <template v-if="sortMenuOpen">
+            <div class="org-ctx-backdrop" @click="sortMenuOpen = false"></div>
+            <div class="org-sort-menu">
+              <button
+                v-for="opt in SORT_OPTIONS" :key="opt.key"
+                :class="['org-sort-option', { active: sortMode === opt.key }]"
+                @click="selectSortMode(opt.key)"
+              >
+                {{ opt.label }}
+                <span v-if="sortMode === opt.key" class="org-sort-check">✓</span>
+              </button>
+            </div>
+          </template>
+        </div>
+      </div>
+
       <div class="results-layout" id="resultsWrap">
         <aside :class="['result-sidebar', { 'kb-zone': navZone === 'sidebar' }]">
           <button
@@ -4032,7 +4321,9 @@ function escapeRegExp(str) {
                 :id="`result-item-${idx}`"
                 :class="['list-item', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
                 @click="navZone = 'results'; navResultIndex = idx; openFromMeta(item)"
+                @contextmenu="openItemCtxMenu($event, item.table_name)"
               >
+                <span :class="['star-btn', { starred: starredTables.has(item.table_name) }]" @click.stop="toggleStar(item.table_name)" title="星标">{{ starredTables.has(item.table_name) ? '★' : '☆' }}</span>
                 <div class="main" v-html="renderHighlighted(item.table_name)"></div>
                 <div class="sub">{{ getTableComment(item.table_name) || "-" }}</div>
                 <span class="badge">TABLE</span>
@@ -4043,6 +4334,7 @@ function escapeRegExp(str) {
                 :id="`result-item-${idx}`"
                 :class="['list-item', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
                 @click="navZone = 'results'; navResultIndex = idx; openFromMeta(item)"
+                @contextmenu="openItemCtxMenu($event, item.table_name)"
               >
                 <div class="main" v-html="`${item.table_name}.` + renderHighlighted(item.column_name || '')"></div>
                 <span class="badge">FIELD</span>
@@ -4053,6 +4345,7 @@ function escapeRegExp(str) {
                 :id="`result-item-${idx}`"
                 :class="['list-item', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
                 @click="navZone = 'results'; navResultIndex = idx; openFromMeta(item)"
+                @contextmenu="openItemCtxMenu($event, item.table_name)"
               >
                 <div class="main">{{ item.table_name }}<span v-if="item.column_name">.{{ item.column_name }}</span></div>
                 <div class="sub" v-html="renderHighlighted(item.matched_text)"></div>
@@ -4064,17 +4357,65 @@ function escapeRegExp(str) {
                 :id="`result-item-${idx}`"
                 :class="['list-item', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
                 @click="navZone = 'results'; navResultIndex = idx; openFromData(item)"
+                @contextmenu="openItemCtxMenu($event, item.table_name)"
               >
                 <div class="main">{{ item.table_name }}</div>
                 <div class="sub" v-html="renderHighlighted(item.preview)"></div>
               </button>
             </template>
-            <div v-if="filteredResults.length === 0 && keyword.trim()" class="muted p-10">
+            <div v-if="filteredResults.length === 0 && !keyword.trim() && activeFolder !== 'all'" class="muted p-10">
+              该文件夹为空
+            </div>
+            <div v-else-if="filteredResults.length === 0 && keyword.trim()" class="muted p-10">
               {{ activeResultTab === '数据值' ? '按回车搜索数据值' : '暂无结果' }}
             </div>
           </div>
         </section>
       </div>
+
+      <!-- 右键菜单 -->
+      <Teleport to="body">
+        <div v-if="itemCtxOpen" class="org-ctx-backdrop" @click="closeItemCtxMenu" @contextmenu.prevent="closeItemCtxMenu"></div>
+        <div v-if="itemCtxOpen" class="org-ctx-menu" :style="{ left: itemCtxPos.x + 'px', top: itemCtxPos.y + 'px' }">
+          <button class="org-ctx-item" @click="toggleStar(itemCtxTableName); closeItemCtxMenu()">
+            {{ starredTables.has(itemCtxTableName) ? '取消星标' : '添加星标' }}
+          </button>
+          <div class="org-ctx-divider"></div>
+          <div class="org-ctx-item org-ctx-submenu-trigger" @mouseenter="itemCtxSubMenuOpen = true" @mouseleave="itemCtxSubMenuOpen = false">
+            添加到文件夹 ▸
+            <div v-if="itemCtxSubMenuOpen" class="org-ctx-submenu">
+              <button v-for="folder in tableFolders" :key="folder.id" class="org-ctx-item" @click="handleItemCtxAddToFolder(folder.id)">
+                <span class="org-ctx-folder-icon">📁</span>{{ folder.name }}
+                <span v-if="isTableInFolder(itemCtxTableName, folder.id)" class="org-ctx-check">✓</span>
+              </button>
+              <div v-if="tableFolders.length > 0" class="org-ctx-divider"></div>
+              <button class="org-ctx-item" @click="handleNewFolderFromCtx">＋ 新建文件夹</button>
+            </div>
+          </div>
+          <button v-if="activeFolder !== 'all' && activeFolder !== 'starred'" class="org-ctx-item org-ctx-danger" @click="handleItemCtxRemoveFromFolder">
+            从当前文件夹移除
+          </button>
+        </div>
+
+        <!-- 文件夹右键菜单 -->
+        <div v-if="folderCtxTarget" class="org-ctx-backdrop" @click="closeFolderCtxMenu" @contextmenu.prevent="closeFolderCtxMenu"></div>
+        <div v-if="folderCtxTarget" class="org-ctx-menu" :style="{ left: folderCtxPos.x + 'px', top: folderCtxPos.y + 'px' }">
+          <button class="org-ctx-item" @click="startFolderRename(folderCtxTarget)">重命名</button>
+          <button class="org-ctx-item org-ctx-danger" @click="handleDeleteFolder(folderCtxTarget)">删除文件夹</button>
+        </div>
+
+        <!-- 新建文件夹对话框 -->
+        <div v-if="newFolderDialogOpen" class="org-dialog-backdrop" @click="newFolderDialogOpen = false">
+          <div class="org-dialog" @click.stop>
+            <div class="org-dialog-title">新建文件夹</div>
+            <input class="org-dialog-input" v-model="newFolderName" placeholder="文件夹名称" @keydown.enter="handleNewFolderConfirm" @vue:mounted="({ el }) => nextTick(() => el.focus())" />
+            <div class="org-dialog-actions">
+              <button class="org-dialog-btn" @click="newFolderDialogOpen = false">取消</button>
+              <button class="org-dialog-btn org-dialog-btn-primary" @click="handleNewFolderConfirm" :disabled="!newFolderName.trim()">创建</button>
+            </div>
+          </div>
+        </div>
+      </Teleport>
       </div>
       </div>
       <div class="panel-footer">
