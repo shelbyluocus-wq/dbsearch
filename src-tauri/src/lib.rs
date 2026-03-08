@@ -200,6 +200,30 @@ struct DbTemplate {
     db: DbConfig,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SkinAnimationDef {
+    file: String,
+    #[serde(rename = "frameWidth")]
+    frame_width: u32,
+    #[serde(rename = "frameHeight")]
+    frame_height: u32,
+    #[serde(rename = "frameCount")]
+    frame_count: u32,
+    fps: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SkinManifest {
+    name: String,
+    animations: HashMap<String, SkinAnimationDef>,
+    #[serde(rename = "searchAnim")]
+    search_anim: String,
+    #[serde(rename = "foundAnim")]
+    found_anim: String,
+    #[serde(rename = "defaultAnim")]
+    default_anim: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 struct SchemaCache {
     tables: Vec<TableMeta>,
@@ -1862,6 +1886,135 @@ fn load_config_from_disk(app: &tauri::AppHandle) -> Result<AppConfig, String> {
     serde_json::from_str(&fs::read_to_string(p).map_err(|e| format!("读取配置失败: {e}"))?)
         .map_err(|e| format!("解析配置失败: {e}"))
 }
+fn custom_skins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("配置目录失败: {e}"))?
+        .join("custom_skins");
+    fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    Ok(dir)
+}
+
+#[tauri::command]
+async fn detect_sprite_dimensions(file_path: String) -> Result<HashMap<String, u32>, String> {
+    let (w, h) = image::image_dimensions(&file_path)
+        .map_err(|e| format!("读取图片尺寸失败: {e}"))?;
+    let mut map = HashMap::new();
+    map.insert("width".into(), w);
+    map.insert("height".into(), h);
+    Ok(map)
+}
+
+#[tauri::command]
+async fn import_skin_sprites(
+    skin_name: String,
+    files: Vec<String>,
+    app: tauri::AppHandle,
+) -> Result<Vec<HashMap<String, serde_json::Value>>, String> {
+    let dir = custom_skins_dir(&app)?.join(&skin_name);
+    fs::create_dir_all(&dir).map_err(|e| format!("创建皮肤目录失败: {e}"))?;
+    let mut result = Vec::new();
+    for src_path in &files {
+        let src = std::path::Path::new(src_path);
+        let file_name = src
+            .file_name()
+            .ok_or("无效文件名")?
+            .to_string_lossy()
+            .to_string();
+        let dest = dir.join(&file_name);
+        fs::copy(src, &dest).map_err(|e| format!("复制文件失败: {e}"))?;
+        let (w, h) = image::image_dimensions(&dest)
+            .map_err(|e| format!("读取图片尺寸失败: {e}"))?;
+        let mut entry = HashMap::new();
+        entry.insert("name".into(), serde_json::Value::String(
+            file_name.trim_end_matches(".png").trim_end_matches(".PNG").to_string(),
+        ));
+        entry.insert("file".into(), serde_json::Value::String(file_name));
+        entry.insert("width".into(), serde_json::Value::Number(w.into()));
+        entry.insert("height".into(), serde_json::Value::Number(h.into()));
+        result.push(entry);
+    }
+    Ok(result)
+}
+
+#[tauri::command]
+async fn save_skin_manifest(
+    skin_name: String,
+    manifest: SkinManifest,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let dir = custom_skins_dir(&app)?.join(&skin_name);
+    fs::create_dir_all(&dir).map_err(|e| format!("创建皮肤目录失败: {e}"))?;
+    let json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
+    fs::write(dir.join("manifest.json"), json).map_err(|e| format!("保存清单失败: {e}"))
+}
+
+#[tauri::command]
+async fn list_custom_skins(
+    app: tauri::AppHandle,
+) -> Result<Vec<HashMap<String, serde_json::Value>>, String> {
+    let dir = custom_skins_dir(&app)?;
+    let mut skins = Vec::new();
+    let entries = fs::read_dir(&dir).map_err(|e| format!("读取目录失败: {e}"))?;
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("读取条目失败: {e}"))?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let manifest_path = path.join("manifest.json");
+        if !manifest_path.exists() {
+            continue;
+        }
+        let content =
+            fs::read_to_string(&manifest_path).map_err(|e| format!("读取清单失败: {e}"))?;
+        let manifest: SkinManifest =
+            serde_json::from_str(&content).map_err(|e| format!("解析清单失败: {e}"))?;
+        let id = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        let mut entry_map = HashMap::new();
+        entry_map.insert("id".into(), serde_json::Value::String(id));
+        entry_map.insert(
+            "manifest".into(),
+            serde_json::to_value(&manifest).map_err(|e| e.to_string())?,
+        );
+        skins.push(entry_map);
+    }
+    Ok(skins)
+}
+
+#[tauri::command]
+async fn delete_custom_skin(
+    skin_name: String,
+    state: State<'_, AppState>,
+    app: tauri::AppHandle,
+) -> Result<(), String> {
+    let dir = custom_skins_dir(&app)?.join(&skin_name);
+    if dir.exists() {
+        fs::remove_dir_all(&dir).map_err(|e| format!("删除皮肤失败: {e}"))?;
+    }
+    let mut rt = state.runtime.lock().await;
+    let current_skin = &rt.config.personal.pet_skin;
+    if current_skin == &format!("custom:{}", skin_name) {
+        rt.config.personal.pet_skin = "eagle".into();
+        save_config_to_disk(&app, &rt.config)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_skin_base_path(
+    skin_name: String,
+    app: tauri::AppHandle,
+) -> Result<String, String> {
+    let dir = custom_skins_dir(&app)?.join(&skin_name);
+    Ok(dir.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 async fn set_autostart(enable: bool, app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
@@ -2060,7 +2213,13 @@ pub fn run() {
             export_tables_xlsx_batch,
             list_system_fonts,
             resize_pet_window,
-            update_pet_hitbox
+            update_pet_hitbox,
+            detect_sprite_dimensions,
+            import_skin_sprites,
+            save_skin_manifest,
+            list_custom_skins,
+            delete_custom_skin,
+            get_skin_base_path
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

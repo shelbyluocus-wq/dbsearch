@@ -1,6 +1,6 @@
 ﻿<script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save, open } from "@tauri-apps/plugin-dialog";
@@ -343,6 +343,21 @@ const settingsDraft = reactive({
   petScale: 1.0,
   customFont: null,
 });
+
+// Custom skin editor state
+const skinEditorOpen = ref(false);
+const skinEditorStep = ref("import"); // "import" | "configure" | "preview"
+const skinEditorName = ref("");
+const skinEditorAnims = ref([]);
+// Each entry: { name, file, origPath, src, width, height, frameWidth, frameHeight, frameCount, fps }
+const skinEditorSearchAnim = ref("");
+const skinEditorFoundAnim = ref("");
+const skinEditorDefaultAnim = ref("");
+const skinEditorMsg = ref("");
+const skinEditorLoading = ref(false);
+const skinEditorEditingId = ref(null);
+const customSkins = ref([]);
+const skinEditorCanvasRefs = ref([]);
 
 const totalMetaCount = computed(() => results.table.length + results.column.length + results.comment.length);
 const canSearchData = computed(() => dbConnected.value && keyword.value.trim().length > 0);
@@ -694,6 +709,8 @@ const SPRITE_SHEET_SKINS = {
 };
 // Lazy-load sprite sheet images
 function loadSpriteSheetImages() {
+  const skin = config.personal.pet_skin;
+  if (skin.startsWith("custom:")) return; // Custom skins already loaded via convertFileSrc
   const knightModules = {
     idle: new URL("./assets/sprites/knight/idle.png", import.meta.url).href,
     run: new URL("./assets/sprites/knight/run.png", import.meta.url).href,
@@ -703,6 +720,60 @@ function loadSpriteSheetImages() {
   };
   for (const [anim, url] of Object.entries(knightModules)) {
     SPRITE_SHEET_SKINS.knight.animations[anim].src = url;
+  }
+}
+// Register custom skins into SPRITE_SHEET_SKINS
+async function registerCustomSkins() {
+  // Clean old custom entries
+  for (const key of Object.keys(SPRITE_SHEET_SKINS)) {
+    if (key.startsWith("custom:")) delete SPRITE_SHEET_SKINS[key];
+  }
+  for (const key of Object.keys(SPRITE_SHEET_IDLE_STATES)) {
+    if (key.startsWith("custom:")) delete SPRITE_SHEET_IDLE_STATES[key];
+  }
+  for (const { id, manifest } of customSkins.value) {
+    const skinKey = `custom:${id}`;
+    try {
+      const basePath = await invoke("get_skin_base_path", { skinName: id });
+      const animations = {};
+      const idleStates = [];
+      const idleLabels = {};
+      const idleAnimMap = {};
+      const idleMapForSkin = {};
+      for (const [animName, animDef] of Object.entries(manifest.animations)) {
+        const filePath = basePath + "/" + animDef.file;
+        animations[animName] = {
+          src: convertFileSrc(filePath),
+          frameWidth: animDef.frameWidth,
+          frameHeight: animDef.frameHeight,
+          frameCount: animDef.frameCount,
+          fps: animDef.fps,
+        };
+        const idleKey = `${id}_${animName}`;
+        idleStates.push(idleKey);
+        idleLabels[idleKey] = animName;
+        idleAnimMap[idleKey] = animName;
+        idleMapForSkin[idleKey] = animName;
+      }
+      // Also map default generic idle states to defaultAnim
+      for (const genericState of ["float_breathe", "sleep_zzz", "look_around", "wave_hello", "jump_play", "spin_show", "ghost_fade", "charge_spell"]) {
+        idleMapForSkin[genericState] = manifest.defaultAnim;
+      }
+      SPRITE_SHEET_SKINS[skinKey] = {
+        animations,
+        defaultAnim: manifest.defaultAnim,
+        searchAnim: manifest.searchAnim,
+        foundAnim: manifest.foundAnim,
+        idleMap: idleMapForSkin,
+      };
+      SPRITE_SHEET_IDLE_STATES[skinKey] = {
+        states: idleStates,
+        labels: idleLabels,
+        animMap: idleAnimMap,
+      };
+    } catch (e) {
+      console.error(`Failed to register custom skin ${id}:`, e);
+    }
   }
 }
 const isSpriteSheetSkin = computed(() => config.personal.pet_skin in SPRITE_SHEET_SKINS);
@@ -1688,6 +1759,13 @@ onMounted(async () => {
   applyTheme(themeId.value)
   await loadConfig();
   applyCustomFont();
+  // Load custom skins
+  if (isTauriWindow) {
+    try {
+      customSkins.value = await invoke("list_custom_skins");
+      await registerCustomSkins();
+    } catch (e) { console.error("Failed to load custom skins:", e); }
+  }
   tableDetailView.value = normalizeTableDefaultView(config.personal.table_default_view);
 
   if (isPanelWindow.value) {
@@ -1895,6 +1973,224 @@ watch(() => settingsDraft.petSkin, (newSkin) => {
   }
   settingsDraft.petScale = getPetScale(newSkin);
 });
+
+// --- Skin Editor Functions ---
+function openSkinEditor(editId = null) {
+  skinEditorMsg.value = "";
+  skinEditorLoading.value = false;
+  skinEditorCanvasRefs.value = [];
+  if (editId) {
+    skinEditorEditingId.value = editId;
+    const cs = customSkins.value.find((s) => s.id === editId);
+    if (cs) {
+      const m = cs.manifest;
+      skinEditorName.value = m.name;
+      skinEditorSearchAnim.value = m.searchAnim;
+      skinEditorFoundAnim.value = m.foundAnim;
+      skinEditorDefaultAnim.value = m.defaultAnim;
+      // Reconstruct anims from manifest
+      const skinKey = `custom:${editId}`;
+      const skinDef = SPRITE_SHEET_SKINS[skinKey];
+      skinEditorAnims.value = Object.entries(m.animations).map(([name, def]) => ({
+        name,
+        file: def.file,
+        origPath: "",
+        src: skinDef?.animations?.[name]?.src || "",
+        width: def.frameWidth * def.frameCount,
+        height: def.frameHeight,
+        frameWidth: def.frameWidth,
+        frameHeight: def.frameHeight,
+        frameCount: def.frameCount,
+        fps: def.fps,
+      }));
+    }
+  } else {
+    skinEditorEditingId.value = null;
+    skinEditorName.value = "";
+    skinEditorAnims.value = [];
+    skinEditorSearchAnim.value = "";
+    skinEditorFoundAnim.value = "";
+    skinEditorDefaultAnim.value = "";
+  }
+  skinEditorStep.value = "import";
+  skinEditorOpen.value = true;
+}
+function closeSkinEditor() {
+  skinEditorOpen.value = false;
+  stopSkinEditorPreviews();
+}
+async function onSkinEditorFileSelect() {
+  try {
+    const result = await open({
+      multiple: true,
+      filters: [{ name: "PNG", extensions: ["png"] }],
+    });
+    if (!result) return;
+    const paths = Array.isArray(result) ? result : [result];
+    await importSkinFiles(paths);
+  } catch (e) {
+    skinEditorMsg.value = `导入失败: ${e}`;
+  }
+}
+async function importSkinFiles(paths) {
+  skinEditorLoading.value = true;
+  try {
+    for (const filePath of paths) {
+      const dims = await invoke("detect_sprite_dimensions", { filePath });
+      const fileName = filePath.split(/[/\\]/).pop() || "sprite.png";
+      const name = fileName.replace(/\.(png|PNG)$/, "");
+      const fh = dims.height;
+      const fw = fh; // square frames heuristic
+      const fc = Math.max(1, Math.floor(dims.width / fw));
+      skinEditorAnims.value.push({
+        name,
+        file: fileName,
+        origPath: filePath,
+        src: convertFileSrc(filePath),
+        width: dims.width,
+        height: dims.height,
+        frameWidth: fw,
+        frameHeight: fh,
+        frameCount: fc,
+        fps: 8,
+      });
+    }
+    if (!skinEditorName.value && skinEditorAnims.value.length > 0) {
+      skinEditorName.value = "自定义皮肤";
+    }
+    if (skinEditorAnims.value.length > 0 && !skinEditorDefaultAnim.value) {
+      skinEditorDefaultAnim.value = skinEditorAnims.value[0].name;
+    }
+    if (skinEditorAnims.value.length > 0 && !skinEditorSearchAnim.value) {
+      skinEditorSearchAnim.value = skinEditorAnims.value[0].name;
+    }
+    if (skinEditorAnims.value.length > 0 && !skinEditorFoundAnim.value) {
+      skinEditorFoundAnim.value = skinEditorAnims.value[0].name;
+    }
+    skinEditorMsg.value = "";
+  } catch (e) {
+    skinEditorMsg.value = `导入失败: ${e}`;
+  } finally {
+    skinEditorLoading.value = false;
+  }
+}
+function removeSkinEditorAnim(index) {
+  skinEditorAnims.value.splice(index, 1);
+}
+async function saveSkinEditor() {
+  if (!skinEditorName.value.trim()) {
+    skinEditorMsg.value = "请输入皮肤名称";
+    return;
+  }
+  if (skinEditorAnims.value.length === 0) {
+    skinEditorMsg.value = "请至少导入一个动画";
+    return;
+  }
+  if (!skinEditorDefaultAnim.value || !skinEditorSearchAnim.value || !skinEditorFoundAnim.value) {
+    skinEditorMsg.value = "请设置所有动作绑定";
+    return;
+  }
+  for (const anim of skinEditorAnims.value) {
+    if (!anim.frameWidth || !anim.frameHeight || !anim.frameCount) {
+      skinEditorMsg.value = `动画 "${anim.name}" 的帧参数无效`;
+      return;
+    }
+  }
+  skinEditorLoading.value = true;
+  skinEditorMsg.value = "";
+  try {
+    // Determine skin directory name
+    const skinName = skinEditorEditingId.value || skinEditorName.value.trim().replace(/[^a-zA-Z0-9_\u4e00-\u9fff-]/g, "_");
+    // Import sprite files (only those with origPath, meaning newly imported)
+    const newFiles = skinEditorAnims.value.filter((a) => a.origPath).map((a) => a.origPath);
+    if (newFiles.length > 0) {
+      await invoke("import_skin_sprites", { skinName, files: newFiles });
+    }
+    // Build manifest
+    const animations = {};
+    for (const anim of skinEditorAnims.value) {
+      animations[anim.name] = {
+        file: anim.file,
+        frameWidth: anim.frameWidth,
+        frameHeight: anim.frameHeight,
+        frameCount: anim.frameCount,
+        fps: anim.fps,
+      };
+    }
+    const manifest = {
+      name: skinEditorName.value.trim(),
+      animations,
+      searchAnim: skinEditorSearchAnim.value,
+      foundAnim: skinEditorFoundAnim.value,
+      defaultAnim: skinEditorDefaultAnim.value,
+    };
+    await invoke("save_skin_manifest", { skinName, manifest });
+    // Reload custom skins
+    customSkins.value = await invoke("list_custom_skins");
+    await registerCustomSkins();
+    // Auto-select the new skin
+    settingsDraft.petSkin = `custom:${skinName}`;
+    skinEditorMsg.value = "保存成功！";
+    setTimeout(() => closeSkinEditor(), 500);
+  } catch (e) {
+    skinEditorMsg.value = `保存失败: ${e}`;
+  } finally {
+    skinEditorLoading.value = false;
+  }
+}
+async function deleteSkinFromEditor(skinId) {
+  if (!confirm("确定删除此皮肤？此操作不可撤销。")) return;
+  try {
+    await invoke("delete_custom_skin", { skinName: skinId });
+    // Unregister
+    delete SPRITE_SHEET_SKINS[`custom:${skinId}`];
+    delete SPRITE_SHEET_IDLE_STATES[`custom:${skinId}`];
+    customSkins.value = await invoke("list_custom_skins");
+    if (settingsDraft.petSkin === `custom:${skinId}`) {
+      settingsDraft.petSkin = "eagle";
+    }
+    closeSkinEditor();
+  } catch (e) {
+    skinEditorMsg.value = `删除失败: ${e}`;
+  }
+}
+// Canvas-based animation preview for skin editor
+const skinEditorPreviewTimers = [];
+function startSkinEditorPreview(canvas, anim) {
+  if (!canvas || !anim.src) return;
+  const ctx = canvas.getContext("2d");
+  const img = new Image();
+  img.src = anim.src;
+  let frame = 0;
+  let lastTime = 0;
+  const interval = 1000 / (anim.fps || 8);
+  function tick(ts) {
+    if (!skinEditorOpen.value) return;
+    if (ts - lastTime >= interval) {
+      lastTime = ts;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (img.complete && img.naturalWidth > 0) {
+        ctx.drawImage(
+          img,
+          frame * anim.frameWidth, 0, anim.frameWidth, anim.frameHeight,
+          0, 0, anim.frameWidth, anim.frameHeight
+        );
+      }
+      frame = (frame + 1) % (anim.frameCount || 1);
+    }
+    const id = requestAnimationFrame(tick);
+    skinEditorPreviewTimers.push(id);
+  }
+  const id = requestAnimationFrame(tick);
+  skinEditorPreviewTimers.push(id);
+}
+function stopSkinEditorPreviews() {
+  for (const id of skinEditorPreviewTimers) {
+    cancelAnimationFrame(id);
+  }
+  skinEditorPreviewTimers.length = 0;
+}
+
 watch(keyword, () => {
   if (!isPanelWindow.value) return;
   if (debounceTimer) clearTimeout(debounceTimer);
@@ -5250,7 +5546,13 @@ function escapeRegExp(str) {
                 <option value="spirit">灵童（像素参考）</option>
                 <option value="lion">狮橙（像素参考）</option>
                 <option value="knight">骑士（Sprite Sheet）</option>
+                <optgroup v-if="customSkins.length" label="自定义皮肤">
+                  <option v-for="cs in customSkins" :key="cs.id" :value="'custom:' + cs.id">
+                    {{ cs.manifest.name }}
+                  </option>
+                </optgroup>
               </select>
+              <button class="small-btn" style="margin-top:4px" @click="openSkinEditor()">皮肤编辑器</button>
             </label>
             <label>宠物大小 <span class="muted">{{ Math.round(settingsDraft.petScale * 100) }}%</span>
               <input type="range" :min="PET_SCALE_MIN" :max="PET_SCALE_MAX" :step="PET_SCALE_STEP" v-model.number="settingsDraft.petScale" />
@@ -5271,6 +5573,96 @@ function escapeRegExp(str) {
           <button class="primary-btn" @click="saveSettings">保存设置</button>
         </footer>
       <input id="importFile" class="hidden" type="file" accept="application/json" @change="onImportConfig" />
+    </section>
+  </div>
+
+  <!-- 皮肤编辑器弹窗 -->
+  <div v-if="skinEditorOpen" class="dialog-mask" @click.self="closeSkinEditor">
+    <section class="modal-card skin-editor-modal">
+      <header class="modal-header">
+        <h3>{{ skinEditorEditingId ? '编辑皮肤' : '创建自定义皮肤' }}</h3>
+        <button class="icon-btn" @click="closeSkinEditor">✕</button>
+      </header>
+      <div class="modal-body" style="overflow-y:auto;max-height:560px;padding:12px 16px">
+        <!-- Section 1: Name + Import -->
+        <div class="form-group" style="margin-bottom:12px">
+          <label>皮肤名称
+            <input v-model="skinEditorName" type="text" placeholder="例如：我的骑士" style="width:100%" />
+          </label>
+        </div>
+        <div class="form-group" style="margin-bottom:12px">
+          <h4>导入 Sprite Sheet（PNG）</h4>
+          <div class="skin-import-dropzone" @click="onSkinEditorFileSelect">
+            <span v-if="skinEditorLoading">正在导入...</span>
+            <span v-else>点击选择 PNG 文件（每个动画一张 Sprite Sheet）</span>
+          </div>
+        </div>
+
+        <!-- Imported animations list -->
+        <div v-if="skinEditorAnims.length" class="form-group" style="margin-bottom:12px">
+          <h4>动画配置</h4>
+          <div v-for="(anim, idx) in skinEditorAnims" :key="idx" class="skin-anim-row">
+            <div class="skin-anim-preview">
+              <canvas
+                :ref="(el) => { if (el) { skinEditorCanvasRefs[idx] = el; nextTick(() => startSkinEditorPreview(el, anim)); } }"
+                :width="anim.frameWidth"
+                :height="anim.frameHeight"
+                style="image-rendering:pixelated;max-width:96px;max-height:96px;border:1px solid var(--border);background:#1a1a2e"
+              ></canvas>
+            </div>
+            <div class="skin-anim-inputs">
+              <label>名称
+                <input v-model="anim.name" type="text" style="width:100%" />
+              </label>
+              <label>帧宽
+                <input v-model.number="anim.frameWidth" type="number" min="1" @change="anim.frameCount = Math.max(1, Math.floor(anim.width / anim.frameWidth))" />
+              </label>
+              <label>帧高
+                <input v-model.number="anim.frameHeight" type="number" min="1" />
+              </label>
+              <label>帧数
+                <input v-model.number="anim.frameCount" type="number" min="1" />
+              </label>
+              <label>FPS
+                <input v-model.number="anim.fps" type="number" min="1" max="60" />
+              </label>
+              <div class="skin-anim-info">
+                <span class="muted">{{ anim.width }}×{{ anim.height }}px · {{ anim.file }}</span>
+                <button class="icon-btn" style="color:var(--red)" @click="removeSkinEditorAnim(idx)">✕</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Section 3: Action Binding -->
+        <div v-if="skinEditorAnims.length" class="form-group" style="margin-bottom:12px">
+          <h4>动作绑定</h4>
+          <div class="form-grid">
+            <label>默认待机
+              <select v-model="skinEditorDefaultAnim">
+                <option v-for="a in skinEditorAnims" :key="a.name" :value="a.name">{{ a.name }}</option>
+              </select>
+            </label>
+            <label>搜索时播放
+              <select v-model="skinEditorSearchAnim">
+                <option v-for="a in skinEditorAnims" :key="a.name" :value="a.name">{{ a.name }}</option>
+              </select>
+            </label>
+            <label>找到结果时
+              <select v-model="skinEditorFoundAnim">
+                <option v-for="a in skinEditorAnims" :key="a.name" :value="a.name">{{ a.name }}</option>
+              </select>
+            </label>
+          </div>
+        </div>
+      </div>
+      <footer class="modal-footer" style="gap:8px">
+        <span v-if="skinEditorMsg" class="settings-msg" :class="{ ok: skinEditorMsg.includes('成功'), err: skinEditorMsg.includes('失败') || skinEditorMsg.includes('请') }">{{ skinEditorMsg }}</span>
+        <button v-if="skinEditorEditingId" class="small-btn" style="color:var(--red)" @click="deleteSkinFromEditor(skinEditorEditingId)">删除皮肤</button>
+        <div style="flex:1"></div>
+        <button class="small-btn" @click="closeSkinEditor">取消</button>
+        <button class="primary-btn" :disabled="skinEditorLoading" @click="saveSkinEditor">保存皮肤</button>
+      </footer>
     </section>
   </div>
 

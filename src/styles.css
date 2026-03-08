@@ -5227,3 +5227,63 @@ mark {
   cursor: default;
 }
 
+/* Skin Editor Modal */
+.skin-editor-modal {
+  width: 680px;
+  max-width: 95vw;
+  max-height: 90vh;
+}
+.skin-import-dropzone {
+  border: 2px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 24px;
+  text-align: center;
+  cursor: pointer;
+  color: var(--text-muted);
+  transition: border-color 0.2s, background 0.2s;
+}
+.skin-import-dropzone:hover {
+  border-color: var(--accent);
+  background: rgba(2, 132, 199, 0.05);
+}
+.skin-anim-row {
+  display: flex;
+  gap: 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  background: var(--bg-input);
+}
+.skin-anim-preview {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.skin-anim-inputs {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
+  gap: 6px;
+  align-items: end;
+}
+.skin-anim-inputs label {
+  font-size: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.skin-anim-inputs input {
+  width: 100%;
+  font-size: 12px;
+  padding: 3px 5px;
+}
+.skin-anim-info {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
