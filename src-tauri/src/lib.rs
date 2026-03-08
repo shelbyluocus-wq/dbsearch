@@ -126,6 +126,8 @@ struct PersonalConfig {
     #[serde(default = "default_pet_skin")]
     pet_skin: String,
     #[serde(default)]
+    pet_scale: std::collections::HashMap<String, f64>,
+    #[serde(default)]
     custom_font: Option<String>,
 }
 fn default_always_on_top_hotkey() -> String {
@@ -163,6 +165,7 @@ impl Default for PersonalConfig {
             reset_on_open_to_all_tables: true,
             always_on_top_hotkey: "P".into(),
             pet_skin: "eagle".into(),
+            pet_scale: std::collections::HashMap::new(),
             custom_font: None,
         }
     }

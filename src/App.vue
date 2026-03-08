@@ -142,7 +142,7 @@ const config = reactive({
     reset_on_open_to_all_tables: true,
     always_on_top_hotkey: "P",
     pet_skin: "eagle",
-    pet_scale: 1.0,
+    pet_scale: {},
     custom_font: null,
   },
 });
@@ -792,8 +792,23 @@ function normalizePetScale(value) {
   const rounded = Math.round(numeric / PET_SCALE_STEP) * PET_SCALE_STEP;
   return Math.min(PET_SCALE_MAX, Math.max(PET_SCALE_MIN, Number(rounded.toFixed(1))));
 }
+function getPetScale(skin) {
+  const map = config.personal.pet_scale;
+  if (typeof map === "object" && map !== null && typeof map[skin] === "number") {
+    return normalizePetScale(map[skin]);
+  }
+  // Legacy: single number
+  if (typeof map === "number") return normalizePetScale(map);
+  return 1.0;
+}
+function setPetScale(skin, value) {
+  if (typeof config.personal.pet_scale !== "object" || config.personal.pet_scale === null) {
+    config.personal.pet_scale = {};
+  }
+  config.personal.pet_scale[skin] = normalizePetScale(value);
+}
 const petScaleStyle = computed(() => {
-  const s = normalizePetScale(config.personal.pet_scale);
+  const s = getPetScale(config.personal.pet_skin);
   return s === 1.0 ? {} : { transform: `scale(${s})`, transformOrigin: "center center" };
 });
 
@@ -1754,7 +1769,7 @@ onMounted(async () => {
     unlistenPetIdlePreview = await listen("pet-idle-preview", (event) => {
       const payload = event.payload;
       const state = payload?.state;
-      if (typeof state === "string" && ALLOWED_IDLE_STATES.includes(state)) {
+      if (typeof state === "string" && ALL_VALID_IDLE_STATES.has(state)) {
         petIdlePreviewing.value = true;
         petIdleActive.value = true;
         currentIdleState.value = state;
@@ -1785,9 +1800,9 @@ onMounted(async () => {
     });
 
     await listen("pet-scale-changed", (event) => {
-      const scale = event.payload?.scale;
-      if (typeof scale === "number") {
-        config.personal.pet_scale = normalizePetScale(scale);
+      const { skin, scale } = event.payload || {};
+      if (typeof scale === "number" && typeof skin === "string") {
+        setPetScale(skin, scale);
         nextTick(() => setTimeout(syncPetWindowSize, 150));
       }
     });
@@ -1878,6 +1893,7 @@ watch(() => settingsDraft.petSkin, (newSkin) => {
   } else {
     settingsDraft.idleStates = [...ALLOWED_IDLE_STATES];
   }
+  settingsDraft.petScale = getPetScale(newSkin);
 });
 watch(keyword, () => {
   if (!isPanelWindow.value) return;
@@ -2693,7 +2709,7 @@ function openSettings() {
   settingsDraft.resetOnOpenToAllTables = config.personal.reset_on_open_to_all_tables !== false;
   settingsDraft.templateName = "";
   settingsDraft.petSkin = config.personal.pet_skin || "eagle";
-  settingsDraft.petScale = normalizePetScale(config.personal.pet_scale);
+  settingsDraft.petScale = getPetScale(settingsDraft.petSkin);
   settingsDraft.customFont = config.personal.custom_font || null;
   if (isTauriWindow) {
     invoke("list_system_fonts").then((fonts) => { systemFonts.value = fonts; }).catch(() => {});
@@ -2803,7 +2819,7 @@ async function saveSettings() {
   config.shared.search.per_table_max_rows = Number(settingsDraft.perTableMaxRows) || 50;
   config.personal.reset_on_open_to_all_tables = !!settingsDraft.resetOnOpenToAllTables;
   config.personal.pet_skin = settingsDraft.petSkin || "eagle";
-  config.personal.pet_scale = normalizePetScale(settingsDraft.petScale);
+  setPetScale(settingsDraft.petSkin, settingsDraft.petScale);
   config.personal.custom_font = settingsDraft.customFont || null;
 
   if (isTauriWindow) {
@@ -2840,7 +2856,8 @@ async function saveSettings() {
       skin: config.personal.pet_skin,
     }).catch(() => {});
     emit("pet-scale-changed", {
-      scale: config.personal.pet_scale,
+      skin: config.personal.pet_skin,
+      scale: getPetScale(config.personal.pet_skin),
     }).catch(() => {});
   }
   await invoke("set_autostart", { enable: config.personal.auto_start }).catch(() => {});
@@ -4702,7 +4719,6 @@ function escapeRegExp(str) {
       <template v-if="isSpriteSheetSkin">
         <div class="spritesheet-container">
           <div id="eagleSprite" class="spritesheet-sprite" :style="spriteSheetStyle"></div>
-          <div class="eagle-shadow spritesheet-shadow"></div>
         </div>
       </template>
       <template v-else>
@@ -5186,7 +5202,10 @@ function escapeRegExp(str) {
         <section class="form-group">
           <h4>挂件待机状态</h4>
           <div class="idle-state-grid">
-            <label v-for="st in availableIdleOptions" :key="st.value"><input v-model="settingsDraft.idleStates" type="checkbox" :value="st.value" @change="previewIdleState(st.value)" />{{ st.label }}</label>
+            <div v-for="st in availableIdleOptions" :key="st.value" class="idle-state-item">
+              <label><input v-model="settingsDraft.idleStates" type="checkbox" :value="st.value" />{{ st.label }}</label>
+              <button class="idle-play-btn" title="播放预览" @click="previewIdleState(st.value)">▶</button>
+            </div>
           </div>
         </section>
 

@@ -742,10 +742,6 @@ mark {
   image-rendering: pixelated;
 }
 
-.spritesheet-shadow {
-  width: 60%;
-  margin: -4px auto 0;
-}
 
 .eagle-sprite {
   position: relative;
@@ -1554,14 +1550,43 @@ mark {
   margin-top: 8px;
 }
 
-.idle-state-grid label {
-  flex-direction: row;
+.idle-state-item {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 4px;
+  padding: 4px 6px 4px 0;
   border-radius: 8px;
   border: 1px solid rgba(2, 132, 199, 0.18);
   background: rgba(2, 132, 199, 0.06);
+}
+
+.idle-state-item label {
+  flex: 1;
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 4px 4px 10px;
+  cursor: pointer;
+}
+
+.idle-play-btn {
+  flex-shrink: 0;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: rgba(2, 132, 199, 0.12);
+  color: var(--accent);
+  font-size: 10px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.idle-play-btn:hover {
+  background: rgba(2, 132, 199, 0.25);
 }
 
 .idle-state-grid input {
