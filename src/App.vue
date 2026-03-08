@@ -142,6 +142,7 @@ const config = reactive({
     reset_on_open_to_all_tables: true,
     always_on_top_hotkey: "P",
     pet_skin: "eagle",
+    pet_scale: 1.0,
     custom_font: null,
   },
 });
@@ -230,6 +231,9 @@ const IDLE_STATE_CHANGE_MS = 6 * 1000;
 const UI_SCALE_MIN = 0.8;
 const UI_SCALE_MAX = 1.4;
 const UI_SCALE_STEP = 0.1;
+const PET_SCALE_MIN = 0.5;
+const PET_SCALE_MAX = 3.0;
+const PET_SCALE_STEP = 0.1;
 const TABLE_PAGE_SIZE_MIN = 1;
 const TABLE_PAGE_SIZE_MAX = 200;
 const TABLE_ROW_HEIGHT_FALLBACK = 28;
@@ -244,6 +248,35 @@ const ALLOWED_IDLE_STATES = [
   "jump_play",
   "spin_show",
 ];
+const DEFAULT_IDLE_LABELS = {
+  float_breathe: "漂浮呼吸",
+  sleep_zzz: "打盹(zzz)",
+  look_around: "左右张望",
+  ghost_fade: "半透明潜行",
+  wave_hello: "挥手问好",
+  charge_spell: "蓄力施法",
+  jump_play: "蹦跳庆祝",
+  spin_show: "旋转登场",
+};
+const SPRITE_SHEET_IDLE_STATES = {
+  knight: {
+    states: ["knight_idle", "knight_walk", "knight_run", "knight_attack", "knight_hurt"],
+    labels: {
+      knight_idle: "待命",
+      knight_walk: "巡逻",
+      knight_run: "冲刺",
+      knight_attack: "挥剑",
+      knight_hurt: "受击",
+    },
+    animMap: {
+      knight_idle: "idle",
+      knight_walk: "walk",
+      knight_run: "run",
+      knight_attack: "attack",
+      knight_hurt: "hurt",
+    },
+  },
+};
 const TABLE_TAB_LIMIT = 8;
 const TABLE_COMMAND_LIMIT = 12;
 
@@ -307,6 +340,7 @@ const settingsDraft = reactive({
   resetOnOpenToAllTables: true,
   templateName: "",
   petSkin: "eagle",
+  petScale: 1.0,
   customFont: null,
 });
 
@@ -640,6 +674,7 @@ const SPRITE_SHEET_SKINS = {
     foundAnim: "attack",
     hurtAnim: "hurt",
     idleMap: {
+      // Default idle states mapping (fallback for old configs)
       sleep_zzz: "idle",
       float_breathe: "idle",
       look_around: "walk",
@@ -648,6 +683,12 @@ const SPRITE_SHEET_SKINS = {
       spin_show: "attack",
       ghost_fade: "idle",
       charge_spell: "attack",
+      // Knight-specific idle states
+      knight_idle: "idle",
+      knight_walk: "walk",
+      knight_run: "run",
+      knight_attack: "attack",
+      knight_hurt: "hurt",
     },
   },
 };
@@ -745,6 +786,17 @@ function normalizeUiScale(value) {
   return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, Number(rounded.toFixed(1))));
 }
 
+function normalizePetScale(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 1.0;
+  const rounded = Math.round(numeric / PET_SCALE_STEP) * PET_SCALE_STEP;
+  return Math.min(PET_SCALE_MAX, Math.max(PET_SCALE_MIN, Number(rounded.toFixed(1))));
+}
+const petScaleStyle = computed(() => {
+  const s = normalizePetScale(config.personal.pet_scale);
+  return s === 1.0 ? {} : { transform: `scale(${s})`, transformOrigin: "center center" };
+});
+
 function normalizeTableDefaultView(value) {
   return String(value || "").toLowerCase() === "full" ? "full" : "hits";
 }
@@ -780,9 +832,16 @@ function isEditableTarget(target) {
   return !!target.isContentEditable;
 }
 
+const ALL_VALID_IDLE_STATES = (() => {
+  const set = new Set(ALLOWED_IDLE_STATES);
+  for (const def of Object.values(SPRITE_SHEET_IDLE_STATES)) {
+    for (const s of def.states) set.add(s);
+  }
+  return set;
+})();
 function sanitizeIdleStates(states) {
   const values = Array.isArray(states) ? states : [];
-  const normalized = [...new Set(values.filter((item) => ALLOWED_IDLE_STATES.includes(item)))];
+  const normalized = [...new Set(values.filter((item) => ALL_VALID_IDLE_STATES.has(item)))];
   return normalized.length > 0 ? normalized : ["float_breathe"];
 }
 
@@ -953,6 +1012,14 @@ const SORT_OPTIONS = [
   { key: "comment_desc",label: "备注 Z → A" },
 ];
 const sortLabel = computed(() => SORT_OPTIONS.find((o) => o.key === sortMode.value)?.label || "排序");
+const availableIdleOptions = computed(() => {
+  const skin = settingsDraft.petSkin;
+  const ssDef = SPRITE_SHEET_IDLE_STATES[skin];
+  if (ssDef) {
+    return ssDef.states.map((s) => ({ value: s, label: ssDef.labels[s] || s }));
+  }
+  return ALLOWED_IDLE_STATES.map((s) => ({ value: s, label: DEFAULT_IDLE_LABELS[s] || s }));
+});
 const activeFolderName = computed(() => {
   if (activeFolder.value === "all") return "全部";
   if (activeFolder.value === "starred") return "星标";
@@ -1709,11 +1776,19 @@ onMounted(async () => {
         config.personal.pet_skin = skin;
         if (skin in SPRITE_SHEET_SKINS) {
           loadSpriteSheetImages();
-          nextTick(() => { startSpriteSheetAnimation(); setTimeout(syncPetWindowSize, 100); });
+          nextTick(() => { startSpriteSheetAnimation(); setTimeout(syncPetWindowSize, 150); });
         } else {
           stopSpriteSheetAnimation();
-          nextTick(() => setTimeout(syncPetWindowSize, 100));
+          nextTick(() => setTimeout(syncPetWindowSize, 150));
         }
+      }
+    });
+
+    await listen("pet-scale-changed", (event) => {
+      const scale = event.payload?.scale;
+      if (typeof scale === "number") {
+        config.personal.pet_scale = normalizePetScale(scale);
+        nextTick(() => setTimeout(syncPetWindowSize, 150));
       }
     });
 
@@ -1796,6 +1871,14 @@ onBeforeUnmount(() => {
   stopColumnResize();
 });
 
+watch(() => settingsDraft.petSkin, (newSkin) => {
+  const ssDef = SPRITE_SHEET_IDLE_STATES[newSkin];
+  if (ssDef) {
+    settingsDraft.idleStates = [...ssDef.states];
+  } else {
+    settingsDraft.idleStates = [...ALLOWED_IDLE_STATES];
+  }
+});
 watch(keyword, () => {
   if (!isPanelWindow.value) return;
   if (debounceTimer) clearTimeout(debounceTimer);
@@ -2610,6 +2693,7 @@ function openSettings() {
   settingsDraft.resetOnOpenToAllTables = config.personal.reset_on_open_to_all_tables !== false;
   settingsDraft.templateName = "";
   settingsDraft.petSkin = config.personal.pet_skin || "eagle";
+  settingsDraft.petScale = normalizePetScale(config.personal.pet_scale);
   settingsDraft.customFont = config.personal.custom_font || null;
   if (isTauriWindow) {
     invoke("list_system_fonts").then((fonts) => { systemFonts.value = fonts; }).catch(() => {});
@@ -2719,6 +2803,7 @@ async function saveSettings() {
   config.shared.search.per_table_max_rows = Number(settingsDraft.perTableMaxRows) || 50;
   config.personal.reset_on_open_to_all_tables = !!settingsDraft.resetOnOpenToAllTables;
   config.personal.pet_skin = settingsDraft.petSkin || "eagle";
+  config.personal.pet_scale = normalizePetScale(settingsDraft.petScale);
   config.personal.custom_font = settingsDraft.customFont || null;
 
   if (isTauriWindow) {
@@ -2753,6 +2838,9 @@ async function saveSettings() {
     }).catch(() => {});
     emit("pet-skin-changed", {
       skin: config.personal.pet_skin,
+    }).catch(() => {});
+    emit("pet-scale-changed", {
+      scale: config.personal.pet_scale,
     }).catch(() => {});
   }
   await invoke("set_autostart", { enable: config.personal.auto_start }).catch(() => {});
@@ -4140,7 +4228,7 @@ function syncPetWindowSize() {
   if (!isPetWindow.value || !isTauriWindow) return;
   const sprite = document.getElementById("eagleSprite");
   if (!sprite) return;
-  const container = sprite.closest(".eagle-container");
+  const container = sprite.closest(".eagle-container") || sprite.closest(".spritesheet-container");
   const el = container || sprite;
   const rect = el.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return;
@@ -4603,6 +4691,7 @@ function escapeRegExp(str) {
     <div
       id="pet"
       class="pet pet-anchored"
+      :style="petScaleStyle"
       role="button"
       aria-label="鹰捷"
       data-tauri-drag-region
@@ -5097,14 +5186,7 @@ function escapeRegExp(str) {
         <section class="form-group">
           <h4>挂件待机状态</h4>
           <div class="idle-state-grid">
-            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="float_breathe" @change="previewIdleState('float_breathe')" />漂浮呼吸</label>
-            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="sleep_zzz" @change="previewIdleState('sleep_zzz')" />打盹(zzz)</label>
-            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="look_around" @change="previewIdleState('look_around')" />左右张望</label>
-            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="ghost_fade" @change="previewIdleState('ghost_fade')" />半透明潜行</label>
-            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="wave_hello" @change="previewIdleState('wave_hello')" />挥手问好</label>
-            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="charge_spell" @change="previewIdleState('charge_spell')" />蓄力施法</label>
-            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="jump_play" @change="previewIdleState('jump_play')" />蹦跳庆祝</label>
-            <label><input v-model="settingsDraft.idleStates" type="checkbox" value="spin_show" @change="previewIdleState('spin_show')" />旋转登场</label>
+            <label v-for="st in availableIdleOptions" :key="st.value"><input v-model="settingsDraft.idleStates" type="checkbox" :value="st.value" @change="previewIdleState(st.value)" />{{ st.label }}</label>
           </div>
         </section>
 
@@ -5150,6 +5232,9 @@ function escapeRegExp(str) {
                 <option value="lion">狮橙（像素参考）</option>
                 <option value="knight">骑士（Sprite Sheet）</option>
               </select>
+            </label>
+            <label>宠物大小 <span class="muted">{{ Math.round(settingsDraft.petScale * 100) }}%</span>
+              <input type="range" :min="PET_SCALE_MIN" :max="PET_SCALE_MAX" :step="PET_SCALE_STEP" v-model.number="settingsDraft.petScale" />
             </label>
             <label>全局字体
               <select v-model="settingsDraft.customFont">
