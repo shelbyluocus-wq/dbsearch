@@ -1,5 +1,6 @@
 use chrono::{DateTime, Local, Utc};
 use enigo::{Enigo, Keyboard, Settings};
+use mouse_position::mouse_position::Mouse;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
@@ -16,12 +17,22 @@ use tauri::{
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PetHitbox {
+    width: f64,
+    height: f64,
+    offset_x: f64,
+    offset_y: f64,
+}
+
 #[derive(Clone)]
 struct AppState {
     runtime: Arc<tokio::sync::Mutex<RuntimeState>>,
     cancel_seq: Arc<AtomicU64>,
     panel_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     quick_date_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
+    pet_hitbox: Arc<std::sync::RwLock<Option<PetHitbox>>>,
+    pet_cursor_ignored: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Default for AppState {
     fn default() -> Self {
@@ -30,6 +41,8 @@ impl Default for AppState {
             cancel_seq: Arc::new(AtomicU64::new(0)),
             panel_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             quick_date_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
+            pet_hitbox: Arc::new(std::sync::RwLock::new(None)),
+            pet_cursor_ignored: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -1235,6 +1248,29 @@ async fn save_pet_position(
 }
 
 #[tauri::command]
+async fn resize_pet_window(
+    app: tauri::AppHandle,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        main_window
+            .set_size(Size::Logical(LogicalSize::new(width, height)))
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn update_pet_hitbox(
+    state: State<'_, AppState>,
+    hitbox: PetHitbox,
+) -> Result<(), String> {
+    *state.pet_hitbox.write().unwrap() = Some(hitbox);
+    Ok(())
+}
+
+#[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
@@ -1934,6 +1970,61 @@ pub fn run() {
                 let _ = main_window.set_always_on_top(true);
                 let _ = main_window.set_skip_taskbar(true);
                 let _ = main_window.set_shadow(false);
+
+                // Start mouse hitbox polling for click-through
+                let poll_window = main_window.clone();
+                let poll_state = app.state::<AppState>().inner().clone();
+                std::thread::spawn(move || {
+                    loop {
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+
+                        let hitbox = poll_state.pet_hitbox.read().unwrap().clone();
+                        let hitbox = match hitbox {
+                            Some(h) => h,
+                            None => continue,
+                        };
+
+                        let mouse_pos = match Mouse::get_mouse_position() {
+                            Mouse::Position { x, y } => (x as f64, y as f64),
+                            Mouse::Error => continue,
+                        };
+
+                        let win_pos = match poll_window.outer_position() {
+                            Ok(p) => (p.x as f64, p.y as f64),
+                            Err(_) => continue,
+                        };
+
+                        let scale = poll_window.scale_factor().unwrap_or(1.0);
+                        let sprite_left = win_pos.0 + hitbox.offset_x * scale;
+                        let sprite_top = win_pos.1 + hitbox.offset_y * scale;
+                        let sprite_right = sprite_left + hitbox.width * scale;
+                        let sprite_bottom = sprite_top + hitbox.height * scale;
+
+                        let pad = 6.0 * scale;
+                        let inside = mouse_pos.0 >= sprite_left - pad
+                            && mouse_pos.0 <= sprite_right + pad
+                            && mouse_pos.1 >= sprite_top - pad
+                            && mouse_pos.1 <= sprite_bottom + pad;
+
+                        let currently_ignored = poll_state
+                            .pet_cursor_ignored
+                            .load(std::sync::atomic::Ordering::Relaxed);
+
+                        if !inside && !currently_ignored {
+                            if poll_window.set_ignore_cursor_events(true).is_ok() {
+                                poll_state
+                                    .pet_cursor_ignored
+                                    .store(true, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        } else if inside && currently_ignored {
+                            if poll_window.set_ignore_cursor_events(false).is_ok() {
+                                poll_state
+                                    .pet_cursor_ignored
+                                    .store(false, std::sync::atomic::Ordering::Relaxed);
+                            }
+                        }
+                    }
+                });
             }
             Ok(())
         })
@@ -1964,7 +2055,9 @@ pub fn run() {
             save_table_changes,
             export_tables_xlsx,
             export_tables_xlsx_batch,
-            list_system_fonts
+            list_system_fonts,
+            resize_pet_window,
+            update_pet_hitbox
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

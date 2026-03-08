@@ -1556,6 +1556,11 @@ onMounted(async () => {
         }
         invoke("save_pet_position", { x: Math.round(pos.x), y: Math.round(pos.y) }).catch(() => {});
       });
+
+      // Part A: Resize pet window to fit sprite + padding
+      // Part B: Report hitbox to Rust for mouse polling
+      await nextTick();
+      syncPetWindowSize();
     }
 
     unlistenPetLockChanged = await listen("pet-lock-changed", (event) => {
@@ -1602,6 +1607,7 @@ onMounted(async () => {
       const skin = event.payload?.skin;
       if (typeof skin === "string") {
         config.personal.pet_skin = skin;
+        nextTick(() => setTimeout(syncPetWindowSize, 100));
       }
     });
 
@@ -4012,6 +4018,34 @@ function petPointerDown(event) {
   const fallback = setTimeout(endDrag, 5000);
 
   getCurrentWindow().startDragging().catch(() => {});
+}
+
+// ── 宠物窗口尺寸同步 ──
+const PET_WINDOW_PADDING = 16; // px padding around sprite
+
+function syncPetWindowSize() {
+  if (!isPetWindow.value || !isTauriWindow) return;
+  const sprite = document.getElementById("eagleSprite");
+  if (!sprite) return;
+  const container = sprite.closest(".eagle-container");
+  const el = container || sprite;
+  const rect = el.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return;
+
+  const winW = rect.width + PET_WINDOW_PADDING * 2;
+  const winH = rect.height + PET_WINDOW_PADDING * 2;
+
+  invoke("resize_pet_window", { width: Math.ceil(winW), height: Math.ceil(winH) }).catch(() => {});
+
+  // Report hitbox to Rust for click-through polling
+  invoke("update_pet_hitbox", {
+    hitbox: {
+      width: rect.width,
+      height: rect.height,
+      offset_x: PET_WINDOW_PADDING,
+      offset_y: PET_WINDOW_PADDING,
+    },
+  }).catch(() => {});
 }
 
 // ── 导出 ──

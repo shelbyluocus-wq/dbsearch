@@ -24,6 +24,7 @@ regex = "1"
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["sync"] }
 enigo = "0.2"
+mouse_position = "0.1"
 rust_xlsxwriter = "0.79"
 tauri-plugin-dialog = "2"
 font-kit = "0.14"

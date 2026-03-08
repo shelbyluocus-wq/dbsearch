@@ -697,12 +697,15 @@ mark {
   height: 100%;
   background: transparent;
   overflow: visible;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .pet-anchored {
-  position: absolute;
-  right: 0;
-  bottom: 0;
+  position: relative;
+  right: auto;
+  bottom: auto;
 }
 
 .eagle-container {
