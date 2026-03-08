@@ -626,6 +626,74 @@ const petSpriteClasses = computed(() => ({
   "idle-spin": petIdleActive.value && currentIdleState.value === "spin_show",
 }));
 const isHdPetSkin = computed(() => false);
+const SPRITE_SHEET_SKINS = {
+  knight: {
+    animations: {
+      idle:      { src: null, frameWidth: 96, frameHeight: 84, frameCount: 7, fps: 8 },
+      run:       { src: null, frameWidth: 96, frameHeight: 84, frameCount: 8, fps: 10 },
+      walk:      { src: null, frameWidth: 96, frameHeight: 84, frameCount: 8, fps: 8 },
+      attack:    { src: null, frameWidth: 96, frameHeight: 84, frameCount: 6, fps: 10 },
+      hurt:      { src: null, frameWidth: 96, frameHeight: 84, frameCount: 4, fps: 8 },
+    },
+    defaultAnim: "idle",
+    searchAnim: "run",
+    foundAnim: "attack",
+    hurtAnim: "hurt",
+    idleMap: {
+      sleep_zzz: "idle",
+      float_breathe: "idle",
+      look_around: "walk",
+      wave_hello: "idle",
+      jump_play: "run",
+      spin_show: "attack",
+      ghost_fade: "idle",
+      charge_spell: "attack",
+    },
+  },
+};
+// Lazy-load sprite sheet images
+function loadSpriteSheetImages() {
+  const knightModules = {
+    idle: new URL("./assets/sprites/knight/idle.png", import.meta.url).href,
+    run: new URL("./assets/sprites/knight/run.png", import.meta.url).href,
+    walk: new URL("./assets/sprites/knight/walk.png", import.meta.url).href,
+    attack: new URL("./assets/sprites/knight/attack.png", import.meta.url).href,
+    hurt: new URL("./assets/sprites/knight/hurt.png", import.meta.url).href,
+  };
+  for (const [anim, url] of Object.entries(knightModules)) {
+    SPRITE_SHEET_SKINS.knight.animations[anim].src = url;
+  }
+}
+const isSpriteSheetSkin = computed(() => config.personal.pet_skin in SPRITE_SHEET_SKINS);
+const spriteSheetFrame = ref(0);
+let spriteSheetAnimId = null;
+const spriteSheetAnim = computed(() => {
+  if (!isSpriteSheetSkin.value) return null;
+  const skinDef = SPRITE_SHEET_SKINS[config.personal.pet_skin];
+  if (!skinDef) return null;
+  if (petFound.value) return skinDef.foundAnim || skinDef.defaultAnim;
+  if (progress.show) return skinDef.searchAnim || skinDef.defaultAnim;
+  if (petIdleActive.value && currentIdleState.value) {
+    return skinDef.idleMap?.[currentIdleState.value] || skinDef.defaultAnim;
+  }
+  return skinDef.defaultAnim;
+});
+const spriteSheetStyle = computed(() => {
+  if (!isSpriteSheetSkin.value) return {};
+  const skinDef = SPRITE_SHEET_SKINS[config.personal.pet_skin];
+  const animName = spriteSheetAnim.value || skinDef.defaultAnim;
+  const anim = skinDef.animations[animName];
+  if (!anim?.src) return {};
+  return {
+    width: anim.frameWidth + "px",
+    height: anim.frameHeight + "px",
+    backgroundImage: `url(${anim.src})`,
+    backgroundPosition: `-${spriteSheetFrame.value * anim.frameWidth}px 0`,
+    backgroundSize: `${anim.frameWidth * anim.frameCount}px ${anim.frameHeight}px`,
+    backgroundRepeat: "no-repeat",
+    imageRendering: "pixelated",
+  };
+});
 const hotkeyPlaceholder = "点击后按下快捷键";
 const quickDateHotkeyPlaceholder = "点击后按下快捷键";
 const contentScaleStyle = computed(() => ({
@@ -740,6 +808,38 @@ function scheduleIdleStateSwitch() {
     currentIdleState.value = pickNextIdleState();
     scheduleIdleStateSwitch();
   }, IDLE_STATE_CHANGE_MS);
+}
+
+function startSpriteSheetAnimation() {
+  stopSpriteSheetAnimation();
+  if (!isSpriteSheetSkin.value) return;
+  let lastAnimName = "";
+  let lastTime = 0;
+  const tick = (timestamp) => {
+    const skinDef = SPRITE_SHEET_SKINS[config.personal.pet_skin];
+    if (!skinDef) return;
+    const animName = spriteSheetAnim.value || skinDef.defaultAnim;
+    const anim = skinDef.animations[animName];
+    if (!anim) return;
+    if (animName !== lastAnimName) {
+      spriteSheetFrame.value = 0;
+      lastAnimName = animName;
+      lastTime = timestamp;
+    }
+    const interval = 1000 / anim.fps;
+    if (timestamp - lastTime >= interval) {
+      spriteSheetFrame.value = (spriteSheetFrame.value + 1) % anim.frameCount;
+      lastTime = timestamp;
+    }
+    spriteSheetAnimId = requestAnimationFrame(tick);
+  };
+  spriteSheetAnimId = requestAnimationFrame(tick);
+}
+function stopSpriteSheetAnimation() {
+  if (spriteSheetAnimId !== null) {
+    cancelAnimationFrame(spriteSheetAnimId);
+    spriteSheetAnimId = null;
+  }
 }
 
 function enterIdleMode() {
@@ -1607,7 +1707,13 @@ onMounted(async () => {
       const skin = event.payload?.skin;
       if (typeof skin === "string") {
         config.personal.pet_skin = skin;
-        nextTick(() => setTimeout(syncPetWindowSize, 100));
+        if (skin in SPRITE_SHEET_SKINS) {
+          loadSpriteSheetImages();
+          nextTick(() => { startSpriteSheetAnimation(); setTimeout(syncPetWindowSize, 100); });
+        } else {
+          stopSpriteSheetAnimation();
+          nextTick(() => setTimeout(syncPetWindowSize, 100));
+        }
       }
     });
 
@@ -1619,6 +1725,12 @@ onMounted(async () => {
     document.addEventListener("mousemove", resetIdleHandler);
     document.addEventListener("click", resetIdleHandler);
     resetIdleHandler();
+
+    // Initialize sprite sheet animation if skin is sprite-sheet type
+    if (isSpriteSheetSkin.value) {
+      loadSpriteSheetImages();
+      nextTick(() => startSpriteSheetAnimation());
+    }
     return;
   }
 
@@ -1633,6 +1745,7 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  stopSpriteSheetAnimation();
   if (isPanelWindow.value) {
     detachPanelListeners();
     clearIdlePreview();
@@ -4497,6 +4610,13 @@ function escapeRegExp(str) {
       @contextmenu="openContextMenu"
       @pointerdown="petPointerDown"
     >
+      <template v-if="isSpriteSheetSkin">
+        <div class="spritesheet-container">
+          <div id="eagleSprite" class="spritesheet-sprite" :style="spriteSheetStyle"></div>
+          <div class="eagle-shadow spritesheet-shadow"></div>
+        </div>
+      </template>
+      <template v-else>
       <div class="eagle-container" :class="{ 'hd-container': isHdPetSkin }">
         <div id="eagleSprite" class="eagle-sprite" :class="[petSpriteClasses, `skin-${config.personal.pet_skin}`, { 'hd-skin': isHdPetSkin }]">
           <template v-if="isHdPetSkin">
@@ -4539,6 +4659,7 @@ function escapeRegExp(str) {
         </div>
         <div class="eagle-shadow"></div>
       </div>
+      </template>
     </div>
   </div>
 
@@ -5027,6 +5148,7 @@ function escapeRegExp(str) {
                 <option value="panda">熊猫</option>
                 <option value="spirit">灵童（像素参考）</option>
                 <option value="lion">狮橙（像素参考）</option>
+                <option value="knight">骑士（Sprite Sheet）</option>
               </select>
             </label>
             <label>全局字体

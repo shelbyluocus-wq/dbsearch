@@ -722,6 +722,31 @@ mark {
   transform: scale(0.95);
 }
 
+/* Sprite Sheet skins */
+.spritesheet-container {
+  position: relative;
+  cursor: pointer;
+  transition: transform 0.15s;
+}
+
+.spritesheet-container:hover {
+  transform: scale(1.03);
+}
+
+.spritesheet-container:active {
+  transform: scale(0.95);
+}
+
+.spritesheet-sprite {
+  position: relative;
+  image-rendering: pixelated;
+}
+
+.spritesheet-shadow {
+  width: 60%;
+  margin: -4px auto 0;
+}
+
 .eagle-sprite {
   position: relative;
   width: calc(17 * var(--px));
