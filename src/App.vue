@@ -4742,7 +4742,7 @@ function escapeRegExp(str) {
           <button class="traffic-btn traffic-green" title="最大化/还原" @click="panelToggleMaximize"></button>
         </div>
         <div class="title-drag"></div>
-        <span class="window-title">鹰捷V3.0</span>
+        <span class="window-title">鹰捷V3.2</span>
         <div class="header-actions">
           <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
           <span class="db-name" id="dbName">{{ dbName }}</span>
