@@ -14,6 +14,14 @@ const isMenuWindow = computed(() => isTauriWindow && windowLabel.value === "pet_
 const isPanelWindow = computed(() => !isPetWindow.value && !isMenuWindow.value);
 
 const settingsOpen = ref(false);
+const settingsTab = ref(0);
+const settingsTabDir = ref(0);
+const SETTINGS_TABS = [
+  { id: 'connection', label: '连接' },
+  { id: 'shortcuts',  label: '快捷键' },
+  { id: 'search',     label: '搜索' },
+  { id: 'appearance', label: '外观' },
+];
 const tableOpen = ref(false);
 const tableDetailView = ref("hits");
 const tableFullscreen = ref(false);
@@ -2980,7 +2988,14 @@ function panelHeaderPointerDown(event) {
   getCurrentWindow().startDragging().catch(() => {});
 }
 
+function switchSettingsTab(index) {
+  if (index < 0 || index >= SETTINGS_TABS.length || index === settingsTab.value) return;
+  settingsTabDir.value = index > settingsTab.value ? 1 : -1;
+  settingsTab.value = index;
+}
+
 function openSettings() {
+  settingsTab.value = 0;
   syncSettingsDraftDbFields();
   settingsDraft.hotkey = normalizeHotkeyDisplay(config.personal.hotkey);
   settingsDraft.quickDateHotkey = normalizeQuickDateHotkey(config.personal.quick_date_hotkey);
@@ -3307,6 +3322,11 @@ function resetTableFullscreenTracking() {
 }
 
 async function enterTableFullscreen() {
+  // Clear any inline width/height left by CSS resize: both
+  if (tableModalRef.value) {
+    tableModalRef.value.style.width = '';
+    tableModalRef.value.style.height = '';
+  }
   tableFullscreen.value = true;
   if (!isTauriWindow || !isPanelWindow.value) {
     resetTableFullscreenTracking();
@@ -4700,6 +4720,12 @@ function showCopyToast(text, tone = "success") {
   }, 1400);
 }
 
+function copyRow(row) {
+  if (!row || !tableView.columns.length) return;
+  const text = tableView.columns.map(col => String(row[col.column_name] ?? '')).join('\t');
+  copyText(text);
+}
+
 async function copyText(text) {
   const value = String(text || "");
   if (!value) return;
@@ -5263,6 +5289,7 @@ function escapeRegExp(str) {
                       'edit-deleted': editMode && isRowDeleted(row, idx),
                       'edit-modified': editMode && isRowModified(row, idx),
                     }"
+                    @contextmenu.prevent="copyRow(row)"
                   >
                     <td v-if="editMode" class="edit-checkbox-col">
                       <input type="checkbox"
@@ -5286,7 +5313,7 @@ function escapeRegExp(str) {
                           tableFindFocus.columnName === col.column_name,
                         'edit-cell-modified': editMode && isCellModified(row, idx, col.column_name),
                       }"
-                      @dblclick="editMode && startCellEdit(idx, col.column_name)"
+                      @click="editMode && startCellEdit(idx, col.column_name)"
                     >
                       <input v-if="editingCell.active && editingCell.rowIndex === idx && editingCell.columnName === col.column_name"
                         id="edit-cell-input"
@@ -5305,7 +5332,7 @@ function escapeRegExp(str) {
                     </td>
                     <td v-for="col in tableView.columns" :key="col.column_name"
                       :style="getColumnStyle(col.column_name)"
-                      @dblclick="startNewRowCellEdit(nIdx, col.column_name)"
+                      @click="startNewRowCellEdit(nIdx, col.column_name)"
                     >
                       <input v-if="editingCell.active && editingCell.rowIndex === (tableView.rows.length + nIdx) && editingCell.columnName === col.column_name"
                         id="edit-cell-input"
@@ -5455,123 +5482,170 @@ function escapeRegExp(str) {
     </section>
   </div>
 
-  <div v-if="settingsOpen" class="dialog-mask" @click.self="closeSettings" @dragover.prevent @drop.prevent="onDropConfig">
-    <section class="modal-card settings-modal">
-      <header class="modal-header">
+  <div v-if="settingsOpen" class="dialog-mask-v2" @click.self="closeSettings" @dragover.prevent @drop.prevent="onDropConfig">
+    <section class="settings-modal-v2">
+      <!-- Header -->
+      <header class="settings-header-v2">
         <h3>设置</h3>
         <button class="icon-btn" @click="closeSettings">✕</button>
       </header>
 
-        <section class="form-group">
-          <h4>数据库连接 <span class="drop-hint">（可拖入 JSON 配置文件）</span></h4>
-          <div class="form-grid">
-            <label>主机<input v-model="settingsDraft.host" type="text" /></label>
-            <label>端口<input v-model.number="settingsDraft.port" type="number" /></label>
-            <label>用户名<input v-model="settingsDraft.username" type="text" /></label>
-            <label>密码<input v-model="settingsDraft.password" type="password" /></label>
-            <label class="full">数据库<input v-model="settingsDraft.database" type="text" /></label>
-          </div>
-        </section>
+      <!-- Cover Flow Nav -->
+      <nav class="coverflow-nav">
+        <button class="coverflow-arrow" :disabled="settingsTab === 0" @click="switchSettingsTab(settingsTab - 1)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+        <div class="coverflow-track">
+          <button v-for="(tab, i) in SETTINGS_TABS" :key="tab.id"
+                  :class="['coverflow-item', {
+                    active: i === settingsTab,
+                    prev: i === settingsTab - 1,
+                    next: i === settingsTab + 1,
+                    hidden: Math.abs(i - settingsTab) > 1
+                  }]"
+                  @click="switchSettingsTab(i)">
+            {{ tab.label }}
+          </button>
+        </div>
+        <button class="coverflow-arrow" :disabled="settingsTab === SETTINGS_TABS.length - 1" @click="switchSettingsTab(settingsTab + 1)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M5 3L9 7L5 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+      </nav>
 
-        <section class="form-group">
-          <h4>系统设置</h4>
-          <div class="form-grid">
-            <label>快捷键<input v-model="settingsDraft.hotkey" type="text" readonly :placeholder="hotkeyPlaceholder" @keydown="onHotkeyInputKeydown" /></label>
-            <label>日期快捷键<input v-model="settingsDraft.quickDateHotkey" type="text" readonly :placeholder="quickDateHotkeyPlaceholder" @keydown="onQuickDateHotkeyInputKeydown" /></label>
-            <label>导出快捷键<input v-model="settingsDraft.exportHotkey" type="text" readonly placeholder="Ctrl+E" @keydown="onDraftHotkeyInputKeydown($event, 'exportHotkey')" /></label>
-            <label>批量导出快捷键<input v-model="settingsDraft.batchExportHotkey" type="text" readonly placeholder="Ctrl+Shift+E" @keydown="onDraftHotkeyInputKeydown($event, 'batchExportHotkey')" /></label>
-            <label>置顶快捷键<input v-model="settingsDraft.alwaysOnTopHotkey" type="text" readonly placeholder="P" @keydown="onDraftHotkeyInputKeydown($event, 'alwaysOnTopHotkey')" /></label>
-            <label>模板上一快捷键<input v-model="settingsDraft.templatePrevHotkey" type="text" readonly placeholder="Ctrl+Alt+Left" @keydown="onDraftHotkeyInputKeydown($event, 'templatePrevHotkey')" /></label>
-            <label>模板下一快捷键<input v-model="settingsDraft.templateNextHotkey" type="text" readonly placeholder="Ctrl+Alt+Right" @keydown="onDraftHotkeyInputKeydown($event, 'templateNextHotkey')" /></label>
-            <label>小窗口默认视图
-              <select v-model="settingsDraft.tableDefaultView">
-                <option value="hits">Tab 页面（只看命中）</option>
-                <option value="full">正常页面</option>
-              </select>
-            </label>
-            <label><input v-model="settingsDraft.autoStart" type="checkbox" />开机自启</label>
-            <label><input v-model="settingsDraft.alwaysOnTop" type="checkbox" />窗口置顶</label>
-            <label><input v-model="settingsDraft.resetOnOpenToAllTables" type="checkbox" />打开窗口重置为全表</label>
-          </div>
-        </section>
-
-        <section class="form-group">
-          <h4>挂件待机状态</h4>
-          <div class="idle-state-grid">
-            <div v-for="st in availableIdleOptions" :key="st.value" class="idle-state-item">
-              <label><input v-model="settingsDraft.idleStates" type="checkbox" :value="st.value" />{{ st.label }}</label>
-              <button class="idle-play-btn" title="播放预览" @click="previewIdleState(st.value)">▶</button>
+      <!-- Tab Content -->
+      <div class="settings-body-v2">
+        <Transition :name="settingsTabDir > 0 ? 'stab-left' : 'stab-right'" mode="out-in">
+          <!-- Tab 0: 连接 -->
+          <div v-if="settingsTab === 0" key="connection" class="settings-tab-pane">
+            <div class="glass-card">
+              <h4 class="glass-card-title">数据库连接 <span class="drop-hint">（可拖入 JSON 配置文件）</span></h4>
+              <div class="glass-form-grid">
+                <label class="glass-form-label">主机<input v-model="settingsDraft.host" type="text" class="glass-input" /></label>
+                <label class="glass-form-label">端口<input v-model.number="settingsDraft.port" type="number" class="glass-input" /></label>
+                <label class="glass-form-label">用户名<input v-model="settingsDraft.username" type="text" class="glass-input" /></label>
+                <label class="glass-form-label">密码<input v-model="settingsDraft.password" type="password" class="glass-input" /></label>
+                <label class="glass-form-label full">数据库<input v-model="settingsDraft.database" type="text" class="glass-input" /></label>
+              </div>
+            </div>
+            <div class="glass-card">
+              <h4 class="glass-card-title">数据库模板</h4>
+              <div v-if="config.shared.db_templates.length > 0" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">
+                <div v-for="(tpl, idx) in config.shared.db_templates" :key="idx" class="glass-template-item">
+                  <span class="template-name">{{ tpl.name }}</span>
+                  <span class="template-info">{{ tpl.db.host }}:{{ tpl.db.port }}/{{ tpl.db.database }}</span>
+                  <button class="glass-btn-ghost" :disabled="templateSwitching" @click="switchToTemplate(idx)">
+                    {{ templateSwitching && templateSwitchingIndex === idx ? "加载中..." : "加载" }}
+                  </button>
+                  <button class="glass-btn-danger" :disabled="templateSwitching" @click="deleteTemplate(idx)">删除</button>
+                </div>
+              </div>
+              <div v-else class="muted" style="margin-bottom:6px">暂无模板</div>
+              <div style="display:flex;gap:6px;align-items:center">
+                <input v-model="settingsDraft.templateName" type="text" class="glass-input" placeholder="模板名称" style="flex:1" />
+                <button class="glass-btn-secondary" :disabled="templateSwitching || !settingsDraft.templateName.trim()" @click="saveAsTemplate(settingsDraft.templateName); settingsDraft.templateName = ''">保存当前连接为模板</button>
+              </div>
             </div>
           </div>
-        </section>
 
-        <section class="form-group">
-          <h4>搜索设置</h4>
-          <div class="form-grid">
-            <label class="full">排除表（正则，逗号分隔）<input v-model="settingsDraft.excludeTables" type="text" /></label>
-            <label>单表超时(秒)<input v-model.number="settingsDraft.perTableTimeoutSec" type="number" /></label>
-            <label>每表最大行数<input v-model.number="settingsDraft.perTableMaxRows" type="number" /></label>
-          </div>
-        </section>
-
-        <section class="form-group">
-          <h4>数据库模板</h4>
-          <div v-if="config.shared.db_templates.length > 0" class="template-list">
-            <div v-for="(tpl, idx) in config.shared.db_templates" :key="idx" class="template-item">
-              <span class="template-name">{{ tpl.name }}</span>
-              <span class="template-info">{{ tpl.db.host }}:{{ tpl.db.port }}/{{ tpl.db.database }}</span>
-              <button class="ghost-btn" :disabled="templateSwitching" @click="switchToTemplate(idx)">
-                {{ templateSwitching && templateSwitchingIndex === idx ? "加载中..." : "加载" }}
-              </button>
-              <button class="ghost-btn danger" :disabled="templateSwitching" @click="deleteTemplate(idx)">删除</button>
+          <!-- Tab 1: 快捷键 -->
+          <div v-else-if="settingsTab === 1" key="shortcuts" class="settings-tab-pane">
+            <div class="glass-card">
+              <h4 class="glass-card-title">快捷键</h4>
+              <div class="glass-form-grid">
+                <label class="glass-form-label">搜索快捷键<input v-model="settingsDraft.hotkey" type="text" class="glass-input" readonly :placeholder="hotkeyPlaceholder" @keydown="onHotkeyInputKeydown" /></label>
+                <label class="glass-form-label">日期快捷键<input v-model="settingsDraft.quickDateHotkey" type="text" class="glass-input" readonly :placeholder="quickDateHotkeyPlaceholder" @keydown="onQuickDateHotkeyInputKeydown" /></label>
+                <label class="glass-form-label">导出快捷键<input v-model="settingsDraft.exportHotkey" type="text" class="glass-input" readonly placeholder="Ctrl+E" @keydown="onDraftHotkeyInputKeydown($event, 'exportHotkey')" /></label>
+                <label class="glass-form-label">批量导出快捷键<input v-model="settingsDraft.batchExportHotkey" type="text" class="glass-input" readonly placeholder="Ctrl+Shift+E" @keydown="onDraftHotkeyInputKeydown($event, 'batchExportHotkey')" /></label>
+                <label class="glass-form-label">置顶快捷键<input v-model="settingsDraft.alwaysOnTopHotkey" type="text" class="glass-input" readonly placeholder="P" @keydown="onDraftHotkeyInputKeydown($event, 'alwaysOnTopHotkey')" /></label>
+                <label class="glass-form-label">模板上一快捷键<input v-model="settingsDraft.templatePrevHotkey" type="text" class="glass-input" readonly placeholder="Ctrl+Alt+Left" @keydown="onDraftHotkeyInputKeydown($event, 'templatePrevHotkey')" /></label>
+                <label class="glass-form-label">模板下一快捷键<input v-model="settingsDraft.templateNextHotkey" type="text" class="glass-input" readonly placeholder="Ctrl+Alt+Right" @keydown="onDraftHotkeyInputKeydown($event, 'templateNextHotkey')" /></label>
+                <label class="glass-form-label">小窗口默认视图
+                  <select v-model="settingsDraft.tableDefaultView" class="glass-select">
+                    <option value="hits">Tab 页面（只看命中）</option>
+                    <option value="full">正常页面</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div class="glass-card">
+              <h4 class="glass-card-title">系统</h4>
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <label class="glass-toggle"><input v-model="settingsDraft.autoStart" type="checkbox" /><span class="glass-toggle-track"></span>开机自启</label>
+                <label class="glass-toggle"><input v-model="settingsDraft.alwaysOnTop" type="checkbox" /><span class="glass-toggle-track"></span>窗口置顶</label>
+                <label class="glass-toggle"><input v-model="settingsDraft.resetOnOpenToAllTables" type="checkbox" /><span class="glass-toggle-track"></span>打开窗口重置为全表</label>
+              </div>
             </div>
           </div>
-          <div v-else class="muted" style="margin-bottom:6px">暂无模板</div>
-          <div class="template-add">
-            <input v-model="settingsDraft.templateName" type="text" placeholder="模板名称" style="flex:1" />
-            <button class="small-btn" :disabled="templateSwitching || !settingsDraft.templateName.trim()" @click="saveAsTemplate(settingsDraft.templateName); settingsDraft.templateName = ''">保存当前连接为模板</button>
-          </div>
-        </section>
 
-        <section class="form-group">
-          <h4>外观</h4>
-          <div class="form-grid">
-            <label>宠物皮肤
-              <select v-model="settingsDraft.petSkin">
-                <option value="eagle">鹰（默认）</option>
-                <option value="cat">猫</option>
-                <option value="bunny">兔</option>
-                <option value="fox">狐狸</option>
-                <option value="panda">熊猫</option>
-                <option value="spirit">灵童（像素参考）</option>
-                <option value="lion">狮橙（像素参考）</option>
-                <option value="knight">骑士（Sprite Sheet）</option>
-                <optgroup v-if="customSkins.length" label="自定义皮肤">
-                  <option v-for="cs in customSkins" :key="cs.id" :value="'custom:' + cs.id">
-                    {{ cs.manifest.name }}
-                  </option>
-                </optgroup>
-              </select>
-              <button class="small-btn" style="margin-top:4px" @click="openSkinEditor()">皮肤编辑器</button>
-            </label>
-            <label>宠物大小 <span class="muted">{{ Math.round(settingsDraft.petScale * 100) }}%</span>
-              <input type="range" :min="PET_SCALE_MIN" :max="PET_SCALE_MAX" :step="PET_SCALE_STEP" v-model.number="settingsDraft.petScale" />
-            </label>
-            <label>全局字体
-              <select v-model="settingsDraft.customFont">
-                <option :value="null">默认字体</option>
-                <option v-for="font in systemFonts" :key="font" :value="font">{{ font }}</option>
-              </select>
-            </label>
+          <!-- Tab 2: 搜索 -->
+          <div v-else-if="settingsTab === 2" key="search" class="settings-tab-pane">
+            <div class="glass-card">
+              <h4 class="glass-card-title">搜索设置</h4>
+              <div class="glass-form-grid">
+                <label class="glass-form-label full">排除表（正则，逗号分隔）<input v-model="settingsDraft.excludeTables" type="text" class="glass-input" /></label>
+                <label class="glass-form-label">单表超时(秒)<input v-model.number="settingsDraft.perTableTimeoutSec" type="number" class="glass-input" /></label>
+                <label class="glass-form-label">每表最大行数<input v-model.number="settingsDraft.perTableMaxRows" type="number" class="glass-input" /></label>
+              </div>
+            </div>
           </div>
-        </section>
 
-        <footer class="modal-footer">
-          <span v-if="settingsMsg" class="settings-msg" :class="{ ok: settingsMsg.startsWith('✓'), err: settingsMsg.startsWith('✗') }">{{ settingsMsg }}</span>
-          <button class="small-btn" @click="triggerImport">导入共享配置</button>
-          <button class="small-btn" @click="testConnect">测试连接</button>
-          <button class="primary-btn" @click="saveSettings">保存设置</button>
-        </footer>
+          <!-- Tab 3: 外观 -->
+          <div v-else-if="settingsTab === 3" key="appearance" class="settings-tab-pane">
+            <div class="glass-card">
+              <h4 class="glass-card-title">宠物皮肤</h4>
+              <div class="glass-form-grid">
+                <label class="glass-form-label">皮肤
+                  <select v-model="settingsDraft.petSkin" class="glass-select">
+                    <option value="eagle">鹰（默认）</option>
+                    <option value="cat">猫</option>
+                    <option value="bunny">兔</option>
+                    <option value="fox">狐狸</option>
+                    <option value="panda">熊猫</option>
+                    <option value="spirit">灵童（像素参考）</option>
+                    <option value="lion">狮橙（像素参考）</option>
+                    <option value="knight">骑士（Sprite Sheet）</option>
+                    <optgroup v-if="customSkins.length" label="自定义皮肤">
+                      <option v-for="cs in customSkins" :key="cs.id" :value="'custom:' + cs.id">
+                        {{ cs.manifest.name }}
+                      </option>
+                    </optgroup>
+                  </select>
+                </label>
+                <label class="glass-form-label" style="justify-content:flex-end">
+                  <button class="glass-btn-secondary" @click="openSkinEditor()">皮肤编辑器</button>
+                </label>
+              </div>
+              <div style="margin-top:12px">
+                <label class="glass-form-label">宠物大小 <span class="muted">{{ Math.round(settingsDraft.petScale * 100) }}%</span>
+                  <input type="range" class="glass-slider" :min="PET_SCALE_MIN" :max="PET_SCALE_MAX" :step="PET_SCALE_STEP" v-model.number="settingsDraft.petScale" />
+                </label>
+              </div>
+            </div>
+            <div class="glass-card">
+              <h4 class="glass-card-title">待机状态</h4>
+              <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px">
+                <div v-for="st in availableIdleOptions" :key="st.value" class="glass-idle-item">
+                  <label><input v-model="settingsDraft.idleStates" type="checkbox" :value="st.value" />{{ st.label }}</label>
+                  <button class="idle-play-btn" title="播放预览" @click="previewIdleState(st.value)">▶</button>
+                </div>
+              </div>
+            </div>
+            <div class="glass-card">
+              <h4 class="glass-card-title">字体</h4>
+              <label class="glass-form-label">全局字体
+                <select v-model="settingsDraft.customFont" class="glass-select">
+                  <option :value="null">默认字体</option>
+                  <option v-for="font in systemFonts" :key="font" :value="font">{{ font }}</option>
+                </select>
+              </label>
+            </div>
+          </div>
+        </Transition>
+      </div>
+
+      <!-- Footer -->
+      <footer class="settings-footer-v2">
+        <span v-if="settingsMsg" class="settings-msg" :class="{ ok: settingsMsg.startsWith('✓'), err: settingsMsg.startsWith('✗') }">{{ settingsMsg }}</span>
+        <button v-show="settingsTab === 0" class="glass-btn-secondary" @click="triggerImport">导入共享配置</button>
+        <button v-show="settingsTab === 0" class="glass-btn-secondary" @click="testConnect">测试连接</button>
+        <button class="glass-btn-primary" @click="saveSettings">保存设置</button>
+      </footer>
       <input id="importFile" class="hidden" type="file" accept="application/json" @change="onImportConfig" />
     </section>
   </div>
