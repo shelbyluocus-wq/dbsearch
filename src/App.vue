@@ -5,6 +5,7 @@ import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
+import { WeatherEngine } from "./weatherEngine.js";
 
 const isTauriWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const windowLabel = ref("browser");
@@ -99,6 +100,7 @@ function applyTheme(id) {
   themeId.value = id
   document.documentElement.dataset.theme = id
   localStorage.setItem('dbsearch-theme', id)
+  if (weatherEngine) weatherEngine.setTheme(id)
 }
 
 const progress = reactive({
@@ -152,8 +154,137 @@ const config = reactive({
     pet_skin: "eagle",
     pet_scale: {},
     custom_font: null,
+    weather_enabled: true,
   },
 });
+
+// ── Weather state ──
+const weatherCanvasRef = ref(null);
+const weatherEnabled = ref(true);
+const weatherCategory = ref('');
+const weatherText = ref('');
+const weatherTemp = ref(0);
+const weatherCity = ref('');
+const weatherIcon = ref('');
+let weatherEngine = null;
+let weatherRefreshTimer = null;
+const WEATHER_REFRESH_MS = 30 * 60 * 1000;
+
+// Weather debug (5-click easter egg)
+let titleClickCount = 0
+let titleClickTimer = null
+const weatherDebugVisible = ref(false)
+const weatherDebugCategory = ref('')
+
+// Sky background time-of-day system
+const skyTime = ref(new Date().getHours() + new Date().getMinutes() / 60)
+let skyTimeTimer = null
+const skyTimeOverride = ref(null) // debug slider overrides auto time
+
+const skyEffectiveTime = computed(() => skyTimeOverride.value !== null ? skyTimeOverride.value : skyTime.value)
+
+const skyOpacities = computed(() => {
+  const t = skyEffectiveTime.value
+  let dawn = 0, day = 0, dusk = 0, night = 0
+  if (t >= 4 && t < 8) dawn = 1 - Math.abs(t - 6) / 2
+  if (t >= 6 && t < 18) day = 1 - Math.abs(t - 12) / 6
+  if (t >= 16 && t < 20) dusk = 1 - Math.abs(t - 18) / 2
+  if (t >= 18 || t < 6) night = t >= 18 ? (t - 18) / 6 : 1 - t / 6
+  return {
+    dawn: Math.max(0, dawn),
+    day: Math.max(0, day),
+    dusk: Math.max(0, dusk),
+    night: Math.max(0, night),
+  }
+})
+
+const skyBackgroundFilter = computed(() => {
+  const cat = weatherDebugCategory.value || weatherCategory.value
+  const dark = cat === 'rain' || cat === 'lightRain' || cat === 'heavyRain' || cat === 'cloudy'
+  return dark ? 'brightness(0.5) saturate(0.8)' : 'brightness(1) saturate(1)'
+})
+
+const weatherQuality = ref('high') // 'high' = CSS effects, 'low' = canvas engine
+
+const WEATHER_ICON_MAP = {
+  sunny: '☀️',
+  cloudy: '⛅',
+  rain: '🌧️',
+  snow: '❄️',
+};
+
+// ── CSS weather effect elements (computed arrays for v-for) ──
+const effectiveWeatherType = computed(() => weatherDebugCategory.value || weatherCategory.value)
+const isNightTime = computed(() => skyEffectiveTime.value < 6 || skyEffectiveTime.value > 18)
+
+const rainDropElements = computed(() => {
+  const cat = effectiveWeatherType.value
+  if (cat !== 'rain' && cat !== 'lightRain' && cat !== 'heavyRain') return []
+  const isHeavy = cat === 'heavyRain'
+  const count = weatherQuality.value === 'high' ? (isHeavy ? 100 : 40) : (isHeavy ? 40 : 15)
+  return Array.from({ length: count }, (_, i) => ({
+    id: i,
+    left: `${Math.random() * 110}%`,
+    duration: isHeavy ? `${0.3 + Math.random() * 0.2}s` : `${0.5 + Math.random() * 0.3}s`,
+    delay: `${Math.random() * 2}s`,
+    heavy: isHeavy,
+  }))
+})
+
+const cloudElements = computed(() => {
+  const cat = effectiveWeatherType.value
+  if (cat === 'sunny') return []
+  const isHeavy = cat === 'heavyRain'
+  const count = weatherQuality.value === 'high' ? (isHeavy ? 6 : 4) : 2
+  return Array.from({ length: count }, (_, i) => ({
+    id: i,
+    top: `${5 + Math.random() * 20}%`,
+    duration: `${40 + Math.random() * 40}s`,
+    delay: `-${Math.random() * 40}s`,
+    opacity: isHeavy ? 0.9 : 0.7,
+    scale: 0.8 + Math.random() * 0.7,
+  }))
+})
+
+const starElements = computed(() => {
+  const cat = effectiveWeatherType.value
+  if (cat !== 'sunny' || !isNightTime.value) return []
+  return Array.from({ length: 30 }, (_, i) => ({
+    id: i,
+    left: `${Math.random() * 100}%`,
+    top: `${Math.random() * 100}%`,
+    size: `${1 + Math.random() * 2}px`,
+    animDuration: `${2 + Math.random() * 3}s`,
+  }))
+})
+
+const snowElements = computed(() => {
+  const cat = effectiveWeatherType.value
+  if (cat !== 'snow') return []
+  const count = weatherQuality.value === 'high' ? 50 : 25
+  return Array.from({ length: count }, (_, i) => ({
+    id: i,
+    left: `${Math.random() * 100}%`,
+    duration: `${4 + Math.random() * 4}s`,
+    delay: `${Math.random() * 5}s`,
+    size: `${3 + Math.random() * 5}px`,
+    drift: `${-20 + Math.random() * 40}px`,
+  }))
+})
+
+const showSun = computed(() => {
+  const cat = effectiveWeatherType.value
+  return (cat === 'sunny' || cat === 'cloudy') && !isNightTime.value
+})
+
+const sunPosition = computed(() => {
+  const t = skyEffectiveTime.value
+  return {
+    left: `${((t - 6) / 12) * 80 + 10}%`,
+    top: `${Math.abs(t - 12) * 4 + 10}%`,
+    opacity: effectiveWeatherType.value === 'cloudy' ? 0.3 : 1,
+  }
+})
 
 const history = ref([]);
 const allHitRows = ref([]);
@@ -350,6 +481,7 @@ const settingsDraft = reactive({
   petSkin: "eagle",
   petScale: 1.0,
   customFont: null,
+  weatherEnabled: true,
 });
 
 // Custom skin editor state
@@ -1759,6 +1891,148 @@ function onTableCommandInputKeydown(event) {
   }
 }
 
+async function fetchWeather() {
+  if (!isTauriWindow || !weatherEnabled.value) return;
+  try {
+    const info = await invoke('get_weather');
+    weatherCategory.value = info.category;
+    weatherText.value = info.text;
+    weatherTemp.value = info.temp;
+    weatherCity.value = info.city || '';
+    weatherIcon.value = WEATHER_ICON_MAP[info.category] || '🌤️';
+    if (weatherEngine) {
+      weatherEngine.setWeather(info.category, info.wind_speed, info.rain_intensity);
+    }
+  } catch (e) {
+    console.warn('[Weather] fetch failed:', e);
+  }
+}
+
+function onTitleClick() {
+  titleClickCount++
+  if (titleClickTimer) clearTimeout(titleClickTimer)
+  titleClickTimer = setTimeout(() => { titleClickCount = 0 }, 1500)
+  if (titleClickCount >= 5) {
+    titleClickCount = 0
+    weatherDebugVisible.value = !weatherDebugVisible.value
+    weatherDebugCategory.value = weatherCategory.value
+  }
+}
+
+function applyDebugWeather(cat) {
+  weatherDebugCategory.value = cat
+  // Map lightRain/heavyRain to canvas engine's 'rain' category with different intensity
+  if (weatherEngine) {
+    if (cat === 'lightRain') {
+      weatherEngine.setWeather('rain', 10, 0.3)
+    } else if (cat === 'heavyRain') {
+      weatherEngine.setWeather('rain', 25, 0.9)
+    } else {
+      weatherEngine.setWeather(cat, 15, 0.5)
+    }
+  }
+}
+
+function onSkyTimeSlider(event) {
+  skyTimeOverride.value = parseFloat(event.target.value)
+}
+
+function switchToLowQuality() {
+  weatherQuality.value = 'low'
+  // Canvas engine needs re-init when switching back to it
+  nextTick(() => {
+    initWeatherEngine()
+    if (weatherDebugCategory.value) {
+      applyDebugWeather(weatherDebugCategory.value)
+    } else {
+      fetchWeather()
+    }
+  })
+}
+
+function resetToRealWeather() {
+  weatherDebugVisible.value = false
+  weatherDebugCategory.value = ''
+  skyTimeOverride.value = null
+  fetchWeather()
+}
+
+// Click-outside for weather popover
+let weatherPopoverClickHandler = null
+watch(() => weatherDebugVisible.value, (visible) => {
+  if (visible) {
+    setTimeout(() => {
+      weatherPopoverClickHandler = () => { weatherDebugVisible.value = false }
+      document.addEventListener('click', weatherPopoverClickHandler)
+    }, 50)
+  } else {
+    if (weatherPopoverClickHandler) {
+      document.removeEventListener('click', weatherPopoverClickHandler)
+      weatherPopoverClickHandler = null
+    }
+  }
+})
+
+function initWeatherEngine() {
+  if (!weatherCanvasRef.value || weatherEngine) return;
+  const widget = document.getElementById('widget');
+  if (!widget) return;
+  weatherEngine = new WeatherEngine(weatherCanvasRef.value, { theme: themeId.value });
+  weatherEngine.resize(widget.clientWidth, widget.clientHeight);
+  weatherEngine.start();
+
+  // Collision rects from UI elements
+  updateWeatherCollisionRects();
+
+  // ResizeObserver
+  let resizeDebounce = null;
+  const ro = new ResizeObserver(() => {
+    clearTimeout(resizeDebounce);
+    resizeDebounce = setTimeout(() => {
+      if (weatherEngine && widget) {
+        weatherEngine.resize(widget.clientWidth, widget.clientHeight);
+        updateWeatherCollisionRects();
+      }
+    }, 200);
+  });
+  ro.observe(widget);
+  weatherEngine._resizeObserver = ro;
+}
+
+function updateWeatherCollisionRects() {
+  if (!weatherEngine) return;
+  const widget = document.getElementById('widget');
+  if (!widget) return;
+  const wRect = widget.getBoundingClientRect();
+  const selectors = ['.widget-header', '.panel-footer', '.org-toolbar'];
+  const rects = [];
+  for (const sel of selectors) {
+    const el = widget.querySelector(sel);
+    if (!el) continue;
+    const r = el.getBoundingClientRect();
+    rects.push({
+      x: r.left - wRect.left,
+      y: r.top - wRect.top,
+      w: r.width,
+      h: r.height,
+    });
+  }
+  weatherEngine.setCollisionRects(rects);
+}
+
+function destroyWeatherEngine() {
+  if (weatherEngine) {
+    if (weatherEngine._resizeObserver) {
+      weatherEngine._resizeObserver.disconnect();
+      weatherEngine._resizeObserver = null;
+    }
+    weatherEngine.destroy();
+    weatherEngine = null;
+  }
+  clearInterval(weatherRefreshTimer);
+  weatherRefreshTimer = null;
+}
+
 onMounted(async () => {
   if (isTauriWindow) {
     windowLabel.value = getCurrentWindow().label;
@@ -1809,6 +2083,20 @@ onMounted(async () => {
         openSettings();
       }
     }
+
+    // ── Weather engine init ──
+    weatherEnabled.value = config.personal.weather_enabled !== false;
+    if (weatherEnabled.value) {
+      await nextTick();
+      initWeatherEngine();
+      fetchWeather();
+      weatherRefreshTimer = setInterval(fetchWeather, WEATHER_REFRESH_MS);
+    }
+    // Sky time auto-update every 5 minutes
+    skyTimeTimer = setInterval(() => {
+      skyTime.value = new Date().getHours() + new Date().getMinutes() / 60
+    }, 5 * 60 * 1000)
+
     return;
   }
 
@@ -1922,6 +2210,9 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   stopSpriteSheetAnimation();
+  destroyWeatherEngine();
+  if (skyTimeTimer) { clearInterval(skyTimeTimer); skyTimeTimer = null; }
+  if (weatherPopoverClickHandler) { document.removeEventListener('click', weatherPopoverClickHandler); weatherPopoverClickHandler = null; }
   if (isPanelWindow.value) {
     detachPanelListeners();
     clearIdlePreview();
@@ -3022,6 +3313,7 @@ function openSettings() {
   settingsDraft.petSkin = config.personal.pet_skin || "eagle";
   settingsDraft.petScale = getPetScale(settingsDraft.petSkin);
   settingsDraft.customFont = config.personal.custom_font || null;
+  settingsDraft.weatherEnabled = config.personal.weather_enabled !== false;
   if (isTauriWindow) {
     invoke("list_system_fonts").then((fonts) => { systemFonts.value = fonts; }).catch(() => {});
   }
@@ -3132,6 +3424,20 @@ async function saveSettings() {
   config.personal.pet_skin = settingsDraft.petSkin || "eagle";
   setPetScale(settingsDraft.petSkin, settingsDraft.petScale);
   config.personal.custom_font = settingsDraft.customFont || null;
+  config.personal.weather_enabled = !!settingsDraft.weatherEnabled;
+  weatherEnabled.value = !!settingsDraft.weatherEnabled;
+  if (weatherEnabled.value) {
+    await nextTick();
+    if (!weatherEngine) {
+      initWeatherEngine();
+      fetchWeather();
+      if (!weatherRefreshTimer) {
+        weatherRefreshTimer = setInterval(fetchWeather, WEATHER_REFRESH_MS);
+      }
+    }
+  } else {
+    destroyWeatherEngine();
+  }
 
   if (isTauriWindow) {
     try {
@@ -4760,7 +5066,31 @@ function escapeRegExp(str) {
 
 <template>
   <main v-if="isPanelWindow" class="app-shell open panel-shell" id="appShell" @contextmenu.prevent>
-    <section class="widget" id="widget">
+    <section class="widget" id="widget" :class="{ 'no-weather': !weatherEnabled }">
+      <!-- Phase 1: Sky gradient background -->
+      <div v-if="weatherEnabled" class="sky-background" :style="{ filter: skyBackgroundFilter }">
+        <div class="sky-layer sky-dawn" :style="{ opacity: skyOpacities.dawn }"></div>
+        <div class="sky-layer sky-day" :style="{ opacity: skyOpacities.day }"></div>
+        <div class="sky-layer sky-dusk" :style="{ opacity: skyOpacities.dusk }"></div>
+        <div class="sky-layer sky-night" :style="{ opacity: skyOpacities.night }"></div>
+      </div>
+      <!-- Phase 2: CSS weather effects layer -->
+      <div v-if="weatherEnabled && weatherQuality === 'high'" class="weather-effects-layer">
+        <!-- Sun -->
+        <div v-if="showSun" class="weather-sun" :style="{ left: sunPosition.left, top: sunPosition.top, opacity: sunPosition.opacity }"></div>
+        <!-- Stars -->
+        <div v-for="s in starElements" :key="'star-'+s.id" class="weather-star" :style="{ left: s.left, top: s.top, width: s.size, height: s.size, animationDuration: s.animDuration }"></div>
+        <!-- Clouds -->
+        <div v-for="c in cloudElements" :key="'cloud-'+c.id" class="weather-cloud" :style="{ top: c.top, transform: 'scale('+c.scale+')', opacity: isNightTime ? c.opacity*0.5 : c.opacity, animationDuration: c.duration, animationDelay: c.delay }">
+          <svg width="120" height="60" viewBox="0 0 120 60" fill="currentColor"><ellipse cx="60" cy="38" rx="55" ry="22"/><ellipse cx="36" cy="28" rx="30" ry="20"/><ellipse cx="80" cy="30" rx="28" ry="18"/><ellipse cx="56" cy="20" rx="24" ry="16"/></svg>
+        </div>
+        <!-- Rain drops -->
+        <div v-for="r in rainDropElements" :key="'rain-'+r.id" :class="['weather-raindrop', r.heavy ? 'heavy' : 'light']" :style="{ left: r.left, animationDuration: r.duration, animationDelay: r.delay }"></div>
+        <!-- Snow -->
+        <div v-for="sn in snowElements" :key="'snow-'+sn.id" class="weather-snowflake" :style="{ left: sn.left, width: sn.size, height: sn.size, animationDuration: sn.duration, animationDelay: sn.delay, '--drift': sn.drift }"></div>
+      </div>
+      <!-- Canvas engine for low-quality mode -->
+      <canvas v-if="weatherEnabled && weatherQuality === 'low'" ref="weatherCanvasRef" class="weather-canvas"></canvas>
       <header class="widget-header" @pointerdown="panelHeaderPointerDown" @dblclick="panelToggleMaximize">
         <div class="traffic-lights" @dblclick.stop>
           <button class="traffic-btn traffic-red" title="隐藏窗口" @click="panelClose"></button>
@@ -4768,13 +5098,48 @@ function escapeRegExp(str) {
           <button class="traffic-btn traffic-green" title="最大化/还原" @click="panelToggleMaximize"></button>
         </div>
         <div class="title-drag"></div>
-        <span class="window-title">鹰捷V3.2</span>
+        <span class="window-title" @pointerdown.stop @dblclick.stop @click.stop="onTitleClick" style="cursor:default">鹰捷V3.2</span>
+        <div v-if="weatherCity" class="header-weather" :title="`${weatherCity} ${weatherText} ${weatherTemp}°C`">
+          <span class="header-weather-icon">{{ weatherIcon }}</span>
+          <span class="header-weather-city">{{ weatherCity }}</span>
+          <span class="header-weather-temp">{{ weatherTemp }}°</span>
+        </div>
         <div class="header-actions">
           <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
           <span class="db-name" id="dbName">{{ dbName }}</span>
           <button class="icon-btn" title="设置" @click="openSettings">⚙</button>
         </div>
       </header>
+
+      <Transition name="weather-popover">
+        <div v-if="weatherDebugVisible" class="weather-popover" @click.stop>
+          <div class="weather-popover-row weather-popover-btns">
+            <button
+              v-for="cat in [{id:'sunny',icon:'☀️',name:'晴天'},{id:'cloudy',icon:'⛅',name:'多云'},{id:'lightRain',icon:'🌧️',name:'小雨'},{id:'heavyRain',icon:'⛈️',name:'大雨'},{id:'snow',icon:'❄️',name:'雪天'}]"
+              :key="cat.id"
+              :class="['weather-popover-btn', { active: weatherDebugCategory === cat.id }]"
+              @click="applyDebugWeather(cat.id)"
+            >
+              <span class="weather-popover-btn-icon">{{ cat.icon }}</span>
+              <span class="weather-popover-btn-name">{{ cat.name }}</span>
+            </button>
+          </div>
+          <div class="weather-popover-divider"></div>
+          <div class="weather-popover-time">
+            <span class="weather-popover-time-icon">🌙</span>
+            <input type="range" min="0" max="24" step="0.1" :value="skyEffectiveTime" @input="onSkyTimeSlider($event)" />
+            <span class="weather-popover-time-icon">☀️</span>
+            <span class="weather-popover-time-label">{{ Math.floor(skyEffectiveTime) }}:{{ String(Math.floor((skyEffectiveTime % 1) * 60)).padStart(2, '0') }}</span>
+          </div>
+          <div class="weather-popover-divider"></div>
+          <div class="weather-popover-quality">
+            <button :class="['weather-popover-quality-btn', { active: weatherQuality === 'high' }]" @click="weatherQuality = 'high'">高画质</button>
+            <button :class="['weather-popover-quality-btn', { active: weatherQuality === 'low' }]" @click="switchToLowQuality">流畅</button>
+          </div>
+          <div class="weather-popover-divider"></div>
+          <button class="weather-popover-reset" @click="resetToRealWeather">恢复实时天气</button>
+        </div>
+      </Transition>
 
       <div class="panel-content-viewport">
       <div class="panel-content-scale" :style="contentScaleStyle">
@@ -5634,6 +5999,18 @@ function escapeRegExp(str) {
                   <option v-for="font in systemFonts" :key="font" :value="font">{{ font }}</option>
                 </select>
               </label>
+            </div>
+            <div class="glass-card">
+              <h4 class="glass-card-title">天气效果</h4>
+              <div style="display:flex;flex-direction:column;gap:12px">
+                <label class="glass-toggle">
+                  <input v-model="settingsDraft.weatherEnabled" type="checkbox" />
+                  <span class="glass-toggle-track"></span>实时天气粒子效果
+                </label>
+              </div>
+              <div v-if="weatherText" style="margin-top:8px;font-size:12px;color:var(--text-dim)">
+                当前：{{ weatherText }} {{ weatherTemp }}°C
+              </div>
             </div>
           </div>
         </Transition>

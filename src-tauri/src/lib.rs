@@ -129,6 +129,11 @@ struct PersonalConfig {
     pet_scale: std::collections::HashMap<String, f64>,
     #[serde(default)]
     custom_font: Option<String>,
+    #[serde(default = "default_true")]
+    weather_enabled: bool,
+}
+fn default_true() -> bool {
+    true
 }
 fn default_always_on_top_hotkey() -> String {
     "P".into()
@@ -167,6 +172,7 @@ impl Default for PersonalConfig {
             pet_skin: "eagle".into(),
             pet_scale: std::collections::HashMap::new(),
             custom_font: None,
+            weather_enabled: true,
         }
     }
 }
@@ -2025,6 +2031,103 @@ async fn set_autostart(enable: bool, app: tauri::AppHandle) -> Result<(), String
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WeatherInfo {
+    code: i32,
+    text: String,
+    temp: i32,
+    wind_speed: i32,
+    humidity: i32,
+    category: String,
+    rain_intensity: f32,
+    city: String,
+}
+
+fn classify_weather_code(code: i32) -> (&'static str, f32) {
+    match code {
+        100 | 150 => ("sunny", 0.0),
+        101..=104 | 151..=153 => ("cloudy", 0.0),
+        300 => ("rain", 0.3),
+        301 => ("rain", 0.5),
+        302..=304 => ("rain", 0.8),
+        305..=309 => ("rain", 0.5),
+        310..=313 => ("rain", 0.7),
+        314..=318 => ("rain", 0.9),
+        399 => ("rain", 0.6),
+        400..=499 => ("snow", 0.0),
+        _ => ("cloudy", 0.0),
+    }
+}
+
+#[tauri::command]
+async fn get_weather() -> Result<WeatherInfo, String> {
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .connect_timeout(std::time::Duration::from_secs(5))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    const QW_API_KEY: &str = "11931e18542b476b8bfbc17778db5449";
+    const QW_API_HOST: &str = "https://nu4nmu2ctr.re.qweatherapi.com";
+
+    // Hardcoded Xiamen coordinates (removes ip-api.com dependency)
+    let location = "118.08,24.48".to_string(); // 厦门市
+    let city = "厦门".to_string();
+
+    // Step 2: Get current weather from QWeather
+    let weather_url = format!("{}/v7/weather/now?location={}", QW_API_HOST, location);
+    let weather_resp: serde_json::Value = client
+        .get(&weather_url)
+        .header("X-QW-Api-Key", QW_API_KEY)
+        .send()
+        .await
+        .map_err(|e| format!("天气数据请求失败: {}", e))?
+        .json()
+        .await
+        .map_err(|e| format!("天气数据解析失败: {}", e))?;
+
+    let resp_code = weather_resp["code"].as_str().unwrap_or("");
+    if resp_code != "200" {
+        return Err(format!("和风天气API返回错误码: {}", resp_code));
+    }
+
+    let now = &weather_resp["now"];
+    let code = now["icon"]
+        .as_str()
+        .unwrap_or("999")
+        .parse::<i32>()
+        .unwrap_or(999);
+    let text = now["text"].as_str().unwrap_or("未知").to_string();
+    let temp = now["temp"]
+        .as_str()
+        .unwrap_or("0")
+        .parse::<i32>()
+        .unwrap_or(0);
+    let wind_speed = now["windSpeed"]
+        .as_str()
+        .unwrap_or("0")
+        .parse::<i32>()
+        .unwrap_or(0);
+    let humidity = now["humidity"]
+        .as_str()
+        .unwrap_or("0")
+        .parse::<i32>()
+        .unwrap_or(0);
+
+    let (category, rain_intensity) = classify_weather_code(code);
+
+    Ok(WeatherInfo {
+        code,
+        text,
+        temp,
+        wind_speed,
+        humidity,
+        category: category.to_string(),
+        rain_intensity,
+        city,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -2219,7 +2322,8 @@ pub fn run() {
             save_skin_manifest,
             list_custom_skins,
             delete_custom_skin,
-            get_skin_base_path
+            get_skin_base_path,
+            get_weather
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

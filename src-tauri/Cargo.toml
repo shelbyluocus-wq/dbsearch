@@ -29,3 +29,4 @@ rust_xlsxwriter = "0.79"
 tauri-plugin-dialog = "2"
 font-kit = "0.14"
 image = { version = "0.25", default-features = false, features = ["png"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "gzip"], default-features = false }

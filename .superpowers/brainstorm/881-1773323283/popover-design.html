@@ -1,0 +1,125 @@
+<h2>天气调试 Popover 设计</h2>
+<p class="subtitle">点击"鹰捷V3.2"五次触发，从标题下方弹出</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">弹出动画 — iOS Spring</div>
+    <div class="mockup-body" style="background:linear-gradient(135deg, #3b82f6, #38bdf8);min-height:300px;position:relative;padding:20px;">
+      <!-- Title bar mock -->
+      <div style="background:rgba(255,255,255,0.18);backdrop-filter:blur(12px);border-radius:10px;padding:8px 12px;display:flex;align-items:center;gap:6px;border:1px solid rgba(255,255,255,0.25);">
+        <div style="display:flex;gap:4px;">
+          <div style="width:8px;height:8px;border-radius:50%;background:#ff5f57;"></div>
+          <div style="width:8px;height:8px;border-radius:50%;background:#ffbd2e;"></div>
+          <div style="width:8px;height:8px;border-radius:50%;background:#28c840;"></div>
+        </div>
+        <span style="flex:1;"></span>
+        <span style="font-size:11px;font-weight:800;color:rgba(0,0,0,0.7);text-decoration:underline;text-decoration-style:dotted;text-underline-offset:3px;cursor:pointer;">鹰捷V3.2</span>
+        <span style="flex:1;"></span>
+      </div>
+
+      <!-- Popover -->
+      <div style="
+        position:absolute;
+        top:52px;left:50%;transform:translateX(-50%);
+        width:280px;
+        background:rgba(255,255,255,0.65);
+        backdrop-filter:blur(40px) saturate(1.4);
+        border:1px solid rgba(255,255,255,0.6);
+        border-radius:16px;
+        padding:14px;
+        box-shadow:
+          inset 0 1px 0 0 rgba(255,255,255,0.9),
+          0 16px 48px -8px rgba(0,0,0,0.2);
+        animation: popover-demo 0.45s cubic-bezier(0.175, 0.885, 0.32, 1.275) both;
+      ">
+        <!-- Weather buttons -->
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
+          <span style="font-size:10px;font-weight:700;color:rgba(0,0,0,0.5);width:30px;">天气</span>
+          <div style="display:flex;gap:4px;flex:1;">
+            <div style="width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;background:rgba(0,0,0,0.04);border:1px solid transparent;cursor:pointer;" title="晴天">☀️</div>
+            <div style="width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;background:rgba(0,0,0,0.04);border:1px solid transparent;cursor:pointer;" title="多云">⛅</div>
+            <div style="width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;background:rgba(59,130,246,0.15);border:1px solid rgba(59,130,246,0.3);box-shadow:0 0 8px rgba(59,130,246,0.15);cursor:pointer;" title="小雨">🌧️</div>
+            <div style="width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;background:rgba(0,0,0,0.04);border:1px solid transparent;cursor:pointer;" title="大雨">⛈️</div>
+            <div style="width:32px;height:32px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:16px;background:rgba(0,0,0,0.04);border:1px solid transparent;cursor:pointer;" title="雪天">❄️</div>
+          </div>
+        </div>
+
+        <div style="height:1px;background:rgba(0,0,0,0.08);margin:8px 0;"></div>
+
+        <!-- Time slider -->
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:4px;">
+          <span style="font-size:10px;font-weight:700;color:rgba(0,0,0,0.5);width:30px;">时间</span>
+          <span style="font-size:12px;">🌙</span>
+          <div style="flex:1;height:4px;background:rgba(0,0,0,0.1);border-radius:2px;position:relative;">
+            <div style="position:absolute;left:0;top:0;width:58%;height:100%;background:linear-gradient(90deg,#6366f1,#f59e0b);border-radius:2px;"></div>
+            <div style="position:absolute;left:56%;top:-4px;width:12px;height:12px;background:white;border-radius:50%;border:2px solid #6366f1;box-shadow:0 1px 4px rgba(0,0,0,0.15);"></div>
+          </div>
+          <span style="font-size:12px;">☀️</span>
+          <span style="font-size:10px;font-family:monospace;color:rgba(0,0,0,0.5);width:32px;text-align:right;">14:00</span>
+        </div>
+
+        <div style="height:1px;background:rgba(0,0,0,0.08);margin:8px 0;"></div>
+
+        <!-- Quality toggle -->
+        <div style="display:flex;align-items:center;gap:8px;">
+          <span style="font-size:10px;font-weight:700;color:rgba(0,0,0,0.5);width:30px;">画质</span>
+          <div style="display:flex;gap:4px;">
+            <div style="padding:4px 10px;border-radius:8px;font-size:10px;font-weight:600;background:rgba(16,185,129,0.12);color:#059669;border:1px solid rgba(16,185,129,0.3);">高画质</div>
+            <div style="padding:4px 10px;border-radius:8px;font-size:10px;font-weight:500;background:rgba(0,0,0,0.04);color:rgba(0,0,0,0.4);border:1px solid transparent;">流畅</div>
+          </div>
+        </div>
+
+        <div style="height:1px;background:rgba(0,0,0,0.08);margin:10px 0 8px;"></div>
+
+        <!-- Reset button -->
+        <button style="width:100%;padding:6px;border-radius:10px;border:1px solid rgba(0,0,0,0.08);background:rgba(0,0,0,0.03);font-size:10px;color:rgba(0,0,0,0.45);cursor:pointer;font-weight:500;">恢复实时天气</button>
+      </div>
+
+      <!-- Arrow pointing to title -->
+      <div style="position:absolute;top:43px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:8px solid rgba(255,255,255,0.65);"></div>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">弹出动画参数</div>
+    <div class="mockup-body" style="padding:20px;font-size:13px;line-height:1.8;">
+      <div style="margin-bottom:12px;">
+        <strong>弹簧曲线 (Spring Overshoot)</strong><br>
+        <code style="background:rgba(0,0,0,0.06);padding:2px 6px;border-radius:4px;font-size:11px;">cubic-bezier(0.175, 0.885, 0.32, 1.275)</code>
+      </div>
+      <div style="margin-bottom:12px;">
+        <strong>入场动画</strong> 450ms<br>
+        • scale: 0.6 → 1.0（弹过头再回弹）<br>
+        • opacity: 0 → 1<br>
+        • translateY: -8px → 0
+      </div>
+      <div style="margin-bottom:12px;">
+        <strong>退场动画</strong> 200ms<br>
+        • 反向播放，ease-in 快速收缩消失
+      </div>
+      <div style="margin-bottom:12px;">
+        <strong>触发方式</strong><br>
+        • 1.5 秒内连续点击"鹰捷V3.2"五次<br>
+        • 已有机制，保持不变
+      </div>
+      <div>
+        <strong>关闭方式</strong><br>
+        • 点击面板外部区域<br>
+        • 再次点击标题5次（toggle）
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+@keyframes popover-demo {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) scale(0.6) translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) scale(1) translateY(0);
+  }
+}
+</style>

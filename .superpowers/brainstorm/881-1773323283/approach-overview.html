@@ -1,0 +1,120 @@
+<h2>Liquid Glass UI 改造方案</h2>
+<p class="subtitle">基于 Demo.jsx 的视觉方向，应用到整个面板窗口</p>
+
+<div class="section">
+  <h3>核心思路：三层叠加架构</h3>
+  <p>将面板窗口改为三层结构，天气动效透过半透明 UI 层呈现</p>
+</div>
+
+<div class="cards">
+  <div class="card" data-choice="layer-arch" onclick="toggleSelect(this)">
+    <div class="card-image" style="height:320px;position:relative;overflow:hidden;border-radius:12px;">
+      <!-- Sky gradient background -->
+      <div style="position:absolute;inset:0;background:linear-gradient(135deg, #3b82f6, #38bdf8, #bae6fd);"></div>
+
+      <!-- Rain drops -->
+      <div style="position:absolute;inset:0;overflow:hidden;">
+        <div style="position:absolute;left:15%;top:10%;width:2px;height:30px;background:linear-gradient(to bottom, transparent, rgba(255,255,255,0.8));transform:rotate(-5deg);opacity:0.7;"></div>
+        <div style="position:absolute;left:35%;top:25%;width:2px;height:25px;background:linear-gradient(to bottom, transparent, rgba(255,255,255,0.8));transform:rotate(-5deg);opacity:0.5;"></div>
+        <div style="position:absolute;left:55%;top:5%;width:2px;height:35px;background:linear-gradient(to bottom, transparent, rgba(255,255,255,0.8));transform:rotate(-5deg);opacity:0.6;"></div>
+        <div style="position:absolute;left:75%;top:20%;width:2px;height:28px;background:linear-gradient(to bottom, transparent, rgba(255,255,255,0.8));transform:rotate(-5deg);opacity:0.7;"></div>
+        <div style="position:absolute;left:90%;top:15%;width:2px;height:32px;background:linear-gradient(to bottom, transparent, rgba(255,255,255,0.8));transform:rotate(-5deg);opacity:0.4;"></div>
+      </div>
+
+      <!-- Glass UI Layer -->
+      <div style="position:absolute;inset:0;display:flex;flex-direction:column;">
+        <!-- Title bar -->
+        <div style="height:40px;background:rgba(255,255,255,0.18);backdrop-filter:blur(20px);border-bottom:1px solid rgba(255,255,255,0.25);display:flex;align-items:center;padding:0 12px;gap:6px;">
+          <div style="display:flex;gap:4px;">
+            <div style="width:8px;height:8px;border-radius:50%;background:#ff5f57;"></div>
+            <div style="width:8px;height:8px;border-radius:50%;background:#ffbd2e;"></div>
+            <div style="width:8px;height:8px;border-radius:50%;background:#28c840;"></div>
+          </div>
+          <span style="flex:1;"></span>
+          <span style="font-size:11px;font-weight:700;color:rgba(0,0,0,0.7);">鹰捷V3.2</span>
+          <span style="flex:1;"></span>
+          <span style="font-size:10px;color:rgba(0,0,0,0.5);">⚙</span>
+        </div>
+
+        <div style="flex:1;display:flex;">
+          <!-- Sidebar -->
+          <div style="width:100px;background:rgba(255,255,255,0.12);backdrop-filter:blur(16px);border-right:1px solid rgba(255,255,255,0.2);padding:8px 6px;">
+            <div style="font-size:7px;color:rgba(0,0,0,0.4);padding:4px;text-transform:uppercase;letter-spacing:1px;">Explorer</div>
+            <div style="background:rgba(255,255,255,0.35);border:1px solid rgba(255,255,255,0.4);border-radius:8px;padding:5px 6px;margin:3px 0;font-size:8px;font-weight:600;color:rgba(0,0,0,0.7);">🗄 全部</div>
+            <div style="padding:5px 6px;font-size:8px;color:rgba(0,0,0,0.5);">📋 表名</div>
+            <div style="padding:5px 6px;font-size:8px;color:rgba(0,0,0,0.5);">📝 字段名</div>
+          </div>
+
+          <!-- Content -->
+          <div style="flex:1;background:rgba(255,255,255,0.08);backdrop-filter:blur(12px);padding:10px;">
+            <!-- Search bar -->
+            <div style="background:rgba(255,255,255,0.30);border:1px solid rgba(255,255,255,0.4);border-radius:10px;padding:7px 10px;font-size:9px;color:rgba(0,0,0,0.4);margin-bottom:10px;backdrop-filter:blur(8px);">🔍 搜索表名、字段名...</div>
+
+            <!-- Result cards -->
+            <div style="background:rgba(255,255,255,0.22);border:1px solid rgba(255,255,255,0.35);border-radius:10px;padding:8px 10px;margin-bottom:6px;backdrop-filter:blur(8px);">
+              <div style="font-size:10px;font-weight:700;color:rgba(0,0,0,0.75);">t_hero_config</div>
+              <div style="font-size:8px;color:rgba(0,0,0,0.45);margin-top:2px;">● 英雄配置表</div>
+            </div>
+            <div style="background:rgba(255,255,255,0.22);border:1px solid rgba(255,255,255,0.35);border-radius:10px;padding:8px 10px;backdrop-filter:blur(8px);">
+              <div style="font-size:10px;font-weight:700;color:rgba(0,0,0,0.75);">t_hero_skill</div>
+              <div style="font-size:8px;color:rgba(0,0,0,0.45);margin-top:2px;">● 英雄技能表</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Footer -->
+        <div style="height:28px;background:rgba(255,255,255,0.15);backdrop-filter:blur(16px);border-top:1px solid rgba(255,255,255,0.2);display:flex;align-items:center;justify-content:center;gap:4px;">
+          <div style="width:6px;height:6px;border-radius:50%;background:#3b82f6;box-shadow:0 0 4px rgba(59,130,246,0.5);"></div>
+          <div style="width:6px;height:6px;border-radius:50%;background:#64748b;"></div>
+          <div style="width:6px;height:6px;border-radius:50%;background:#059669;"></div>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <h3>三层架构概览</h3>
+      <p>底层：天空渐变 → 中层：天气粒子 → 顶层：毛玻璃 UI<br>
+      <strong>透明度 60-75%</strong>，天气透过面板若隐若现</p>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:24px;">
+  <h3>改造范围</h3>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="scope-panel" onclick="toggleSelect(this)">
+    <div class="letter">1</div>
+    <div class="content">
+      <h3>主面板 → Liquid Glass</h3>
+      <p>标题栏、侧边栏、内容区、底部栏全部改为半透明毛玻璃，天气动效从背后透出。搜索框和卡片有独立的 glass 层级</p>
+    </div>
+  </div>
+  <div class="option" data-choice="scope-modals" onclick="toggleSelect(this)">
+    <div class="letter">2</div>
+    <div class="content">
+      <h3>全部弹窗 → 统一 Glass 风格</h3>
+      <p>表详情、结果放大、新建文件夹、编辑对话框、导出对话框等全部统一使用 settings-modal-v2 的毛玻璃效果 + 弹入动画</p>
+    </div>
+  </div>
+  <div class="option" data-choice="scope-popover" onclick="toggleSelect(this)">
+    <div class="letter">3</div>
+    <div class="content">
+      <h3>天气调试彩蛋 → Glass Popover</h3>
+      <p>点击标题5次弹出浮动气泡式面板，包含天气/时间/画质控制。iOS 弹簧动画 (cubic-bezier overshoot)</p>
+    </div>
+  </div>
+  <div class="option" data-choice="scope-weather" onclick="toggleSelect(this)">
+    <div class="letter">4</div>
+    <div class="content">
+      <h3>天气背景 → Demo.jsx 效果</h3>
+      <p>新增时间驱动的天空渐变（黎明/白天/黄昏/深夜），CSS 动画雨滴、浮动云朵、太阳弧线、夜间星空</p>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:24px;">
+  <h3>可读性保障策略</h3>
+  <p>中度透明（60-75% 白色）+ backdrop-filter blur(20-40px) + 白色边框高光 + 文字保持深色不变。<br>
+  效果类似 <strong>Apple visionOS</strong>：通透但不模糊文字。天气越恶劣，天空越暗，反而增强对比度。</p>
+</div>
