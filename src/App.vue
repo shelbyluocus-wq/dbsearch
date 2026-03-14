@@ -351,6 +351,9 @@ const slashQuery = ref("");
 const slashActiveIndex = ref(0);
 const tableTabs = ref([]);
 const activeTableTabId = ref("");
+const recentTables = ref([]);
+const recentTabsDropdownOpen = ref(false);
+const RECENT_TABLES_MAX = 10;
 const tableCommandOpen = ref(false);
 const tableCommandQuery = ref("");
 const tableCommandActiveIndex = ref(0);
@@ -563,6 +566,55 @@ function saveOrgData() {
     }));
   } catch { /* ignore */ }
 }
+function recentStorageKey() {
+  const db = config.shared.db;
+  return `db_scout_recent_v1_${db.host}_${db.port}_${db.database}`;
+}
+function loadRecentTables() {
+  try {
+    const raw = localStorage.getItem(recentStorageKey());
+    if (!raw) return;
+    recentTables.value = JSON.parse(raw).slice(0, RECENT_TABLES_MAX);
+  } catch { /* ignore */ }
+}
+function saveRecentTables() {
+  try {
+    localStorage.setItem(recentStorageKey(), JSON.stringify(recentTables.value));
+  } catch { /* ignore */ }
+}
+function addToRecentTables(tableName, tableComment) {
+  recentTables.value = [
+    { tableName, tableComment: tableComment || "", openedAt: Date.now() },
+    ...recentTables.value.filter((r) => r.tableName !== tableName),
+  ].slice(0, RECENT_TABLES_MAX);
+  saveRecentTables();
+}
+function toggleRecentTabsDropdown() {
+  recentTabsDropdownOpen.value = !recentTabsDropdownOpen.value;
+}
+
+const recentTablesGrouped = computed(() => {
+  const folders = tableFolders.value;
+  const groups = [];
+  const inFolder = new Set();
+
+  for (const folder of folders) {
+    const folderSet = new Set(folder.tables.map((t) => t.toLowerCase()));
+    const matches = recentTables.value.filter((r) => folderSet.has(r.tableName.toLowerCase()));
+    if (matches.length > 0) {
+      groups.push({ folderName: folder.name, tables: matches });
+      matches.forEach((m) => inFolder.add(m.tableName.toLowerCase()));
+    }
+  }
+
+  const uncategorized = recentTables.value.filter((r) => !inFolder.has(r.tableName.toLowerCase()));
+  if (uncategorized.length > 0) {
+    groups.push({ folderName: groups.length > 0 ? "未分类" : "最近打开", tables: uncategorized });
+  }
+
+  return groups;
+});
+
 function toggleStar(tableName) {
   if (starredTables.has(tableName)) starredTables.delete(tableName);
   else starredTables.add(tableName);
@@ -1272,6 +1324,7 @@ function handleDeleteFolder(folderId) {
 }
 function closeAllOrgMenus() {
   sortMenuOpen.value = false;
+  recentTabsDropdownOpen.value = false;
   closeItemCtxMenu();
   closeFolderCtxMenu();
 }
@@ -1395,6 +1448,7 @@ async function onDbConnectionChanged({ resetContext = false } = {}) {
   await refreshConnectionStatus();
   await loadTableOptions();
   loadOrgData();
+  loadRecentTables();
   if (resetContext) {
     resetContextAfterDbSwitch();
     syncSummaryForDefaultTableBrowse();
@@ -1787,6 +1841,8 @@ async function openOrActivateTableTab(tableName, rowIndex = null, columnName = n
   scheduleAdaptiveTablePageSize();
   snapshotActiveTableTab();
   scrollTableTabIntoView(nextTab.id);
+  const comment = tableOptionCommentMap.value.get(normalizedName.toLowerCase()) || "";
+  addToRecentTables(normalizedName, comment);
 }
 
 async function switchTableByStep(step = 1) {
@@ -2108,6 +2164,7 @@ onMounted(async () => {
     await attachProgressListener();
     await loadTableOptions();
     loadOrgData();
+    loadRecentTables();
     loadHistory();
     bindPanelListeners();
     handlePanelActivated({
@@ -2310,6 +2367,12 @@ watch(() => settingsDraft.petSkin, (newSkin) => {
     settingsDraft.idleStates = [...ALLOWED_IDLE_STATES];
   }
   settingsDraft.petScale = getPetScale(newSkin);
+});
+
+watch(() => settingsDraft.backgroundOpacity, (val) => {
+  if (settingsOpen.value) {
+    config.personal.background_opacity = normalizeBackgroundOpacity(val);
+  }
 });
 
 // --- Skin Editor Functions ---
@@ -3358,6 +3421,7 @@ function openSettings(target = "connection") {
   settingsDraft.customFont = config.personal.custom_font || null;
   settingsDraft.weatherEnabled = config.personal.weather_enabled !== false;
   settingsDraft.backgroundOpacity = normalizeBackgroundOpacity(config.personal.background_opacity);
+  _opacityBeforeSettings = config.personal.background_opacity;
   if (isTauriWindow) {
     invoke("list_system_fonts").then((fonts) => { systemFonts.value = fonts; }).catch(() => {});
   }
@@ -3365,8 +3429,11 @@ function openSettings(target = "connection") {
   settingsOpen.value = true;
 }
 
+let _opacityBeforeSettings = 1;
+
 function closeSettings() {
   clearIdlePreview();
+  config.personal.background_opacity = _opacityBeforeSettings;
   settingsOpen.value = false;
 }
 
@@ -5169,6 +5236,45 @@ function escapeRegExp(str) {
         </div>
       </header>
 
+      <section v-if="dbConnected" class="panel-tab-strip panel-tab-strip--demo" @click.self="closeAllOrgMenus" @wheel="onTableTabsWheel">
+        <button
+          v-for="tab in panelTabs"
+          :key="tab.key"
+          :class="['panel-tab-chip', { active: tab.active, opened: tab.opened, starred: tab.starred }]"
+          :title="tab.tableName"
+          @click="activatePanelChromeTab(tab)"
+        >
+          <span v-if="tab.starred" class="panel-tab-chip-star">★</span>
+          <span class="panel-tab-chip-label">{{ tab.tableName }}</span>
+          <span v-if="tab.opened" class="panel-tab-chip-close" title="关闭标签" @click.stop="closePanelChromeTab(tab)">✕</span>
+        </button>
+        <button class="panel-tab-chip panel-tab-chip-add" title="最近打开的表" @click="toggleRecentTabsDropdown">
+          <span :class="['recent-tabs-arrow', { open: recentTabsDropdownOpen }]">▾</span>
+        </button>
+        <Transition name="recent-dropdown">
+          <div v-if="recentTabsDropdownOpen" class="recent-tabs-dropdown" @click.stop>
+            <div class="recent-tabs-header">
+              <span>最近打开</span>
+              <button class="recent-tabs-close" @click="recentTabsDropdownOpen = false">✕</button>
+            </div>
+            <div v-if="recentTables.length === 0" class="recent-tabs-empty">暂无最近打开的表</div>
+            <template v-for="group in recentTablesGrouped" :key="group.folderName">
+              <div class="recent-tabs-group-header">{{ group.folderName }}</div>
+              <button
+                v-for="item in group.tables" :key="item.tableName"
+                class="recent-tabs-item"
+                @click="openOrActivateTableTab(item.tableName); recentTabsDropdownOpen = false"
+              >
+                <span v-if="starredTables.has(item.tableName)" class="recent-tabs-star">★</span>
+                <span class="recent-tabs-name">{{ item.tableName }}</span>
+                <span class="recent-tabs-comment">{{ item.tableComment || '' }}</span>
+              </button>
+            </template>
+          </div>
+        </Transition>
+      </section>
+      <div v-if="recentTabsDropdownOpen" class="recent-tabs-backdrop" @click="recentTabsDropdownOpen = false"></div>
+
       <div class="panel-content-viewport">
       <div class="panel-content-scale" :style="contentScaleStyle">
       <section class="search-panel search-panel--demo">
@@ -5218,21 +5324,6 @@ function escapeRegExp(str) {
           </div>
           <div class="bar"><div class="bar-inner" :style="{ width: `${progress.percent}%` }"></div></div>
         </div>
-      </section>
-
-      <section v-if="dbConnected" class="panel-tab-strip panel-tab-strip--demo" @click.self="closeAllOrgMenus" @wheel="onTableTabsWheel">
-        <button
-          v-for="tab in panelTabs"
-          :key="tab.key"
-          :class="['panel-tab-chip', { active: tab.active, opened: tab.opened, starred: tab.starred }]"
-          :title="tab.tableName"
-          @click="activatePanelChromeTab(tab)"
-        >
-          <span v-if="tab.starred" class="panel-tab-chip-star">★</span>
-          <span class="panel-tab-chip-label">{{ tab.tableName }}</span>
-          <span v-if="tab.opened" class="panel-tab-chip-close" title="关闭标签" @click.stop="closePanelChromeTab(tab)">✕</span>
-        </button>
-        <button class="panel-tab-chip panel-tab-chip-add" title="打开表 (Ctrl+P)" @click="openTableCommandPalette({ slash: true })">+</button>
       </section>
 
       <!-- 表整理工具栏 -->
