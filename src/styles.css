@@ -6539,6 +6539,7 @@ mark {
 }
 
 .widget--demo-shell .search-panel,
+.widget--demo-shell .panel-tab-strip-wrap,
 .widget--demo-shell .panel-tab-strip,
 .widget--demo-shell .org-toolbar,
 .widget--demo-shell .results-main,
@@ -6630,6 +6631,11 @@ mark {
   color: var(--demo-text-sub);
 }
 
+.panel-tab-strip-wrap {
+  position: relative;
+  z-index: 4;
+}
+
 .panel-tab-strip {
   display: flex;
   align-items: center;
@@ -6640,8 +6646,6 @@ mark {
 }
 
 .widget--demo-shell .panel-tab-strip--demo {
-  position: relative;
-  z-index: 4;
   margin: 0;
   padding: 6px 16px;
   border-radius: 0;
@@ -6733,12 +6737,12 @@ mark {
   transform: rotate(180deg);
 }
 
-/* Recent tables dropdown */
+/* Recent tables dropdown — positioned relative to .panel-tab-strip-wrap */
 .recent-tabs-dropdown {
   position: absolute;
   top: 100%;
-  right: 12px;
-  left: 12px;
+  right: 0;
+  left: 0;
   max-height: 340px;
   overflow-y: auto;
   padding: 6px;

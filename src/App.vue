@@ -1815,6 +1815,8 @@ async function openOrActivateTableTab(tableName, rowIndex = null, columnName = n
   );
   if (exists) {
     await activateTableTab(exists.id);
+    const comment = tableOptionCommentMap.value.get(normalizedName.toLowerCase()) || "";
+    addToRecentTables(normalizedName, comment);
     return;
   }
 
@@ -1937,6 +1939,10 @@ async function activatePanelChromeTab(tab) {
 async function closePanelChromeTab(tab) {
   if (!tab?.opened || !tab.tabId) return;
   await closeTableTab(tab.tabId);
+  if (tab.starred) {
+    starredTables.delete(tab.tableName);
+    saveOrgData();
+  }
 }
 
 function isTableOpenedInTabs(tableName) {
@@ -5236,21 +5242,23 @@ function escapeRegExp(str) {
         </div>
       </header>
 
-      <section v-if="dbConnected" class="panel-tab-strip panel-tab-strip--demo" @click.self="closeAllOrgMenus" @wheel="onTableTabsWheel">
-        <button
-          v-for="tab in panelTabs"
-          :key="tab.key"
-          :class="['panel-tab-chip', { active: tab.active, opened: tab.opened, starred: tab.starred }]"
-          :title="tab.tableName"
-          @click="activatePanelChromeTab(tab)"
-        >
-          <span v-if="tab.starred" class="panel-tab-chip-star">★</span>
-          <span class="panel-tab-chip-label">{{ tab.tableName }}</span>
-          <span v-if="tab.opened" class="panel-tab-chip-close" title="关闭标签" @click.stop="closePanelChromeTab(tab)">✕</span>
-        </button>
-        <button class="panel-tab-chip panel-tab-chip-add" title="最近打开的表" @click="toggleRecentTabsDropdown">
-          <span :class="['recent-tabs-arrow', { open: recentTabsDropdownOpen }]">▾</span>
-        </button>
+      <div v-if="dbConnected" class="panel-tab-strip-wrap">
+        <section class="panel-tab-strip panel-tab-strip--demo" @click.self="closeAllOrgMenus" @wheel="onTableTabsWheel">
+          <button class="panel-tab-chip panel-tab-chip-add" title="最近打开的表" @click.stop="toggleRecentTabsDropdown">
+            <span :class="['recent-tabs-arrow', { open: recentTabsDropdownOpen }]">▾</span>
+          </button>
+          <button
+            v-for="tab in panelTabs"
+            :key="tab.key"
+            :class="['panel-tab-chip', { active: tab.active, opened: tab.opened, starred: tab.starred }]"
+            :title="tab.tableName"
+            @click="activatePanelChromeTab(tab)"
+          >
+            <span v-if="tab.starred" class="panel-tab-chip-star">★</span>
+            <span class="panel-tab-chip-label">{{ tab.tableName }}</span>
+            <span v-if="tab.opened" class="panel-tab-chip-close" title="关闭标签" @click.stop="closePanelChromeTab(tab)">✕</span>
+          </button>
+        </section>
         <Transition name="recent-dropdown">
           <div v-if="recentTabsDropdownOpen" class="recent-tabs-dropdown" @click.stop>
             <div class="recent-tabs-header">
@@ -5272,7 +5280,7 @@ function escapeRegExp(str) {
             </template>
           </div>
         </Transition>
-      </section>
+      </div>
       <div v-if="recentTabsDropdownOpen" class="recent-tabs-backdrop" @click="recentTabsDropdownOpen = false"></div>
 
       <div class="panel-content-viewport">
