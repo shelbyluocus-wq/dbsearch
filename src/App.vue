@@ -1938,10 +1938,10 @@ async function activatePanelChromeTab(tab) {
 
 async function closePanelChromeTab(tab) {
   if (!tab?.opened || !tab.tabId) return;
+  const wasTableOpen = tableOpen.value;
   await closeTableTab(tab.tabId);
-  if (tab.starred) {
-    starredTables.delete(tab.tableName);
-    saveOrgData();
+  if (!wasTableOpen && tableOpen.value) {
+    tableOpen.value = false;
   }
 }
 
