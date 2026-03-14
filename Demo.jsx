@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Search, Settings, ChevronLeft, ChevronRight, FileText, Sun, Cloud, CloudRain, Moon, Monitor, Zap, Database, Table, Columns, AlignLeft, Binary } from 'lucide-react';
+import { Search, Settings, ChevronLeft, ChevronRight, FileText, Sun, Cloud, CloudRain, Moon, Monitor, Zap, Database, Table, Columns, AlignLeft, Binary, Star, Folder, Plus, ArrowDownAZ } from 'lucide-react';
 
 const App = () => {
   // 控制状态
@@ -137,6 +137,32 @@ const App = () => {
                 <span className="absolute right-4 top-3.5 text-slate-500 font-medium cursor-pointer hover:text-blue-700 transition-colors">历史</span>
               </div>
 
+              {/* 新增：收藏夹与星标水平导航栏 */}
+              <div className="flex items-center justify-between mb-5 px-1">
+                <div className="flex items-center gap-2 overflow-x-auto hide-scrollbar">
+                  <div className="flex items-center gap-1.5 px-4 py-1.5 bg-blue-500/20 text-blue-800 rounded-full font-bold cursor-pointer border border-blue-400/30 shadow-sm backdrop-blur-md">
+                    <span>全部</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 px-4 py-1.5 bg-white/20 hover:bg-white/40 text-slate-800 rounded-full font-medium cursor-pointer border border-white/30 transition-all shadow-sm">
+                    <Star size={14} className="text-amber-500 fill-amber-500" />
+                    <span>星标</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 px-4 py-1.5 bg-white/20 hover:bg-white/40 text-slate-800 rounded-full font-medium cursor-pointer border border-white/30 transition-all shadow-sm">
+                    <Folder size={14} className="text-amber-500 fill-amber-500" />
+                    <span>物品表s</span>
+                  </div>
+                  <div className="flex items-center justify-center w-8 h-8 bg-white/20 hover:bg-white/40 text-slate-600 rounded-full cursor-pointer transition-all border border-white/30 shadow-sm">
+                    <Plus size={16} />
+                  </div>
+                </div>
+
+                {/* 排序按钮 (参照截图右侧) */}
+                <div className="flex items-center gap-1.5 px-3 py-1.5 bg-white/20 hover:bg-white/40 text-slate-700 rounded-xl text-xs font-bold cursor-pointer transition-all border border-white/30 shadow-sm ml-4 whitespace-nowrap">
+                  <ArrowDownAZ size={14} className="text-slate-500"/>
+                  <span>表名 A→Z</span>
+                </div>
+              </div>
+
               {/* 列表内容 (变身为精致的悬浮卡片) */}
               <div className="flex flex-col gap-5 overflow-y-auto pb-4 pr-2">
                 <div className="flex items-center justify-between p-5 rounded-2xl bg-white/20 hover:bg-white/40 transition-all duration-300 group cursor-pointer border border-white/40 shadow-[0_8px_30px_rgb(0,0,0,0.05)] hover:shadow-[0_8px_30px_rgb(0,0,0,0.1)] hover:-translate-y-0.5 backdrop-blur-md">
@@ -148,7 +174,11 @@ const App = () => {
                     </div>
                   </div>
                   <div className="flex gap-3 items-center">
-                    <span className="px-4 py-1.5 bg-blue-100/80 text-blue-700 rounded-full text-xs font-bold border border-blue-300/50 uppercase tracking-widest shadow-sm">Table</span>
+                    {/* 卡片星标按钮 (未收藏状态) */}
+                    <button className="p-2 text-slate-400 hover:text-amber-500 hover:scale-110 transition-all" title="加入星标">
+                      <Star size={18} />
+                    </button>
+                    <span className="px-4 py-1.5 bg-white/50 text-blue-700 rounded-full text-xs font-bold border border-white/60 uppercase tracking-widest shadow-sm">Table</span>
                     <div className="p-2.5 bg-white/60 rounded-xl text-slate-600 group-hover:text-blue-600 group-hover:bg-blue-100 transition-all shadow-sm border border-white/50"><FileText size={18}/></div>
                   </div>
                 </div>
@@ -162,7 +192,11 @@ const App = () => {
                     </div>
                   </div>
                   <div className="flex gap-3 items-center">
-                    <span className="px-4 py-1.5 bg-blue-100/80 text-blue-700 rounded-full text-xs font-bold border border-blue-300/50 uppercase tracking-widest shadow-sm">Table</span>
+                    {/* 卡片星标按钮 (已收藏状态) */}
+                    <button className="p-2 text-amber-500 hover:scale-110 transition-all drop-shadow-sm" title="取消星标">
+                      <Star size={18} className="fill-amber-500" />
+                    </button>
+                    <span className="px-4 py-1.5 bg-white/50 text-blue-700 rounded-full text-xs font-bold border border-white/60 uppercase tracking-widest shadow-sm">Table</span>
                     <div className="p-2.5 bg-white/60 rounded-xl text-slate-600 group-hover:text-blue-600 group-hover:bg-blue-100 transition-all shadow-sm border border-white/50"><FileText size={18}/></div>
                   </div>
                 </div>

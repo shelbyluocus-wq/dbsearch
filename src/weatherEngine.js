@@ -3,68 +3,67 @@
  * Supports rain (with splash), snow, sunny, and cloudy effects.
  */
 
-// ── Theme color presets ──
-// Light themes use dark/saturated particles; dark themes use bright/glowing particles
-const THEME_COLORS = {
-  azure: {          // Light — deep blue particles
-    rain:       'rgba(60,100,160,0.55)',
-    rainSplash: 'rgba(60,100,160,0.6)',
-    snow:       'rgba(120,150,200,0.7)',
-    snowGlow:   'rgba(100,140,200,0.3)',
-    sunRay:     'rgba(255,180,50,',
-    sunOverlay: 'rgba(255,200,80,0.05)',
-    cloud:      'rgba(80,100,140,',
-    cloudOverlay: 'rgba(100,120,150,0.04)',
+// ── Weather skin color presets ──
+const WEATHER_SKIN_COLORS = {
+  disabled: {
+    rain: 'rgba(140, 164, 190, 0.42)',
+    rainSplash: 'rgba(140, 164, 190, 0.48)',
+    snow: 'rgba(222, 229, 240, 0.8)',
+    snowGlow: 'rgba(201, 213, 225, 0.35)',
+    sunRay: 'rgba(248,210,120,',
+    sunOverlay: 'rgba(255,221,145,0.03)',
+    cloud: 'rgba(183,196,211,',
+    cloudOverlay: 'rgba(148,163,184,0.04)',
   },
-  midnight: {       // Dark — glowing blue-white particles
-    rain:       'rgba(140,180,230,0.45)',
-    rainSplash: 'rgba(140,180,230,0.5)',
-    snow:       'rgba(200,215,240,0.8)',
-    snowGlow:   'rgba(180,200,240,0.4)',
-    sunRay:     'rgba(180,200,255,',
-    sunOverlay: 'rgba(180,190,220,0.03)',
-    cloud:      'rgba(160,180,220,',
-    cloudOverlay: 'rgba(140,160,200,0.03)',
+  sunny: {
+    rain: 'rgba(91, 140, 186, 0.45)',
+    rainSplash: 'rgba(91, 140, 186, 0.52)',
+    snow: 'rgba(234, 242, 255, 0.86)',
+    snowGlow: 'rgba(190, 219, 255, 0.38)',
+    sunRay: 'rgba(255,203,92,',
+    sunOverlay: 'rgba(255,208,120,0.06)',
+    cloud: 'rgba(245,248,255,',
+    cloudOverlay: 'rgba(255,255,255,0.05)',
   },
-  emerald: {        // Light — deep teal-green
-    rain:       'rgba(30,120,100,0.55)',
-    rainSplash: 'rgba(30,120,100,0.6)',
-    snow:       'rgba(100,170,150,0.7)',
-    snowGlow:   'rgba(80,160,140,0.3)',
-    sunRay:     'rgba(180,230,120,',
-    sunOverlay: 'rgba(160,220,100,0.05)',
-    cloud:      'rgba(60,110,90,',
-    cloudOverlay: 'rgba(80,120,100,0.04)',
+  cloudy: {
+    rain: 'rgba(112, 148, 189, 0.48)',
+    rainSplash: 'rgba(112, 148, 189, 0.55)',
+    snow: 'rgba(231, 238, 248, 0.82)',
+    snowGlow: 'rgba(190, 205, 224, 0.36)',
+    sunRay: 'rgba(224,230,246,',
+    sunOverlay: 'rgba(207,216,230,0.03)',
+    cloud: 'rgba(198,208,223,',
+    cloudOverlay: 'rgba(172,184,201,0.05)',
   },
-  violet: {         // Light — deep purple
-    rain:       'rgba(100,70,170,0.55)',
-    rainSplash: 'rgba(100,70,170,0.6)',
-    snow:       'rgba(160,140,210,0.7)',
-    snowGlow:   'rgba(140,120,200,0.3)',
-    sunRay:     'rgba(220,180,255,',
-    sunOverlay: 'rgba(200,160,240,0.05)',
-    cloud:      'rgba(90,70,140,',
-    cloudOverlay: 'rgba(100,80,150,0.04)',
+  lightRain: {
+    rain: 'rgba(126, 178, 236, 0.5)',
+    rainSplash: 'rgba(126, 178, 236, 0.56)',
+    snow: 'rgba(220, 236, 250, 0.78)',
+    snowGlow: 'rgba(169, 209, 243, 0.38)',
+    sunRay: 'rgba(184,208,240,',
+    sunOverlay: 'rgba(163,191,227,0.03)',
+    cloud: 'rgba(188,206,230,',
+    cloudOverlay: 'rgba(155,180,209,0.05)',
   },
-  typewrite_dark: { // Dark — warm gold
-    rain:       'rgba(210,185,140,0.45)',
-    rainSplash: 'rgba(210,185,140,0.5)',
-    snow:       'rgba(230,215,190,0.75)',
-    snowGlow:   'rgba(220,200,170,0.35)',
-    sunRay:     'rgba(216,166,87,',
-    sunOverlay: 'rgba(216,166,87,0.03)',
-    cloud:      'rgba(190,170,130,',
-    cloudOverlay: 'rgba(170,150,110,0.03)',
+  heavyRain: {
+    rain: 'rgba(181, 214, 255, 0.58)',
+    rainSplash: 'rgba(181, 214, 255, 0.62)',
+    snow: 'rgba(226, 238, 255, 0.84)',
+    snowGlow: 'rgba(194, 219, 255, 0.42)',
+    sunRay: 'rgba(147,177,222,',
+    sunOverlay: 'rgba(113,144,196,0.03)',
+    cloud: 'rgba(129,155,191,',
+    cloudOverlay: 'rgba(94,118,150,0.05)',
   },
-  typewrite_light: { // Light — deep brown vintage
-    rain:       'rgba(120,90,60,0.5)',
-    rainSplash: 'rgba(120,90,60,0.55)',
-    snow:       'rgba(150,130,100,0.65)',
-    snowGlow:   'rgba(130,110,80,0.3)',
-    sunRay:     'rgba(180,130,60,',
-    sunOverlay: 'rgba(180,130,60,0.05)',
-    cloud:      'rgba(100,80,55,',
-    cloudOverlay: 'rgba(110,90,65,0.04)',
+  snow: {
+    rain: 'rgba(146, 175, 210, 0.42)',
+    rainSplash: 'rgba(146, 175, 210, 0.48)',
+    snow: 'rgba(255, 255, 255, 0.92)',
+    snowGlow: 'rgba(233, 241, 255, 0.42)',
+    sunRay: 'rgba(240,244,255,',
+    sunOverlay: 'rgba(255,255,255,0.05)',
+    cloud: 'rgba(239,245,255,',
+    cloudOverlay: 'rgba(214,226,245,0.05)',
   },
 }
 
@@ -129,7 +128,7 @@ export class WeatherEngine {
     this.category = ''
     this.windSpeed = 0
     this.intensity = 0.5
-    this.theme = options.theme || 'azure'
+    this.skin = options.skin || 'sunny'
     this.running = false
     this.rafId = null
     this.lastTime = 0
@@ -176,8 +175,12 @@ export class WeatherEngine {
     this.collisionRects = rects || []
   }
 
+  setSkin(skinId) {
+    this.skin = WEATHER_SKIN_COLORS[skinId] ? skinId : 'sunny'
+  }
+
   setTheme(themeId) {
-    this.theme = THEME_COLORS[themeId] ? themeId : 'azure'
+    this.setSkin(themeId)
   }
 
   start() {
@@ -227,7 +230,7 @@ export class WeatherEngine {
   }
 
   _colors() {
-    return THEME_COLORS[this.theme] || THEME_COLORS.azure
+    return WEATHER_SKIN_COLORS[this.skin] || WEATHER_SKIN_COLORS.sunny
   }
 
   // ── Rain ──

@@ -131,9 +131,14 @@ struct PersonalConfig {
     custom_font: Option<String>,
     #[serde(default = "default_true")]
     weather_enabled: bool,
+    #[serde(default = "default_background_opacity")]
+    background_opacity: f32,
 }
 fn default_true() -> bool {
     true
+}
+fn default_background_opacity() -> f32 {
+    1.0
 }
 fn default_always_on_top_hotkey() -> String {
     "P".into()
@@ -173,6 +178,7 @@ impl Default for PersonalConfig {
             pet_scale: std::collections::HashMap::new(),
             custom_font: None,
             weather_enabled: true,
+            background_opacity: 1.0,
         }
     }
 }

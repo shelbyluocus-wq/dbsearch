@@ -6,6 +6,16 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
 import { WeatherEngine } from "./weatherEngine.js";
+import {
+  buildPanelTabs,
+  normalizeBackgroundOpacity,
+  panelChromeConstants,
+} from "./panelChrome.js";
+import {
+  getWeatherPresentation,
+  normalizeWeatherCategory,
+  resolveWeatherSkinState,
+} from "./weatherSkin.js";
 
 const isTauriWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const windowLabel = ref("browser");
@@ -13,6 +23,7 @@ const windowLabel = ref("browser");
 const isPetWindow = computed(() => isTauriWindow && windowLabel.value === "main");
 const isMenuWindow = computed(() => isTauriWindow && windowLabel.value === "pet_menu");
 const isPanelWindow = computed(() => !isPetWindow.value && !isMenuWindow.value);
+const FIXED_WEATHER_CITY = "厦门市";
 
 const settingsOpen = ref(false);
 const settingsTab = ref(0);
@@ -96,11 +107,18 @@ const THEMES = [
   { id: 'typewrite_light', name: 'Typewrite Light', color: '#c08457' },
 ]
 
+const WEATHER_PREVIEW_OPTIONS = [
+  { id: "sunny", icon: "☀️", label: "晴天" },
+  { id: "cloudy", icon: "⛅", label: "多云" },
+  { id: "lightRain", icon: "🌧️", label: "小雨" },
+  { id: "heavyRain", icon: "⛈️", label: "大雨" },
+  { id: "snow", icon: "❄️", label: "雪天" },
+]
+
 function applyTheme(id) {
   themeId.value = id
   document.documentElement.dataset.theme = id
   localStorage.setItem('dbsearch-theme', id)
-  if (weatherEngine) weatherEngine.setTheme(id)
 }
 
 const progress = reactive({
@@ -155,6 +173,7 @@ const config = reactive({
     pet_scale: {},
     custom_font: null,
     weather_enabled: true,
+    background_opacity: 1.0,
   },
 });
 
@@ -164,24 +183,33 @@ const weatherEnabled = ref(true);
 const weatherCategory = ref('');
 const weatherText = ref('');
 const weatherTemp = ref(0);
-const weatherCity = ref('');
+const weatherCity = ref(FIXED_WEATHER_CITY);
 const weatherIcon = ref('');
+const weatherPreviewCategory = ref("");
 let weatherEngine = null;
 let weatherRefreshTimer = null;
 const WEATHER_REFRESH_MS = 30 * 60 * 1000;
 
-// Weather debug (5-click easter egg)
-let titleClickCount = 0
-let titleClickTimer = null
-const weatherDebugVisible = ref(false)
-const weatherDebugCategory = ref('')
-
 // Sky background time-of-day system
 const skyTime = ref(new Date().getHours() + new Date().getMinutes() / 60)
 let skyTimeTimer = null
-const skyTimeOverride = ref(null) // debug slider overrides auto time
+const skyTimeOverride = ref(null)
 
 const skyEffectiveTime = computed(() => skyTimeOverride.value !== null ? skyTimeOverride.value : skyTime.value)
+const weatherSkinState = computed(() => resolveWeatherSkinState({
+  weatherEnabled: weatherEnabled.value,
+  realWeatherCategory: weatherCategory.value,
+  previewWeatherCategory: weatherPreviewCategory.value,
+  clockTime: skyTime.value,
+  previewTime: skyTimeOverride.value,
+}))
+const weatherPresentation = computed(() => getWeatherPresentation(themeId.value, weatherSkinState.value))
+const weatherHeaderLabel = computed(() => weatherText.value || "实时天气")
+const weatherHeaderIcon = computed(() => {
+  const category = weatherSkinState.value.category
+  return WEATHER_PREVIEW_OPTIONS.find((item) => item.id === category)?.icon || weatherIcon.value || "🌤️"
+})
+const weatherPreviewActive = computed(() => weatherSkinState.value.source === "preview")
 
 const skyOpacities = computed(() => {
   const t = skyEffectiveTime.value
@@ -199,8 +227,8 @@ const skyOpacities = computed(() => {
 })
 
 const skyBackgroundFilter = computed(() => {
-  const cat = weatherDebugCategory.value || weatherCategory.value
-  const dark = cat === 'rain' || cat === 'lightRain' || cat === 'heavyRain' || cat === 'cloudy'
+  const cat = weatherSkinState.value.category
+  const dark = cat === 'cloudy' || cat === 'lightRain' || cat === 'heavyRain'
   return dark ? 'brightness(0.5) saturate(0.8)' : 'brightness(1) saturate(1)'
 })
 
@@ -210,12 +238,14 @@ const WEATHER_ICON_MAP = {
   sunny: '☀️',
   cloudy: '⛅',
   rain: '🌧️',
+  lightRain: '🌧️',
+  heavyRain: '⛈️',
   snow: '❄️',
 };
 
 // ── CSS weather effect elements (computed arrays for v-for) ──
-const effectiveWeatherType = computed(() => weatherDebugCategory.value || weatherCategory.value)
-const isNightTime = computed(() => skyEffectiveTime.value < 6 || skyEffectiveTime.value > 18)
+const effectiveWeatherType = computed(() => weatherSkinState.value.category)
+const isNightTime = computed(() => weatherSkinState.value.isNight)
 
 const rainDropElements = computed(() => {
   const cat = effectiveWeatherType.value
@@ -482,7 +512,11 @@ const settingsDraft = reactive({
   petScale: 1.0,
   customFont: null,
   weatherEnabled: true,
+  backgroundOpacity: 1.0,
 });
+const backgroundOpacityPercent = computed(() =>
+  `${Math.round(normalizeBackgroundOpacity(settingsDraft.backgroundOpacity) * 100)}%`,
+);
 
 // Custom skin editor state
 const skinEditorOpen = ref(false);
@@ -681,6 +715,13 @@ const resultTabs = computed(() => [
   { key: '备注',  label: '备注',  count: sortedSearchCommentResults.value.length },
   { key: '数据值', label: '数据值', count: isKeywordEmpty.value ? 0 : sortedSearchDataResults.value.length },
 ]);
+const panelTabs = computed(() =>
+  buildPanelTabs({
+    starredTables: [...starredTables],
+    tableTabs: tableTabs.value,
+    activeTableTabId: activeTableTabId.value,
+  }),
+);
 
 const filteredResults = computed(() => {
   if (isKeywordEmpty.value) {
@@ -950,6 +991,9 @@ const hotkeyPlaceholder = "点击后按下快捷键";
 const quickDateHotkeyPlaceholder = "点击后按下快捷键";
 const contentScaleStyle = computed(() => ({
   "--content-scale": String(normalizeUiScale(config.personal.ui_scale)),
+}));
+const panelChromeStyle = computed(() => ({
+  "--panel-opacity": String(normalizeBackgroundOpacity(config.personal.background_opacity)),
 }));
 const tableContentScaleStyle = computed(() => ({
   "--content-scale": String(normalizeUiScale(config.personal.ui_scale)),
@@ -1825,6 +1869,20 @@ async function chooseTableCommandCandidate(item) {
   await openOrActivateTableTab(item.table_name);
 }
 
+async function activatePanelChromeTab(tab) {
+  if (!tab?.tableName) return;
+  if (tab.opened && tab.tabId) {
+    await activateTableTab(tab.tabId);
+    return;
+  }
+  await openOrActivateTableTab(tab.tableName);
+}
+
+async function closePanelChromeTab(tab) {
+  if (!tab?.opened || !tab.tabId) return;
+  await closeTableTab(tab.tabId);
+}
+
 function isTableOpenedInTabs(tableName) {
   const normalized = String(tableName || "").trim().toLowerCase();
   if (!normalized) return false;
@@ -1895,39 +1953,38 @@ async function fetchWeather() {
   if (!isTauriWindow || !weatherEnabled.value) return;
   try {
     const info = await invoke('get_weather');
-    weatherCategory.value = info.category;
+    const normalizedCategory = normalizeWeatherCategory(info.category);
+    weatherCategory.value = normalizedCategory;
     weatherText.value = info.text;
     weatherTemp.value = info.temp;
-    weatherCity.value = info.city || '';
-    weatherIcon.value = WEATHER_ICON_MAP[info.category] || '🌤️';
+    weatherCity.value = FIXED_WEATHER_CITY;
+    weatherIcon.value = WEATHER_ICON_MAP[normalizedCategory] || '🌤️';
     if (weatherEngine) {
-      weatherEngine.setWeather(info.category, info.wind_speed, info.rain_intensity);
+      weatherEngine.setSkin(normalizedCategory);
+      if (normalizedCategory === 'lightRain') {
+        weatherEngine.setWeather('rain', info.wind_speed || 10, info.rain_intensity || 0.3);
+      } else if (normalizedCategory === 'heavyRain') {
+        weatherEngine.setWeather('rain', info.wind_speed || 25, info.rain_intensity || 0.9);
+      } else {
+        weatherEngine.setWeather(normalizedCategory, info.wind_speed || 15, info.rain_intensity || 0.5);
+      }
     }
   } catch (e) {
     console.warn('[Weather] fetch failed:', e);
   }
 }
 
-function onTitleClick() {
-  titleClickCount++
-  if (titleClickTimer) clearTimeout(titleClickTimer)
-  titleClickTimer = setTimeout(() => { titleClickCount = 0 }, 1500)
-  if (titleClickCount >= 5) {
-    titleClickCount = 0
-    weatherDebugVisible.value = !weatherDebugVisible.value
-    weatherDebugCategory.value = weatherCategory.value
-  }
-}
-
-function applyDebugWeather(cat) {
-  weatherDebugCategory.value = cat
-  // Map lightRain/heavyRain to canvas engine's 'rain' category with different intensity
+function applyPreviewWeather(cat) {
+  weatherPreviewCategory.value = cat
   if (weatherEngine) {
     if (cat === 'lightRain') {
+      weatherEngine.setSkin(cat)
       weatherEngine.setWeather('rain', 10, 0.3)
     } else if (cat === 'heavyRain') {
+      weatherEngine.setSkin(cat)
       weatherEngine.setWeather('rain', 25, 0.9)
     } else {
+      weatherEngine.setSkin(cat)
       weatherEngine.setWeather(cat, 15, 0.5)
     }
   }
@@ -1939,11 +1996,10 @@ function onSkyTimeSlider(event) {
 
 function switchToLowQuality() {
   weatherQuality.value = 'low'
-  // Canvas engine needs re-init when switching back to it
   nextTick(() => {
     initWeatherEngine()
-    if (weatherDebugCategory.value) {
-      applyDebugWeather(weatherDebugCategory.value)
+    if (weatherPreviewCategory.value) {
+      applyPreviewWeather(weatherPreviewCategory.value)
     } else {
       fetchWeather()
     }
@@ -1951,34 +2007,18 @@ function switchToLowQuality() {
 }
 
 function resetToRealWeather() {
-  weatherDebugVisible.value = false
-  weatherDebugCategory.value = ''
+  weatherPreviewCategory.value = ''
   skyTimeOverride.value = null
   fetchWeather()
 }
-
-// Click-outside for weather popover
-let weatherPopoverClickHandler = null
-watch(() => weatherDebugVisible.value, (visible) => {
-  if (visible) {
-    setTimeout(() => {
-      weatherPopoverClickHandler = () => { weatherDebugVisible.value = false }
-      document.addEventListener('click', weatherPopoverClickHandler)
-    }, 50)
-  } else {
-    if (weatherPopoverClickHandler) {
-      document.removeEventListener('click', weatherPopoverClickHandler)
-      weatherPopoverClickHandler = null
-    }
-  }
-})
 
 function initWeatherEngine() {
   if (!weatherCanvasRef.value || weatherEngine) return;
   const widget = document.getElementById('widget');
   if (!widget) return;
-  weatherEngine = new WeatherEngine(weatherCanvasRef.value, { theme: themeId.value });
+  weatherEngine = new WeatherEngine(weatherCanvasRef.value, { skin: weatherSkinState.value.category });
   weatherEngine.resize(widget.clientWidth, widget.clientHeight);
+  weatherEngine.setSkin(weatherSkinState.value.category);
   weatherEngine.start();
 
   // Collision rects from UI elements
@@ -2212,7 +2252,6 @@ onBeforeUnmount(() => {
   stopSpriteSheetAnimation();
   destroyWeatherEngine();
   if (skyTimeTimer) { clearInterval(skyTimeTimer); skyTimeTimer = null; }
-  if (weatherPopoverClickHandler) { document.removeEventListener('click', weatherPopoverClickHandler); weatherPopoverClickHandler = null; }
   if (isPanelWindow.value) {
     detachPanelListeners();
     clearIdlePreview();
@@ -3285,8 +3324,12 @@ function switchSettingsTab(index) {
   settingsTab.value = index;
 }
 
-function openSettings() {
-  settingsTab.value = 0;
+function openSettings(target = "connection") {
+  const targetIndex = typeof target === "number"
+    ? target
+    : Math.max(0, SETTINGS_TABS.findIndex((tab) => tab.id === target));
+  settingsTabDir.value = 0;
+  settingsTab.value = targetIndex;
   syncSettingsDraftDbFields();
   settingsDraft.hotkey = normalizeHotkeyDisplay(config.personal.hotkey);
   settingsDraft.quickDateHotkey = normalizeQuickDateHotkey(config.personal.quick_date_hotkey);
@@ -3314,6 +3357,7 @@ function openSettings() {
   settingsDraft.petScale = getPetScale(settingsDraft.petSkin);
   settingsDraft.customFont = config.personal.custom_font || null;
   settingsDraft.weatherEnabled = config.personal.weather_enabled !== false;
+  settingsDraft.backgroundOpacity = normalizeBackgroundOpacity(config.personal.background_opacity);
   if (isTauriWindow) {
     invoke("list_system_fonts").then((fonts) => { systemFonts.value = fonts; }).catch(() => {});
   }
@@ -3425,6 +3469,7 @@ async function saveSettings() {
   setPetScale(settingsDraft.petSkin, settingsDraft.petScale);
   config.personal.custom_font = settingsDraft.customFont || null;
   config.personal.weather_enabled = !!settingsDraft.weatherEnabled;
+  config.personal.background_opacity = normalizeBackgroundOpacity(settingsDraft.backgroundOpacity);
   weatherEnabled.value = !!settingsDraft.weatherEnabled;
   if (weatherEnabled.value) {
     await nextTick();
@@ -4785,6 +4830,7 @@ async function loadConfig() {
     "Ctrl+Alt+Right",
   );
   config.personal.reset_on_open_to_all_tables = config.personal.reset_on_open_to_all_tables !== false;
+  config.personal.background_opacity = normalizeBackgroundOpacity(config.personal.background_opacity);
   templateCursorIndex.value = findTemplateIndexByDb(config.shared.db);
 }
 
@@ -5066,7 +5112,15 @@ function escapeRegExp(str) {
 
 <template>
   <main v-if="isPanelWindow" class="app-shell open panel-shell" id="appShell" @contextmenu.prevent>
-    <section class="widget" id="widget" :class="{ 'no-weather': !weatherEnabled }">
+    <section
+      class="widget widget--demo-shell"
+      id="widget"
+      :class="{ 'no-weather': !weatherEnabled, 'is-weather-preview': weatherPreviewActive }"
+      :data-surface-tone="weatherPresentation.surfaceTone"
+      :data-text-tone="weatherPresentation.textTone"
+      :data-weather-skin="weatherSkinState.category"
+      :style="panelChromeStyle"
+    >
       <!-- Phase 1: Sky gradient background -->
       <div v-if="weatherEnabled" class="sky-background" :style="{ filter: skyBackgroundFilter }">
         <div class="sky-layer sky-dawn" :style="{ opacity: skyOpacities.dawn }"></div>
@@ -5091,59 +5145,33 @@ function escapeRegExp(str) {
       </div>
       <!-- Canvas engine for low-quality mode -->
       <canvas v-if="weatherEnabled && weatherQuality === 'low'" ref="weatherCanvasRef" class="weather-canvas"></canvas>
-      <header class="widget-header" @pointerdown="panelHeaderPointerDown" @dblclick="panelToggleMaximize">
+      <header class="widget-header widget-header--demo" @pointerdown="panelHeaderPointerDown" @dblclick="panelToggleMaximize">
         <div class="traffic-lights" @dblclick.stop>
           <button class="traffic-btn traffic-red" title="隐藏窗口" @click="panelClose"></button>
           <button class="traffic-btn traffic-yellow" title="最小化" @click="panelMinimize"></button>
           <button class="traffic-btn traffic-green" title="最大化/还原" @click="panelToggleMaximize"></button>
         </div>
         <div class="title-drag"></div>
-        <span class="window-title" @pointerdown.stop @dblclick.stop @click.stop="onTitleClick" style="cursor:default">鹰捷V3.2</span>
-        <div v-if="weatherCity" class="header-weather" :title="`${weatherCity} ${weatherText} ${weatherTemp}°C`">
-          <span class="header-weather-icon">{{ weatherIcon }}</span>
-          <span class="header-weather-city">{{ weatherCity }}</span>
+        <span class="window-title" @pointerdown.stop @dblclick.stop style="cursor:default">厦门市</span>
+        <button
+          class="header-weather header-weather--action"
+          :title="`${FIXED_WEATHER_CITY} ${weatherHeaderLabel} ${weatherTemp}°C`"
+          @click="openSettings('appearance')"
+        >
+          <span class="header-weather-icon">{{ weatherHeaderIcon }}</span>
+          <span class="header-weather-city">{{ FIXED_WEATHER_CITY }}</span>
           <span class="header-weather-temp">{{ weatherTemp }}°</span>
-        </div>
+        </button>
         <div class="header-actions">
           <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
-          <span class="db-name" id="dbName">{{ dbName }}</span>
-          <button class="icon-btn" title="设置" @click="openSettings">⚙</button>
+          <span class="db-name" id="dbName">{{ dbConnected ? dbName : '未连接' }}</span>
+          <button class="icon-btn icon-btn-subtle" title="设置" @click="openSettings('connection')">⚙</button>
         </div>
       </header>
 
-      <Transition name="weather-popover">
-        <div v-if="weatherDebugVisible" class="weather-popover" @click.stop>
-          <div class="weather-popover-row weather-popover-btns">
-            <button
-              v-for="cat in [{id:'sunny',icon:'☀️',name:'晴天'},{id:'cloudy',icon:'⛅',name:'多云'},{id:'lightRain',icon:'🌧️',name:'小雨'},{id:'heavyRain',icon:'⛈️',name:'大雨'},{id:'snow',icon:'❄️',name:'雪天'}]"
-              :key="cat.id"
-              :class="['weather-popover-btn', { active: weatherDebugCategory === cat.id }]"
-              @click="applyDebugWeather(cat.id)"
-            >
-              <span class="weather-popover-btn-icon">{{ cat.icon }}</span>
-              <span class="weather-popover-btn-name">{{ cat.name }}</span>
-            </button>
-          </div>
-          <div class="weather-popover-divider"></div>
-          <div class="weather-popover-time">
-            <span class="weather-popover-time-icon">🌙</span>
-            <input type="range" min="0" max="24" step="0.1" :value="skyEffectiveTime" @input="onSkyTimeSlider($event)" />
-            <span class="weather-popover-time-icon">☀️</span>
-            <span class="weather-popover-time-label">{{ Math.floor(skyEffectiveTime) }}:{{ String(Math.floor((skyEffectiveTime % 1) * 60)).padStart(2, '0') }}</span>
-          </div>
-          <div class="weather-popover-divider"></div>
-          <div class="weather-popover-quality">
-            <button :class="['weather-popover-quality-btn', { active: weatherQuality === 'high' }]" @click="weatherQuality = 'high'">高画质</button>
-            <button :class="['weather-popover-quality-btn', { active: weatherQuality === 'low' }]" @click="switchToLowQuality">流畅</button>
-          </div>
-          <div class="weather-popover-divider"></div>
-          <button class="weather-popover-reset" @click="resetToRealWeather">恢复实时天气</button>
-        </div>
-      </Transition>
-
       <div class="panel-content-viewport">
       <div class="panel-content-scale" :style="contentScaleStyle">
-      <section class="search-panel">
+      <section class="search-panel search-panel--demo">
         <div class="search-input-wrap">
           <span class="search-icon">🔍</span>
           <div v-if="selectedTables.length > 0" class="selected-table-chips">
@@ -5192,8 +5220,23 @@ function escapeRegExp(str) {
         </div>
       </section>
 
+      <section v-if="dbConnected" class="panel-tab-strip panel-tab-strip--demo" @click.self="closeAllOrgMenus" @wheel="onTableTabsWheel">
+        <button
+          v-for="tab in panelTabs"
+          :key="tab.key"
+          :class="['panel-tab-chip', { active: tab.active, opened: tab.opened, starred: tab.starred }]"
+          :title="tab.tableName"
+          @click="activatePanelChromeTab(tab)"
+        >
+          <span v-if="tab.starred" class="panel-tab-chip-star">★</span>
+          <span class="panel-tab-chip-label">{{ tab.tableName }}</span>
+          <span v-if="tab.opened" class="panel-tab-chip-close" title="关闭标签" @click.stop="closePanelChromeTab(tab)">✕</span>
+        </button>
+        <button class="panel-tab-chip panel-tab-chip-add" title="打开表 (Ctrl+P)" @click="openTableCommandPalette({ slash: true })">+</button>
+      </section>
+
       <!-- 表整理工具栏 -->
-      <div v-if="dbConnected" class="org-toolbar" @click.self="closeAllOrgMenus">
+      <div v-if="dbConnected" class="org-toolbar org-toolbar--demo" @click.self="closeAllOrgMenus">
         <div class="org-folder-chips">
           <button :class="['org-chip', { active: activeFolder === 'all' }]" @click="activeFolder = 'all'; syncSummaryForDefaultTableBrowse()">全部</button>
           <button :class="['org-chip org-chip-star', { active: activeFolder === 'starred' }]" @click="activeFolder = 'starred'; syncSummaryForDefaultTableBrowse()">
@@ -5242,9 +5285,10 @@ function escapeRegExp(str) {
 
       <div class="results-layout" id="resultsWrap">
         <aside :class="['result-sidebar', { 'kb-zone': navZone === 'sidebar' }]">
+          <div class="demo-sidebar-heading">Data Explorer</div>
           <button
             v-for="tab in resultTabs" :key="tab.key"
-            :class="['sidebar-item', { active: activeResultTab === tab.key }]"
+            :class="['sidebar-item sidebar-item--demo', { active: activeResultTab === tab.key }]"
             @click="activeResultTab = tab.key; navZone = 'sidebar'"
           >
             <span>{{ tab.label }}</span>
@@ -5258,7 +5302,7 @@ function escapeRegExp(str) {
               <button
                 v-if="item._type === 'table'"
                 :id="`result-item-${idx}`"
-                :class="['list-item', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
+                :class="['list-item demo-result-card', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
                 @click="navZone = 'results'; navResultIndex = idx; openFromMeta(item)"
                 @contextmenu="openItemCtxMenu($event, item.table_name)"
               >
@@ -5271,7 +5315,7 @@ function escapeRegExp(str) {
               <button
                 v-else-if="item._type === 'column'"
                 :id="`result-item-${idx}`"
-                :class="['list-item', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
+                :class="['list-item demo-result-card', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
                 @click="navZone = 'results'; navResultIndex = idx; openFromMeta(item)"
                 @contextmenu="openItemCtxMenu($event, item.table_name)"
               >
@@ -5282,7 +5326,7 @@ function escapeRegExp(str) {
               <button
                 v-else-if="item._type === 'comment'"
                 :id="`result-item-${idx}`"
-                :class="['list-item', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
+                :class="['list-item demo-result-card', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
                 @click="navZone = 'results'; navResultIndex = idx; openFromMeta(item)"
                 @contextmenu="openItemCtxMenu($event, item.table_name)"
               >
@@ -5294,7 +5338,7 @@ function escapeRegExp(str) {
               <button
                 v-else-if="item._type === 'data'"
                 :id="`result-item-${idx}`"
-                :class="['list-item', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
+                :class="['list-item demo-result-card', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
                 @click="navZone = 'results'; navResultIndex = idx; openFromData(item)"
                 @contextmenu="openItemCtxMenu($event, item.table_name)"
               >
@@ -5357,8 +5401,8 @@ function escapeRegExp(str) {
       </Teleport>
       </div>
       </div>
-      <div class="panel-footer">
-        <div class="template-quick-switch">
+      <div class="panel-footer panel-footer--demo">
+        <div class="template-quick-switch template-quick-switch--demo">
           <button
             class="small-btn template-switch-btn"
             :disabled="templateSwitching || config.shared.db_templates.length === 0"
@@ -5377,15 +5421,11 @@ function escapeRegExp(str) {
             ▶
           </button>
         </div>
-        <div class="theme-switcher">
-          <button
-            v-for="t in THEMES" :key="t.id"
-            class="theme-dot"
-            :class="{ active: themeId === t.id }"
-            :style="{ '--c': t.color, background: t.color }"
-            :title="t.name"
-            @click="applyTheme(t.id)"
-          ></button>
+        <div class="panel-footer-dots" aria-hidden="true">
+          <span class="panel-dot is-active"></span>
+          <span class="panel-dot" :class="{ 'is-active': weatherEnabled }"></span>
+          <span class="panel-dot" :class="{ 'is-active': dbConnected }"></span>
+          <span class="panel-dot" :style="{ background: weatherPresentation.accentColor }"></span>
         </div>
       </div>
     </section>
@@ -5952,6 +5992,82 @@ function escapeRegExp(str) {
 
           <!-- Tab 3: 外观 -->
           <div v-else-if="settingsTab === 3" key="appearance" class="settings-tab-pane">
+            <div class="glass-card glass-card-weather-control">
+              <div class="settings-section-lead">
+                <div>
+                  <h4 class="glass-card-title">界面主题</h4>
+                  <p class="settings-section-copy">只控制交互强调色，不参与天气皮肤着色。</p>
+                </div>
+              </div>
+              <div class="settings-theme-grid">
+                <button
+                  v-for="t in THEMES"
+                  :key="t.id"
+                  :class="['settings-theme-card', { active: themeId === t.id }]"
+                  @click="applyTheme(t.id)"
+                >
+                  <span class="settings-theme-swatch" :style="{ background: t.color }"></span>
+                  <span class="settings-theme-name">{{ t.name }}</span>
+                </button>
+              </div>
+            </div>
+            <div class="glass-card glass-card-weather-control">
+              <div class="settings-section-lead">
+                <div>
+                  <h4 class="glass-card-title">背景透明度</h4>
+                  <p class="settings-section-copy">统一控制标题栏、标签栏、筛选栏、侧栏和结果卡片的玻璃透明度。</p>
+                </div>
+              </div>
+              <label class="glass-form-label">面板透明度 <span class="muted">{{ backgroundOpacityPercent }}</span>
+                <input
+                  v-model.number="settingsDraft.backgroundOpacity"
+                  type="range"
+                  class="glass-slider"
+                  :min="panelChromeConstants.BACKGROUND_OPACITY_MIN"
+                  :max="panelChromeConstants.BACKGROUND_OPACITY_MAX"
+                  :step="panelChromeConstants.BACKGROUND_OPACITY_STEP"
+                />
+              </label>
+            </div>
+            <div class="glass-card glass-card-weather-control">
+              <div class="settings-section-lead">
+                <div>
+                  <h4 class="glass-card-title">天气皮肤</h4>
+                  <p class="settings-section-copy">与 UI 主题独立，只改天空、粒子和玻璃氛围。</p>
+                </div>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:14px">
+                <label class="glass-toggle">
+                  <input v-model="settingsDraft.weatherEnabled" type="checkbox" />
+                  <span class="glass-toggle-track"></span>实时天气粒子效果
+                </label>
+                <div class="weather-preview-grid">
+                  <button
+                    v-for="item in WEATHER_PREVIEW_OPTIONS"
+                    :key="item.id"
+                    :class="['weather-preview-btn', { active: weatherPreviewCategory === item.id }]"
+                    @click="applyPreviewWeather(item.id)"
+                  >
+                    <span class="weather-preview-btn-icon">{{ item.icon }}</span>
+                    <span class="weather-preview-btn-label">{{ item.label }}</span>
+                  </button>
+                </div>
+                <div class="weather-preview-time">
+                  <span class="weather-preview-time-icon">🌙</span>
+                  <input type="range" min="0" max="24" step="0.1" :value="skyEffectiveTime" @input="onSkyTimeSlider($event)" />
+                  <span class="weather-preview-time-icon">☀️</span>
+                  <span class="weather-preview-time-label">{{ Math.floor(skyEffectiveTime) }}:{{ String(Math.floor((skyEffectiveTime % 1) * 60)).padStart(2, '0') }}</span>
+                </div>
+                <div class="weather-preview-quality">
+                  <button :class="['weather-preview-quality-btn', { active: weatherQuality === 'high' }]" @click="weatherQuality = 'high'">高画质</button>
+                  <button :class="['weather-preview-quality-btn', { active: weatherQuality === 'low' }]" @click="switchToLowQuality">流畅</button>
+                  <button class="weather-preview-reset-btn" @click="resetToRealWeather">恢复实时天气</button>
+                </div>
+                <div v-if="weatherText" class="weather-preview-note">
+                  当前：{{ FIXED_WEATHER_CITY }} · {{ weatherText }} · {{ weatherTemp }}°C
+                </div>
+              </div>
+            </div>
             <div class="glass-card">
               <h4 class="glass-card-title">宠物皮肤</h4>
               <div class="glass-form-grid">
@@ -5999,18 +6115,6 @@ function escapeRegExp(str) {
                   <option v-for="font in systemFonts" :key="font" :value="font">{{ font }}</option>
                 </select>
               </label>
-            </div>
-            <div class="glass-card">
-              <h4 class="glass-card-title">天气效果</h4>
-              <div style="display:flex;flex-direction:column;gap:12px">
-                <label class="glass-toggle">
-                  <input v-model="settingsDraft.weatherEnabled" type="checkbox" />
-                  <span class="glass-toggle-track"></span>实时天气粒子效果
-                </label>
-              </div>
-              <div v-if="weatherText" style="margin-top:8px;font-size:12px;color:var(--text-dim)">
-                当前：{{ weatherText }} {{ weatherTemp }}°C
-              </div>
             </div>
           </div>
         </Transition>
