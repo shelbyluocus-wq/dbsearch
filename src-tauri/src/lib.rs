@@ -162,7 +162,7 @@ fn default_always_on_top_hotkey() -> String {
     "P".into()
 }
 fn default_sync_window_hotkey() -> String {
-    "Ctrl+Alt+S".into()
+    "Ctrl+S".into()
 }
 fn default_pet_skin() -> String {
     "eagle".into()
@@ -173,7 +173,7 @@ impl Default for PersonalConfig {
             widget_mode: "tray".into(),
             hotkey: "Ctrl+Shift+F".into(),
             quick_date_hotkey: "F9".into(),
-            sync_window_hotkey: "Ctrl+Alt+S".into(),
+            sync_window_hotkey: "Ctrl+S".into(),
             always_on_top: true,
             auto_start: false,
             ui_scale: 1.0,

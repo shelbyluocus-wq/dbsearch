@@ -210,35 +210,146 @@ pub fn execute_sync_pipeline(app: &AppHandle, profile: &SyncProfile) -> Result<S
         Some(script_workdir.display().to_string()),
     );
 
-    let mut tool_command = Command::new(&script_path);
-    apply_process_flags(&mut tool_command);
-    let tool_output = tool_command
-        .current_dir(script_workdir)
-        .output()
-        .map_err(|e| format!("启动脚本工具失败: {e}"))?;
+    let tool_output = run_script(&script_path, script_workdir)?;
     let tool_detail = combine_output(&tool_output);
-    if !tool_output.status.success() {
-        return emit_failure(
+    let script_failed =
+        !tool_output.status.success() || output_indicates_script_failure(&tool_detail);
+
+    if script_failed {
+        emit_progress(
             app,
             &profile_id,
             "launch_tool",
-            "脚本工具执行失败",
-            tool_detail,
-            Some(launch_command),
+            "error",
+            "脚本工具执行失败，正在尝试修复 Node 环境",
+            detail_or_none(tool_detail.clone()),
+            Some(launch_command.clone()),
+            Some(script_workdir.display().to_string()),
+        );
+
+        // nvm recovery: list installed Node versions
+        emit_progress(
+            app,
+            &profile_id,
+            "nvm_recovery",
+            "running",
+            "正在查询已安装的 Node 版本",
+            None,
+            Some("nvm ls".into()),
+            None,
+        );
+
+        let nvm_ls_output = match run_nvm_command(&["ls"]) {
+            Ok(output) => output,
+            Err(e) => {
+                return emit_failure(
+                    app,
+                    &profile_id,
+                    "nvm_recovery",
+                    "nvm 不可用，无法自动切换 Node 版本",
+                    format!("请手动安装 nvm-windows 或将 Node 14 加入 PATH\n{e}"),
+                    Some("nvm ls".into()),
+                    None,
+                );
+            }
+        };
+        let nvm_ls_detail = combine_output(&nvm_ls_output);
+        emit_progress(
+            app,
+            &profile_id,
+            "nvm_recovery",
+            "running",
+            "已获取 Node 版本列表，正在切换到 Node 14",
+            detail_or_none(nvm_ls_detail),
+            Some("nvm use 14".into()),
+            None,
+        );
+
+        // nvm use 14
+        let nvm_use_output = match run_nvm_command(&["use", "14"]) {
+            Ok(output) => output,
+            Err(e) => {
+                return emit_failure(
+                    app,
+                    &profile_id,
+                    "nvm_recovery",
+                    "切换 Node 14 失败",
+                    e.to_string(),
+                    Some("nvm use 14".into()),
+                    None,
+                );
+            }
+        };
+        let nvm_use_detail = combine_output(&nvm_use_output);
+        if !nvm_use_output.status.success() {
+            return emit_failure(
+                app,
+                &profile_id,
+                "nvm_recovery",
+                "切换 Node 14 失败",
+                nvm_use_detail,
+                Some("nvm use 14".into()),
+                None,
+            );
+        }
+        emit_progress(
+            app,
+            &profile_id,
+            "nvm_recovery",
+            "success",
+            "已切换到 Node 14，正在重试脚本",
+            detail_or_none(nvm_use_detail),
+            Some("nvm use 14".into()),
+            None,
+        );
+
+        // Retry the script
+        emit_progress(
+            app,
+            &profile_id,
+            "launch_tool",
+            "running",
+            "正在重新执行转表工具",
+            None,
+            Some(launch_command.clone()),
+            Some(script_workdir.display().to_string()),
+        );
+        let retry_output = run_script(&script_path, script_workdir)?;
+        let retry_detail = combine_output(&retry_output);
+        if !retry_output.status.success() || output_indicates_script_failure(&retry_detail) {
+            return emit_failure(
+                app,
+                &profile_id,
+                "launch_tool",
+                "重试后脚本工具仍然执行失败",
+                retry_detail,
+                Some(launch_command),
+                Some(script_workdir.display().to_string()),
+            );
+        }
+
+        emit_progress(
+            app,
+            &profile_id,
+            "launch_tool",
+            "success",
+            "重试成功，转表工具执行完成",
+            detail_or_none(retry_detail),
+            Some(format!("\"{}\"", script_path.display())),
+            Some(script_workdir.display().to_string()),
+        );
+    } else {
+        emit_progress(
+            app,
+            &profile_id,
+            "launch_tool",
+            "success",
+            "转表工具执行完成",
+            detail_or_none(tool_detail),
+            Some(format!("\"{}\"", script_path.display())),
             Some(script_workdir.display().to_string()),
         );
     }
-
-    emit_progress(
-        app,
-        &profile_id,
-        "launch_tool",
-        "success",
-        "转表工具执行完成",
-        detail_or_none(tool_detail),
-        Some(format!("\"{}\"", script_path.display())),
-        Some(script_workdir.display().to_string()),
-    );
 
     emit_progress(
         app,
@@ -477,6 +588,37 @@ fn emit_progress(
             timestamp: Utc::now().to_rfc3339(),
         },
     );
+}
+
+fn run_script(script_path: &Path, workdir: &Path) -> Result<std::process::Output, String> {
+    let mut cmd = Command::new(script_path);
+    apply_process_flags(&mut cmd);
+    cmd.current_dir(workdir)
+        .output()
+        .map_err(|e| format!("启动脚本工具失败: {e}"))
+}
+
+fn run_nvm_command(args: &[&str]) -> Result<std::process::Output, String> {
+    let mut cmd = Command::new("nvm");
+    apply_process_flags(&mut cmd);
+    cmd.args(args)
+        .output()
+        .map_err(|e| format!("执行 nvm 命令失败: {e}"))
+}
+
+fn output_indicates_script_failure(combined: &str) -> bool {
+    combined.lines().any(|line| {
+        let t = line.trim();
+        t.starts_with("Error:")
+            || t.starts_with("SyntaxError:")
+            || t.starts_with("ReferenceError:")
+            || t.starts_with("TypeError:")
+            || t.starts_with("RangeError:")
+            || t.contains("Cannot find module")
+            || t.contains("MODULE_NOT_FOUND")
+            || t.contains("NODE_MODULE_VERSION")
+            || (t.starts_with("throw ") && t.contains("Error"))
+    })
 }
 
 fn apply_process_flags(command: &mut Command) {

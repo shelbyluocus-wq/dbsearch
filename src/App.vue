@@ -163,7 +163,7 @@ const config = reactive({
     widget_mode: "tray",
     hotkey: "Ctrl+Shift+F",
     quick_date_hotkey: "F9",
-    sync_window_hotkey: "Ctrl+Alt+S",
+    sync_window_hotkey: "Ctrl+S",
     always_on_top: true,
     auto_start: false,
     ui_scale: 1.0,
@@ -197,7 +197,7 @@ const config = reactive({
   },
 });
 
-const syncWorkspaceHotkey = ref("Ctrl+Alt+S");
+const syncWorkspaceHotkey = ref("Ctrl+S");
 const syncWorkspaceProfiles = ref([]);
 const syncWorkspaceDefaultProfileId = ref("");
 const syncWorkspaceLastUsedProfileId = ref("");
@@ -570,6 +570,7 @@ const backgroundOpacityPercent = computed(() =>
 const SYNC_STEP_LABELS = {
   validate: "环境校验",
   launch_tool: "执行转表工具",
+  nvm_recovery: "Node 版本修复",
   locate_artifact: "定位最新产物",
   svn_update: "SVN 更新",
   copy: "文件同步",

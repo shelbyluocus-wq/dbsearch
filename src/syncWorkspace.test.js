@@ -8,7 +8,7 @@ import {
   resolveSyncProfileSelection,
 } from "./syncWorkspace.js";
 
-test("normalizeSyncWorkspaceSettings falls back to Ctrl+Alt+S and preserves stored profiles", () => {
+test("normalizeSyncWorkspaceSettings falls back to Ctrl+S and preserves stored profiles", () => {
   const settings = normalizeSyncWorkspaceSettings({
     sync_window_hotkey: "",
     sync_profiles: [
@@ -22,7 +22,7 @@ test("normalizeSyncWorkspaceSettings falls back to Ctrl+Alt+S and preserves stor
     ],
   });
 
-  assert.equal(settings.syncWindowHotkey, "Ctrl+Alt+S");
+  assert.equal(settings.syncWindowHotkey, "Ctrl+S");
   assert.equal(settings.profiles.length, 1);
   assert.equal(settings.profiles[0].name, "客户端配置");
 });

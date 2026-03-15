@@ -1,4 +1,4 @@
-const DEFAULT_SYNC_WINDOW_HOTKEY = "Ctrl+Alt+S";
+const DEFAULT_SYNC_WINDOW_HOTKEY = "Ctrl+S";
 const STATUS_LABELS = {
   idle: "未执行",
   running: "进行中",
