@@ -16,13 +16,21 @@ import {
   normalizeWeatherCategory,
   resolveWeatherSkinState,
 } from "./weatherSkin.js";
+import {
+  describeSyncProfileCard,
+  normalizeSyncWindowHotkey,
+  normalizeSyncWorkspaceSettings,
+  reduceSyncTimeline,
+  resolveSyncProfileSelection,
+} from "./syncWorkspace.js";
 
 const isTauriWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const windowLabel = ref("browser");
 
 const isPetWindow = computed(() => isTauriWindow && windowLabel.value === "main");
 const isMenuWindow = computed(() => isTauriWindow && windowLabel.value === "pet_menu");
-const isPanelWindow = computed(() => !isPetWindow.value && !isMenuWindow.value);
+const isSyncWorkspaceWindow = computed(() => isTauriWindow && windowLabel.value === "sync_workspace");
+const isPanelWindow = computed(() => !isTauriWindow || windowLabel.value === "browser" || windowLabel.value === "panel");
 const FIXED_WEATHER_CITY = "厦门市";
 
 const settingsOpen = ref(false);
@@ -97,6 +105,7 @@ const results = reactive({
 });
 
 const themeId = ref(localStorage.getItem('dbsearch-theme') || 'azure')
+const preferredThemeId = ref(localStorage.getItem('dbsearch-theme') || 'azure')
 
 const THEMES = [
   { id: 'azure',    name: 'Azure',    color: '#0284c7' },
@@ -116,9 +125,16 @@ const WEATHER_PREVIEW_OPTIONS = [
 ]
 
 function applyTheme(id) {
+  preferredThemeId.value = id
   themeId.value = id
   document.documentElement.dataset.theme = id
   localStorage.setItem('dbsearch-theme', id)
+  // Auto-disable weather when user picks a theme
+  if (weatherEnabled.value) {
+    settingsDraft.weatherEnabled = false
+    weatherEnabled.value = false
+    destroyWeatherEngine()
+  }
 }
 
 const progress = reactive({
@@ -147,6 +163,7 @@ const config = reactive({
     widget_mode: "tray",
     hotkey: "Ctrl+Shift+F",
     quick_date_hotkey: "F9",
+    sync_window_hotkey: "Ctrl+Alt+S",
     always_on_top: true,
     auto_start: false,
     ui_scale: 1.0,
@@ -174,8 +191,28 @@ const config = reactive({
     custom_font: null,
     weather_enabled: true,
     background_opacity: 1.0,
+    sync_profiles: [],
+    default_sync_profile_id: null,
+    last_used_sync_profile_id: null,
   },
 });
+
+const syncWorkspaceHotkey = ref("Ctrl+Alt+S");
+const syncWorkspaceProfiles = ref([]);
+const syncWorkspaceDefaultProfileId = ref("");
+const syncWorkspaceLastUsedProfileId = ref("");
+const syncWorkspaceActiveProfileId = ref("");
+const syncWorkspaceRunning = ref(false);
+const syncWorkspaceMessage = ref("");
+const syncWorkspaceMessageTone = ref("neutral");
+const syncWorkspaceTimeline = ref([]);
+const syncWorkspaceRunProfileId = ref("");
+const syncWorkspaceDirty = ref(false);
+const syncSettingsOpen = ref(false);
+const syncSettingsEditingProfileId = ref("");
+const syncContentEditing = ref(false);
+const syncWorkspaceHotkeyPlaceholder = "点击后按下快捷键";
+let unlistenSyncWorkspaceProgress = null;
 
 // ── Weather state ──
 const weatherCanvasRef = ref(null);
@@ -203,13 +240,23 @@ const weatherSkinState = computed(() => resolveWeatherSkinState({
   clockTime: skyTime.value,
   previewTime: skyTimeOverride.value,
 }))
-const weatherPresentation = computed(() => getWeatherPresentation(themeId.value, weatherSkinState.value))
+const skyDarkness = computed(() => {
+  const o = skyOpacities.value
+  const cat = weatherSkinState.value.category
+  const weatherDark = (cat === 'heavyRain') ? 0.3 : (cat === 'lightRain' || cat === 'cloudy') ? 0.15 : 0
+  return Math.min(1, o.night + o.dusk * 0.4 + weatherDark)
+})
+const weatherPresentation = computed(() => getWeatherPresentation(themeId.value, weatherSkinState.value, skyDarkness.value))
 const weatherHeaderLabel = computed(() => weatherText.value || "实时天气")
 const weatherHeaderIcon = computed(() => {
   const category = weatherSkinState.value.category
   return WEATHER_PREVIEW_OPTIONS.find((item) => item.id === category)?.icon || weatherIcon.value || "🌤️"
 })
 const weatherPreviewActive = computed(() => weatherSkinState.value.source === "preview")
+const preferredThemeName = computed(() => {
+  const t = THEMES.find(t => t.id === preferredThemeId.value)
+  return t ? t.name : 'Azure'
+})
 
 const skyOpacities = computed(() => {
   const t = skyEffectiveTime.value
@@ -520,6 +567,380 @@ const settingsDraft = reactive({
 const backgroundOpacityPercent = computed(() =>
   `${Math.round(normalizeBackgroundOpacity(settingsDraft.backgroundOpacity) * 100)}%`,
 );
+const SYNC_STEP_LABELS = {
+  validate: "环境校验",
+  launch_tool: "执行转表工具",
+  locate_artifact: "定位最新产物",
+  svn_update: "SVN 更新",
+  copy: "文件同步",
+  finish: "完成",
+};
+const SYNC_STATUS_TEXT = {
+  idle: "未执行",
+  running: "进行中",
+  success: "上次成功",
+  error: "上次失败",
+};
+const SYNC_STATUS_TONE = {
+  idle: "idle",
+  running: "running",
+  success: "success",
+  error: "error",
+};
+const activeSyncProfile = computed(() =>
+  syncWorkspaceProfiles.value.find((profile) => profile.id === syncWorkspaceActiveProfileId.value) || null,
+);
+const currentProfileStatusText = computed(() => {
+  if (syncWorkspaceRunning.value) return "\u540C\u6B65\u8FDB\u884C\u4E2D";
+  const status = activeSyncProfile.value?.last_run_status || "idle";
+  return SYNC_STATUS_TEXT[status] || "\u672A\u6267\u884C";
+});
+const currentProfileStatusTone = computed(() => {
+  if (syncWorkspaceRunning.value) return "running";
+  const status = activeSyncProfile.value?.last_run_status || "idle";
+  return SYNC_STATUS_TONE[status] || "idle";
+});
+const PIPELINE_STEPS = ["validate", "launch_tool", "locate_artifact", "svn_update", "copy", "finish"];
+const pipelineStepsView = computed(() => {
+  const timeline = syncWorkspaceTimeline.value;
+  return PIPELINE_STEPS.map((stepKey) => {
+    const entry = timeline.find((e) => e.step === stepKey);
+    const status = entry ? entry.status : "pending";
+    const icon = status === "success" ? "\u2713" : status === "error" ? "\u2717" : status === "running" ? "\u23F3" : "\u25CB";
+    return {
+      key: stepKey,
+      label: SYNC_STEP_LABELS[stepKey] || stepKey,
+      status,
+      icon,
+      message: entry?.message || "",
+      timeLabel: entry ? formatSyncWorkspaceTimestamp(entry.timestamp) : "",
+    };
+  });
+});
+const syncWorkspaceProfilesView = computed(() => {
+  return [...syncWorkspaceProfiles.value].sort((left, right) => {
+    const leftPriority =
+      (left.id === syncWorkspaceActiveProfileId.value ? 0 : 1) +
+      (left.id === syncWorkspaceDefaultProfileId.value ? 0 : 2) +
+      syncWorkspaceProfiles.value.findIndex((profile) => profile.id === left.id) * 10;
+    const rightPriority =
+      (right.id === syncWorkspaceActiveProfileId.value ? 0 : 1) +
+      (right.id === syncWorkspaceDefaultProfileId.value ? 0 : 2) +
+      syncWorkspaceProfiles.value.findIndex((profile) => profile.id === right.id) * 10;
+    return leftPriority - rightPriority;
+  });
+});
+const syncWorkspaceTimelineView = computed(() =>
+  syncWorkspaceTimeline.value.map((entry, index) => ({
+    ...entry,
+    key: `${entry.timestamp}-${entry.step}-${index}`,
+    stepLabel: SYNC_STEP_LABELS[entry.step] || entry.step,
+    statusText: SYNC_STATUS_TEXT[entry.status] || entry.status,
+    statusTone: SYNC_STATUS_TONE[entry.status] || "idle",
+    timeLabel: formatSyncWorkspaceTimestamp(entry.timestamp),
+  })),
+);
+
+function formatSyncWorkspaceTimestamp(value) {
+  const date = value ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return "--:--:--";
+  return date.toLocaleTimeString([], { hour12: false });
+}
+
+function markSyncWorkspaceDirty(message = "") {
+  syncWorkspaceDirty.value = true;
+  if (message) {
+    syncWorkspaceMessage.value = message;
+    syncWorkspaceMessageTone.value = "neutral";
+  }
+}
+
+function buildSyncWorkspaceSnapshot() {
+  const normalized = normalizeSyncWorkspaceSettings({
+    sync_window_hotkey: syncWorkspaceHotkey.value,
+    sync_profiles: syncWorkspaceProfiles.value,
+    default_sync_profile_id: syncWorkspaceDefaultProfileId.value,
+    last_used_sync_profile_id: syncWorkspaceLastUsedProfileId.value,
+  });
+  const defaultProfileId =
+    normalized.defaultProfileId || normalized.profiles[0]?.id || "";
+  const lastUsedProfileId =
+    normalized.lastUsedProfileId ||
+    resolveSyncProfileSelection(normalized.profiles, {
+      defaultProfileId,
+    });
+
+  return {
+    syncWindowHotkey: normalized.syncWindowHotkey,
+    profiles: normalized.profiles.map((profile) => ({ ...profile })),
+    defaultProfileId,
+    lastUsedProfileId,
+  };
+}
+
+function openSyncSettings() {
+  syncSettingsOpen.value = true;
+  syncSettingsEditingProfileId.value = "";
+}
+
+function closeSyncSettings() {
+  syncSettingsOpen.value = false;
+  syncSettingsEditingProfileId.value = "";
+}
+
+function toggleSettingsProfileEdit(profileId) {
+  syncSettingsEditingProfileId.value = syncSettingsEditingProfileId.value === profileId ? "" : profileId;
+}
+
+function loadSyncWorkspaceSettingsFromConfig() {
+  const snapshot = normalizeSyncWorkspaceSettings(config.personal);
+  syncWorkspaceHotkey.value = snapshot.syncWindowHotkey;
+  syncWorkspaceProfiles.value = snapshot.profiles.map((profile) => ({ ...profile }));
+  syncWorkspaceDefaultProfileId.value = snapshot.defaultProfileId || snapshot.profiles[0]?.id || "";
+  syncWorkspaceLastUsedProfileId.value = snapshot.lastUsedProfileId || "";
+  syncWorkspaceActiveProfileId.value = resolveSyncProfileSelection(syncWorkspaceProfiles.value, {
+    lastUsedProfileId: syncWorkspaceLastUsedProfileId.value,
+    defaultProfileId: syncWorkspaceDefaultProfileId.value,
+  });
+  syncWorkspaceDirty.value = false;
+}
+
+async function saveSyncWorkspaceSettings({ silent = false } = {}) {
+  const snapshot = buildSyncWorkspaceSnapshot();
+  let registeredHotkey = snapshot.syncWindowHotkey;
+
+  if (isTauriWindow) {
+    try {
+      registeredHotkey = await invoke("register_sync_window_hotkey", {
+        hotkey: snapshot.syncWindowHotkey,
+      });
+    } catch (error) {
+      syncWorkspaceMessage.value = `✗ 同步窗口快捷键注册失败：${String(error)}`;
+      syncWorkspaceMessageTone.value = "error";
+      return false;
+    }
+  }
+
+  config.personal.sync_window_hotkey = normalizeSyncWindowHotkey(registeredHotkey);
+  config.personal.sync_profiles = snapshot.profiles.map((profile) => ({ ...profile }));
+  config.personal.default_sync_profile_id = snapshot.defaultProfileId || null;
+  config.personal.last_used_sync_profile_id = snapshot.lastUsedProfileId || null;
+
+  try {
+    await persistConfig();
+  } catch (error) {
+    syncWorkspaceMessage.value = `✗ 保存同步配置失败：${String(error)}`;
+    syncWorkspaceMessageTone.value = "error";
+    return false;
+  }
+
+  syncWorkspaceHotkey.value = config.personal.sync_window_hotkey;
+  syncWorkspaceProfiles.value = config.personal.sync_profiles.map((profile) => ({ ...profile }));
+  syncWorkspaceDefaultProfileId.value = config.personal.default_sync_profile_id || "";
+  syncWorkspaceLastUsedProfileId.value = config.personal.last_used_sync_profile_id || "";
+  syncWorkspaceActiveProfileId.value = resolveSyncProfileSelection(syncWorkspaceProfiles.value, {
+    lastUsedProfileId: syncWorkspaceLastUsedProfileId.value,
+    defaultProfileId: syncWorkspaceDefaultProfileId.value,
+  });
+  syncWorkspaceDirty.value = false;
+  if (!silent) {
+    syncWorkspaceMessage.value = "✓ 同步工作台配置已保存";
+    syncWorkspaceMessageTone.value = "success";
+  }
+  return true;
+}
+
+function ensureSyncWorkspaceActiveProfile() {
+  syncWorkspaceActiveProfileId.value = resolveSyncProfileSelection(syncWorkspaceProfiles.value, {
+    lastUsedProfileId: syncWorkspaceLastUsedProfileId.value,
+    defaultProfileId: syncWorkspaceDefaultProfileId.value,
+  });
+}
+
+function createSyncProfileDraft() {
+  const nextIndex = syncWorkspaceProfiles.value.length + 1;
+  return {
+    id: crypto.randomUUID(),
+    name: `同步配置 ${nextIndex}`,
+    script_executable_path: "",
+    output_root: "",
+    target_path: "",
+    last_run_status: "idle",
+    last_run_at: "",
+    last_run_summary: "",
+  };
+}
+
+function addSyncProfile() {
+  const profile = createSyncProfileDraft();
+  syncWorkspaceProfiles.value = [...syncWorkspaceProfiles.value, profile];
+  syncWorkspaceActiveProfileId.value = profile.id;
+  if (!syncWorkspaceDefaultProfileId.value) {
+    syncWorkspaceDefaultProfileId.value = profile.id;
+  }
+  syncContentEditing.value = true;
+  markSyncWorkspaceDirty("已新增同步配置，填写下方路径后点击保存。");
+}
+
+function removeSyncProfile(profileId) {
+  syncWorkspaceProfiles.value = syncWorkspaceProfiles.value.filter((profile) => profile.id !== profileId);
+  if (syncWorkspaceDefaultProfileId.value === profileId) {
+    syncWorkspaceDefaultProfileId.value = syncWorkspaceProfiles.value[0]?.id || "";
+  }
+  if (syncWorkspaceLastUsedProfileId.value === profileId) {
+    syncWorkspaceLastUsedProfileId.value = "";
+  }
+  if (syncWorkspaceActiveProfileId.value === profileId) {
+    ensureSyncWorkspaceActiveProfile();
+  }
+  markSyncWorkspaceDirty("已移除同步配置，记得保存。");
+}
+
+function focusSyncProfile(profileId) {
+  syncWorkspaceActiveProfileId.value = profileId;
+  syncContentEditing.value = false;
+}
+
+function setDefaultSyncProfile(profileId) {
+  syncWorkspaceDefaultProfileId.value = profileId;
+  focusSyncProfile(profileId);
+  markSyncWorkspaceDirty("默认同步配置已更新。");
+}
+
+function updateSyncProfileField(profileId, key, value) {
+  const target = syncWorkspaceProfiles.value.find((profile) => profile.id === profileId);
+  if (!target) return;
+  target[key] = value;
+  focusSyncProfile(profileId);
+  markSyncWorkspaceDirty();
+}
+
+async function chooseSyncExecutable(profileId) {
+  const result = await open({
+    title: "选择脚本软件",
+    multiple: false,
+  });
+  if (!result || Array.isArray(result)) return;
+  updateSyncProfileField(profileId, "script_executable_path", result);
+}
+
+async function chooseSyncDirectory(profileId, field, title) {
+  const result = await open({
+    title,
+    directory: true,
+    multiple: false,
+  });
+  if (!result || Array.isArray(result)) return;
+  updateSyncProfileField(profileId, field, result);
+}
+
+function onSyncWorkspaceHotkeyInputKeydown(event) {
+  if (event.key === "Tab") return;
+  event.preventDefault();
+  event.stopPropagation();
+  if (event.key === "Backspace" || event.key === "Delete") {
+    syncWorkspaceHotkey.value = "";
+    markSyncWorkspaceDirty("同步窗口快捷键已清空，保存时会回退到默认值。");
+    return;
+  }
+  syncWorkspaceHotkey.value = buildHotkeyFromEvent(event);
+  markSyncWorkspaceDirty();
+}
+
+function canRunSyncProfile(profile) {
+  if (!profile) return false;
+  return [
+    profile.script_executable_path,
+    profile.output_root,
+    profile.target_path,
+  ].every((value) => String(value || "").trim().length > 0);
+}
+
+function handleSyncWorkspaceProgress(payload) {
+  if (!payload || typeof payload !== "object") return;
+  if (syncWorkspaceRunProfileId.value && payload.profileId && payload.profileId !== syncWorkspaceRunProfileId.value) {
+    return;
+  }
+  if (!syncWorkspaceRunProfileId.value && payload.profileId) {
+    syncWorkspaceRunProfileId.value = payload.profileId;
+  }
+  syncWorkspaceTimeline.value = reduceSyncTimeline(syncWorkspaceTimeline.value, payload);
+}
+
+async function refreshSyncWorkspaceConfigState() {
+  await loadConfig();
+  loadSyncWorkspaceSettingsFromConfig();
+}
+
+async function runSyncProfileFromWorkspace(profileId) {
+  const profile = syncWorkspaceProfiles.value.find((item) => item.id === profileId);
+  if (!profile || syncWorkspaceRunning.value) return;
+  if (!canRunSyncProfile(profile)) {
+    syncWorkspaceMessage.value = "✗ 请先配置脚本软件路径、脚本输出目录和项目目标路径";
+    syncWorkspaceMessageTone.value = "error";
+    focusSyncProfile(profileId);
+    return;
+  }
+
+  focusSyncProfile(profileId);
+  syncWorkspaceLastUsedProfileId.value = profileId;
+  const saved = await saveSyncWorkspaceSettings({ silent: true });
+  if (!saved) return;
+
+  syncWorkspaceRunning.value = true;
+  syncWorkspaceRunProfileId.value = profileId;
+  syncWorkspaceTimeline.value = [];
+  syncWorkspaceMessage.value = `正在执行 ${profile.name}...`;
+  syncWorkspaceMessageTone.value = "running";
+
+  try {
+    const result = await invoke("run_sync_profile", { profileId });
+    await refreshSyncWorkspaceConfigState();
+    syncWorkspaceMessage.value = `✓ ${result.summary}`;
+    syncWorkspaceMessageTone.value = "success";
+  } catch (error) {
+    await refreshSyncWorkspaceConfigState();
+    syncWorkspaceMessage.value = `✗ ${String(error)}`;
+    syncWorkspaceMessageTone.value = "error";
+  } finally {
+    syncWorkspaceRunning.value = false;
+  }
+}
+
+function runActiveSyncProfile() {
+  if (!activeSyncProfile.value) return;
+  runSyncProfileFromWorkspace(activeSyncProfile.value.id);
+}
+
+async function closeSyncWorkspaceWindow() {
+  if (!isTauriWindow || !isSyncWorkspaceWindow.value) return;
+  await invoke("hide_sync_workspace_window").catch(() => {});
+}
+
+async function syncWorkspaceMinimize() {
+  if (!isTauriWindow || !isSyncWorkspaceWindow.value) return;
+  await getCurrentWindow().minimize().catch(() => {});
+}
+
+async function syncWorkspaceToggleMaximize() {
+  if (!isTauriWindow || !isSyncWorkspaceWindow.value) return;
+  const appWindow = getCurrentWindow();
+  const maximized = await appWindow.isMaximized().catch(() => false);
+  if (maximized) {
+    await appWindow.unmaximize().catch(() => {});
+  } else {
+    await appWindow.maximize().catch(() => {});
+  }
+}
+
+function syncWorkspaceHeaderPointerDown(event) {
+  if (event.button !== 0 || !isTauriWindow || !isSyncWorkspaceWindow.value) return;
+  const target = event.target;
+  if (target instanceof Element && target.closest("button, input, textarea, select, label, a")) {
+    return;
+  }
+  getCurrentWindow().startDragging().catch(() => {});
+}
 
 // Custom skin editor state
 const skinEditorOpen = ref(false);
@@ -609,7 +1030,7 @@ const recentTablesGrouped = computed(() => {
 
   const uncategorized = recentTables.value.filter((r) => !inFolder.has(r.tableName.toLowerCase()));
   if (uncategorized.length > 0) {
-    groups.push({ folderName: groups.length > 0 ? "未分类" : "最近打开", tables: uncategorized });
+    groups.push({ folderName: groups.length > 0 ? "未分类" : "", tables: uncategorized });
   }
 
   return groups;
@@ -2190,6 +2611,8 @@ onMounted(async () => {
     // ── Weather engine init ──
     weatherEnabled.value = config.personal.weather_enabled !== false;
     if (weatherEnabled.value) {
+      themeId.value = 'azure'
+      document.documentElement.dataset.theme = 'azure'
       await nextTick();
       initWeatherEngine();
       fetchWeather();
@@ -2200,6 +2623,16 @@ onMounted(async () => {
       skyTime.value = new Date().getHours() + new Date().getMinutes() / 60
     }, 5 * 60 * 1000)
 
+    return;
+  }
+
+  if (isSyncWorkspaceWindow.value) {
+    loadSyncWorkspaceSettingsFromConfig();
+    if (isTauriWindow) {
+      unlistenSyncWorkspaceProgress = await listen("sync-workspace-progress", (event) => {
+        handleSyncWorkspaceProgress(event.payload);
+      });
+    }
     return;
   }
 
@@ -2324,6 +2757,10 @@ onBeforeUnmount(() => {
     unlistenProgress();
     unlistenProgress = null;
   }
+  if (unlistenSyncWorkspaceProgress) {
+    unlistenSyncWorkspaceProgress();
+    unlistenSyncWorkspaceProgress = null;
+  }
   if (unlistenPanelOpenSettings) {
     unlistenPanelOpenSettings();
     unlistenPanelOpenSettings = null;
@@ -2378,6 +2815,17 @@ watch(() => settingsDraft.petSkin, (newSkin) => {
 watch(() => settingsDraft.backgroundOpacity, (val) => {
   if (settingsOpen.value) {
     config.personal.background_opacity = normalizeBackgroundOpacity(val);
+  }
+});
+
+watch(() => settingsDraft.weatherEnabled, (val) => {
+  if (!settingsOpen.value) return;
+  if (val) {
+    themeId.value = 'azure'
+    document.documentElement.dataset.theme = 'azure'
+  } else {
+    themeId.value = preferredThemeId.value
+    document.documentElement.dataset.theme = preferredThemeId.value
   }
 });
 
@@ -3428,6 +3876,7 @@ function openSettings(target = "connection") {
   settingsDraft.weatherEnabled = config.personal.weather_enabled !== false;
   settingsDraft.backgroundOpacity = normalizeBackgroundOpacity(config.personal.background_opacity);
   _opacityBeforeSettings = config.personal.background_opacity;
+  _weatherBeforeSettings = weatherEnabled.value;
   if (isTauriWindow) {
     invoke("list_system_fonts").then((fonts) => { systemFonts.value = fonts; }).catch(() => {});
   }
@@ -3436,10 +3885,32 @@ function openSettings(target = "connection") {
 }
 
 let _opacityBeforeSettings = 1;
+let _weatherBeforeSettings = true;
 
 function closeSettings() {
   clearIdlePreview();
   config.personal.background_opacity = _opacityBeforeSettings;
+  // Restore weather state if toggled during settings without saving
+  if (_weatherBeforeSettings !== weatherEnabled.value) {
+    weatherEnabled.value = _weatherBeforeSettings;
+    if (_weatherBeforeSettings) {
+      themeId.value = 'azure'
+      document.documentElement.dataset.theme = 'azure'
+      nextTick().then(() => {
+        if (!weatherEngine) {
+          initWeatherEngine();
+          fetchWeather();
+          if (!weatherRefreshTimer) {
+            weatherRefreshTimer = setInterval(fetchWeather, WEATHER_REFRESH_MS);
+          }
+        }
+      });
+    } else {
+      destroyWeatherEngine();
+      themeId.value = preferredThemeId.value
+      document.documentElement.dataset.theme = preferredThemeId.value
+    }
+  }
   settingsOpen.value = false;
 }
 
@@ -3545,6 +4016,8 @@ async function saveSettings() {
   config.personal.background_opacity = normalizeBackgroundOpacity(settingsDraft.backgroundOpacity);
   weatherEnabled.value = !!settingsDraft.weatherEnabled;
   if (weatherEnabled.value) {
+    themeId.value = 'azure'
+    document.documentElement.dataset.theme = 'azure'
     await nextTick();
     if (!weatherEngine) {
       initWeatherEngine();
@@ -3555,6 +4028,8 @@ async function saveSettings() {
     }
   } else {
     destroyWeatherEngine();
+    themeId.value = preferredThemeId.value
+    document.documentElement.dataset.theme = preferredThemeId.value
   }
 
   if (isTauriWindow) {
@@ -4904,6 +5379,18 @@ async function loadConfig() {
   );
   config.personal.reset_on_open_to_all_tables = config.personal.reset_on_open_to_all_tables !== false;
   config.personal.background_opacity = normalizeBackgroundOpacity(config.personal.background_opacity);
+  {
+    const syncSettings = normalizeSyncWorkspaceSettings(config.personal);
+    const defaultProfileId = syncSettings.defaultProfileId || syncSettings.profiles[0]?.id || null;
+    const lastUsedProfileId = resolveSyncProfileSelection(syncSettings.profiles, {
+      lastUsedProfileId: syncSettings.lastUsedProfileId,
+      defaultProfileId,
+    });
+    config.personal.sync_window_hotkey = syncSettings.syncWindowHotkey;
+    config.personal.sync_profiles = syncSettings.profiles.map((profile) => ({ ...profile }));
+    config.personal.default_sync_profile_id = defaultProfileId;
+    config.personal.last_used_sync_profile_id = lastUsedProfileId || null;
+  }
   templateCursorIndex.value = findTemplateIndexByDb(config.shared.db);
 }
 
@@ -4946,6 +5433,8 @@ async function contextAction(action) {
   try {
     if (action === "open") {
       await invoke("show_panel_window", { openSettings: false });
+    } else if (action === "sync") {
+      await invoke("show_sync_workspace_window");
     } else if (action === "settings") {
       await invoke("show_panel_window", { openSettings: true });
     } else if (action === "exit") {
@@ -5225,7 +5714,7 @@ function escapeRegExp(str) {
           <button class="traffic-btn traffic-green" title="最大化/还原" @click="panelToggleMaximize"></button>
         </div>
         <div class="title-drag"></div>
-        <span class="window-title" @pointerdown.stop @dblclick.stop style="cursor:default">厦门市</span>
+        <span class="window-title" @pointerdown.stop @dblclick.stop style="cursor:default">鹰捷v4.0</span>
         <button
           class="header-weather header-weather--action"
           :title="`${FIXED_WEATHER_CITY} ${weatherHeaderLabel} ${weatherTemp}°C`"
@@ -5266,8 +5755,8 @@ function escapeRegExp(str) {
               <button class="recent-tabs-close" @click="recentTabsDropdownOpen = false">✕</button>
             </div>
             <div v-if="recentTables.length === 0" class="recent-tabs-empty">暂无最近打开的表</div>
-            <template v-for="group in recentTablesGrouped" :key="group.folderName">
-              <div class="recent-tabs-group-header">{{ group.folderName }}</div>
+            <template v-for="group in recentTablesGrouped" :key="group.folderName || '_ungrouped'">
+              <div v-if="group.folderName" class="recent-tabs-group-header">{{ group.folderName }}</div>
               <button
                 v-for="item in group.tables" :key="item.tableName"
                 class="recent-tabs-item"
@@ -5594,12 +6083,265 @@ function escapeRegExp(str) {
     </div>
   </div>
 
-  <div v-else class="pet-menu-root">
+  <main v-else-if="isSyncWorkspaceWindow" class="sw-root" @contextmenu.prevent>
+    <header class="sw-toolbar" @pointerdown="syncWorkspaceHeaderPointerDown">
+      <div class="traffic-lights" @dblclick.stop @pointerdown.stop>
+        <button class="traffic-btn traffic-red" title="关闭" @click="closeSyncWorkspaceWindow" />
+        <button class="traffic-btn traffic-yellow" title="最小化" @click="syncWorkspaceMinimize" />
+        <button class="traffic-btn traffic-green" title="最大化/还原" @click="syncWorkspaceToggleMaximize" />
+      </div>
+      <span class="sw-toolbar-title">一键同步工作台</span>
+      <div class="sw-toolbar-actions">
+        <button class="sw-toolbar-btn" title="新增配置" :disabled="syncWorkspaceRunning" @click="addSyncProfile">+</button>
+        <button class="sw-toolbar-btn" title="设置" @click="openSyncSettings">⚙</button>
+      </div>
+    </header>
+
+    <div class="sw-body">
+      <nav class="sw-sidebar">
+        <button
+          v-for="profile in syncWorkspaceProfilesView"
+          :key="profile.id"
+          :class="['sw-sidebar-item', { selected: profile.id === syncWorkspaceActiveProfileId }]"
+          @click="focusSyncProfile(profile.id)"
+        >
+          <span :class="['sw-sidebar-status-dot', `is-${syncWorkspaceRunning && syncWorkspaceRunProfileId === profile.id ? 'running' : (profile.last_run_status || 'idle')}`]"></span>
+          <span class="sw-sidebar-label">{{ profile.name }}</span>
+          <span v-if="profile.last_run_at" class="sw-sidebar-time">{{ formatSyncWorkspaceTimestamp(profile.last_run_at) }}</span>
+        </button>
+      </nav>
+
+      <section v-if="activeSyncProfile" class="sw-content">
+        <div class="sw-content-header">
+          <h1 class="sw-profile-name">{{ activeSyncProfile.name }}</h1>
+          <div class="sw-status-line">
+            <span :class="['sw-status-badge', `is-${currentProfileStatusTone}`]">{{ currentProfileStatusText }}</span>
+            <span v-if="activeSyncProfile.last_run_at">· {{ formatSyncWorkspaceTimestamp(activeSyncProfile.last_run_at) }}</span>
+          </div>
+        </div>
+
+        <div class="sw-action-row">
+          <button
+            class="sw-run-btn"
+            :disabled="!canRunSyncProfile(activeSyncProfile) || syncWorkspaceRunning"
+            @click="runActiveSyncProfile"
+          >
+            {{ syncWorkspaceRunning ? '⏳ 同步中...' : '▶ 运行同步' }}
+          </button>
+        </div>
+
+        <div v-if="syncWorkspaceMessage" :class="['sw-banner', `tone-${syncWorkspaceMessageTone}`]">
+          {{ syncWorkspaceMessage }}
+        </div>
+
+        <div v-if="!canRunSyncProfile(activeSyncProfile) || syncContentEditing" class="sw-config-form">
+          <div class="sw-config-form-title">配置路径</div>
+          <div class="sw-config-field">
+            <label>配置名称</label>
+            <input v-model="activeSyncProfile.name" @input="markSyncWorkspaceDirty()" />
+          </div>
+          <div class="sw-config-field sw-config-path-row">
+            <div>
+              <label>脚本软件路径</label>
+              <input v-model="activeSyncProfile.script_executable_path" @input="markSyncWorkspaceDirty()" />
+            </div>
+            <button @click="chooseSyncExecutable(activeSyncProfile.id)">浏览</button>
+          </div>
+          <div class="sw-config-field sw-config-path-row">
+            <div>
+              <label>脚本输出目录</label>
+              <input v-model="activeSyncProfile.output_root" @input="markSyncWorkspaceDirty()" />
+            </div>
+            <button @click="chooseSyncDirectory(activeSyncProfile.id, 'output_root', '选择脚本输出目录')">浏览</button>
+          </div>
+          <div class="sw-config-field sw-config-path-row">
+            <div>
+              <label>项目目标路径</label>
+              <input v-model="activeSyncProfile.target_path" @input="markSyncWorkspaceDirty()" />
+            </div>
+            <button @click="chooseSyncDirectory(activeSyncProfile.id, 'target_path', '选择项目目标路径')">浏览</button>
+          </div>
+          <button v-if="syncContentEditing" class="sw-config-form-close" @click="syncContentEditing = false">收起</button>
+        </div>
+        <button v-if="canRunSyncProfile(activeSyncProfile) && !syncContentEditing"
+                class="sw-edit-toggle" @click="syncContentEditing = true">
+          编辑配置
+        </button>
+
+        <div class="sw-pipeline">
+          <div class="sw-pipeline-title">执行步骤</div>
+          <ul class="sw-step-list">
+            <li v-for="step in pipelineStepsView" :key="step.key" class="sw-step-item">
+              <span :class="['sw-step-icon', `is-${step.status}`]">{{ step.icon }}</span>
+              <span :class="['sw-step-label', { 'is-pending': step.status === 'pending' }]">{{ step.label }}</span>
+              <span v-if="step.message" class="sw-step-msg" :title="step.message">{{ step.message }}</span>
+              <span v-if="step.timeLabel" class="sw-step-time">{{ step.timeLabel }}</span>
+            </li>
+          </ul>
+        </div>
+
+        <details v-if="syncWorkspaceTimelineView.length > 0" class="sw-log-details">
+          <summary>详细日志 ({{ syncWorkspaceTimelineView.length }})</summary>
+          <ol class="sw-log-list-inner">
+            <li v-for="entry in syncWorkspaceTimelineView" :key="entry.key" class="sw-log-entry">
+              <div class="sw-log-entry-top">
+                <span class="sw-log-entry-step">{{ entry.stepLabel }}</span>
+                <span class="sw-log-entry-time">{{ entry.timeLabel }}</span>
+                <span :class="['sw-log-entry-status', `is-${entry.statusTone}`]">{{ entry.statusText }}</span>
+              </div>
+              <div v-if="entry.message" class="sw-log-entry-msg">{{ entry.message }}</div>
+              <div v-if="entry.command" class="sw-log-entry-cmd">{{ entry.command }}</div>
+              <pre v-if="entry.detail" class="sw-log-entry-detail">{{ entry.detail }}</pre>
+            </li>
+          </ol>
+        </details>
+      </section>
+
+      <section v-else class="sw-content">
+        <div class="sw-empty">
+          <div class="sw-empty-title">先创建一套配置</div>
+          <div class="sw-empty-desc">每套配置保存三个路径，后续就能在这里一键执行，不用再手动找目录和更新 SVN。</div>
+          <button class="sw-empty-btn" @click="addSyncProfile">创建第一套配置</button>
+        </div>
+      </section>
+    </div>
+
+    <!-- Settings Sheet -->
+    <div v-if="syncSettingsOpen" class="sw-settings-overlay" @click.self="closeSyncSettings">
+      <section class="sw-settings-sheet">
+        <header class="sw-settings-header">
+          <h2>同步工作台设置</h2>
+          <button class="sw-toolbar-btn" @click="closeSyncSettings">✕</button>
+        </header>
+
+        <div class="sw-settings-body">
+          <div class="sw-settings-section">
+            <div class="sw-settings-section-title">快捷键</div>
+            <div class="sw-settings-field">
+              <span class="sw-settings-field-label">打开同步工作台</span>
+              <input
+                class="sw-settings-input"
+                :value="syncWorkspaceHotkey"
+                type="text"
+                readonly
+                :placeholder="syncWorkspaceHotkeyPlaceholder"
+                @keydown="onSyncWorkspaceHotkeyInputKeydown"
+              />
+            </div>
+          </div>
+
+          <div class="sw-settings-section">
+            <div class="sw-settings-section-title">配置管理</div>
+
+            <div v-if="syncWorkspaceProfiles.length === 0" style="font-size: 13px; color: #86868B;">
+              暂无配置，点击工具栏 + 按钮添加。
+            </div>
+
+            <div
+              v-for="profile in syncWorkspaceProfiles"
+              :key="profile.id"
+              class="sw-settings-profile-item"
+            >
+              <button class="sw-settings-profile-row" @click="toggleSettingsProfileEdit(profile.id)">
+                <span class="sw-settings-profile-name">
+                  {{ profile.name }}
+                  <span v-if="profile.id === syncWorkspaceDefaultProfileId" class="sw-default-pill">默认</span>
+                </span>
+                <span :class="['sw-settings-profile-chevron', { open: syncSettingsEditingProfileId === profile.id }]">▶</span>
+              </button>
+
+              <div v-if="syncSettingsEditingProfileId === profile.id" class="sw-settings-profile-edit">
+                <div class="sw-settings-field">
+                  <span class="sw-settings-field-label">配置名称</span>
+                  <input
+                    class="sw-settings-input"
+                    v-model="profile.name"
+                    type="text"
+                    placeholder="例如：客户端导表"
+                    @input="markSyncWorkspaceDirty()"
+                  />
+                </div>
+
+                <div class="sw-settings-path-row">
+                  <div class="sw-settings-field">
+                    <span class="sw-settings-field-label">脚本软件路径</span>
+                    <input
+                      class="sw-settings-input"
+                      v-model="profile.script_executable_path"
+                      type="text"
+                      placeholder="选择转表工具可执行程序"
+                      @input="markSyncWorkspaceDirty()"
+                    />
+                  </div>
+                  <button class="sw-settings-browse-btn" type="button" @click="chooseSyncExecutable(profile.id)">浏览</button>
+                </div>
+
+                <div class="sw-settings-path-row">
+                  <div class="sw-settings-field">
+                    <span class="sw-settings-field-label">脚本输出目录</span>
+                    <input
+                      class="sw-settings-input"
+                      v-model="profile.output_root"
+                      type="text"
+                      placeholder="选择时间戳目录的根路径"
+                      @input="markSyncWorkspaceDirty()"
+                    />
+                  </div>
+                  <button class="sw-settings-browse-btn" type="button" @click="chooseSyncDirectory(profile.id, 'output_root', '选择脚本输出目录')">浏览</button>
+                </div>
+
+                <div class="sw-settings-path-row">
+                  <div class="sw-settings-field">
+                    <span class="sw-settings-field-label">项目目标路径</span>
+                    <input
+                      class="sw-settings-input"
+                      v-model="profile.target_path"
+                      type="text"
+                      placeholder="选择 SVN 更新与文件同步目录"
+                      @input="markSyncWorkspaceDirty()"
+                    />
+                  </div>
+                  <button class="sw-settings-browse-btn" type="button" @click="chooseSyncDirectory(profile.id, 'target_path', '选择项目目标路径')">浏览</button>
+                </div>
+
+                <div class="sw-settings-profile-actions">
+                  <button class="sw-settings-action-btn" :disabled="syncWorkspaceRunning" @click="setDefaultSyncProfile(profile.id)">
+                    {{ profile.id === syncWorkspaceDefaultProfileId ? '已是默认' : '设为默认' }}
+                  </button>
+                  <button class="sw-settings-action-btn danger" :disabled="syncWorkspaceRunning" @click="removeSyncProfile(profile.id)">删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <footer class="sw-settings-footer">
+          <button class="sw-settings-cancel-btn" @click="closeSyncSettings">取消</button>
+          <button class="sw-settings-save-btn" :disabled="syncWorkspaceRunning" @click="saveSyncWorkspaceSettings(); closeSyncSettings()">保存</button>
+        </footer>
+      </section>
+    </div>
+  </main>
+
+  <div v-else-if="isMenuWindow" class="pet-menu-root">
     <section class="pet-menu-window">
-      <button @click="contextAction('open')">🔍 打开搜索</button>
-      <button @click="contextAction('settings')">⚙ 设置</button>
+      <button class="pet-menu-btn" @click="contextAction('open')">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 1 0 4.031 11.604l4.433 4.433 1.414-1.414-4.433-4.433A6.5 6.5 0 0 0 10.5 4Zm0 2a4.5 4.5 0 1 1 0 9a4.5 4.5 0 0 1 0-9Z" fill="currentColor"/></svg>
+        <span>打开搜索</span>
+      </button>
+      <button class="pet-menu-btn" @click="contextAction('sync')">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l3.5 3.5-1.414 1.414L13 7.828V15h-2V7.828L9.914 8.914 8.5 7.5 12 4Zm0 16l-3.5-3.5 1.414-1.414L11 16.172V9h2v7.172l1.086-1.086 1.414 1.414L12 20Zm7-10h2v8a2 2 0 0 1-2 2h-4v-2h4v-8ZM3 6a2 2 0 0 1 2-2h4v2H5v8H3V6Z" fill="currentColor"/></svg>
+        <span>文件同步</span>
+      </button>
+      <button class="pet-menu-btn" @click="contextAction('settings')">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.036-.31.06-.62.06-.94s-.024-.63-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.12 7.12 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 14.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54c-.58.23-1.12.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L3.7 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.046.31-.07.62-.07.94s.024.63.07.94L3.82 14.16a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.05.72 1.63.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54c.58-.23 1.12-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" fill="currentColor"/></svg>
+        <span>设置</span>
+      </button>
       <hr />
-      <button class="danger" @click="contextAction('exit')">⏻ 退出程序</button>
+      <button class="pet-menu-btn danger" @click="contextAction('exit')">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 3h2v10h-2V3Zm1 18a9 9 0 0 1-6.364-15.364l1.414 1.414A7 7 0 1 0 16.95 7.05l1.414-1.414A9 9 0 0 1 12 21Z" fill="currentColor"/></svg>
+        <span>退出程序</span>
+      </button>
     </section>
   </div>
 
@@ -6095,14 +6837,14 @@ function escapeRegExp(str) {
               <div class="settings-section-lead">
                 <div>
                   <h4 class="glass-card-title">界面主题</h4>
-                  <p class="settings-section-copy">只控制交互强调色，不参与天气皮肤着色。</p>
+                  <p class="settings-section-copy">{{ weatherEnabled ? '选择主题将关闭天气效果，恢复为普通面板。' : '切换界面主题和强调色。' }}</p>
                 </div>
               </div>
               <div class="settings-theme-grid">
                 <button
                   v-for="t in THEMES"
                   :key="t.id"
-                  :class="['settings-theme-card', { active: themeId === t.id }]"
+                  :class="['settings-theme-card', { active: preferredThemeId === t.id, 'weather-active': settingsDraft.weatherEnabled }]"
                   @click="applyTheme(t.id)"
                 >
                   <span class="settings-theme-swatch" :style="{ background: t.color }"></span>
@@ -6132,7 +6874,7 @@ function escapeRegExp(str) {
               <div class="settings-section-lead">
                 <div>
                   <h4 class="glass-card-title">天气皮肤</h4>
-                  <p class="settings-section-copy">与 UI 主题独立，只改天空、粒子和玻璃氛围。</p>
+                  <p class="settings-section-copy">{{ settingsDraft.weatherEnabled ? '天气模式使用默认浅色主题，关闭后恢复 ' + preferredThemeName + '。' : '开启后面板将使用天气皮肤和默认浅色主题。' }}</p>
                 </div>
               </div>
               <div style="display:flex;flex-direction:column;gap:14px">

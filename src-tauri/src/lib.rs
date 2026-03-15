@@ -1,3 +1,6 @@
+pub mod sync_workspace;
+
+use crate::sync_workspace::{execute_sync_pipeline, SyncProfile, SyncRunOutcome};
 use chrono::{DateTime, Local, Utc};
 use enigo::{Enigo, Keyboard, Settings};
 use mouse_position::mouse_position::Mouse;
@@ -31,6 +34,7 @@ struct AppState {
     cancel_seq: Arc<AtomicU64>,
     panel_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     quick_date_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
+    sync_window_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     pet_hitbox: Arc<std::sync::RwLock<Option<PetHitbox>>>,
     pet_cursor_ignored: Arc<std::sync::atomic::AtomicBool>,
 }
@@ -41,6 +45,7 @@ impl Default for AppState {
             cancel_seq: Arc::new(AtomicU64::new(0)),
             panel_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             quick_date_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
+            sync_window_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             pet_hitbox: Arc::new(std::sync::RwLock::new(None)),
             pet_cursor_ignored: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
@@ -54,15 +59,20 @@ struct RuntimeState {
     panel_open_settings_pending: bool,
     registered_hotkey: Option<String>,
     registered_quick_date_hotkey: Option<String>,
+    registered_sync_window_hotkey: Option<String>,
+    sync_running: bool,
 }
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const PANEL_WINDOW_LABEL: &str = "panel";
 const PET_MENU_WINDOW_LABEL: &str = "pet_menu";
+const SYNC_WORKSPACE_WINDOW_LABEL: &str = "sync_workspace";
 const PANEL_WIDTH: f64 = 620.0;
 const PANEL_HEIGHT: f64 = 760.0;
-const PET_MENU_WIDTH: f64 = 186.0;
-const PET_MENU_HEIGHT: f64 = 132.0;
+const PET_MENU_WIDTH: f64 = 212.0;
+const PET_MENU_HEIGHT: f64 = 176.0;
+const SYNC_WORKSPACE_WIDTH: f64 = 760.0;
+const SYNC_WORKSPACE_HEIGHT: f64 = 640.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -109,6 +119,8 @@ struct PersonalConfig {
     widget_mode: String,
     hotkey: String,
     quick_date_hotkey: String,
+    #[serde(default = "default_sync_window_hotkey")]
+    sync_window_hotkey: String,
     always_on_top: bool,
     auto_start: bool,
     ui_scale: f32,
@@ -133,6 +145,12 @@ struct PersonalConfig {
     weather_enabled: bool,
     #[serde(default = "default_background_opacity")]
     background_opacity: f32,
+    #[serde(default)]
+    sync_profiles: Vec<SyncProfile>,
+    #[serde(default)]
+    default_sync_profile_id: Option<String>,
+    #[serde(default)]
+    last_used_sync_profile_id: Option<String>,
 }
 fn default_true() -> bool {
     true
@@ -143,6 +161,9 @@ fn default_background_opacity() -> f32 {
 fn default_always_on_top_hotkey() -> String {
     "P".into()
 }
+fn default_sync_window_hotkey() -> String {
+    "Ctrl+Alt+S".into()
+}
 fn default_pet_skin() -> String {
     "eagle".into()
 }
@@ -152,6 +173,7 @@ impl Default for PersonalConfig {
             widget_mode: "tray".into(),
             hotkey: "Ctrl+Shift+F".into(),
             quick_date_hotkey: "F9".into(),
+            sync_window_hotkey: "Ctrl+Alt+S".into(),
             always_on_top: true,
             auto_start: false,
             ui_scale: 1.0,
@@ -179,6 +201,9 @@ impl Default for PersonalConfig {
             custom_font: None,
             weather_enabled: true,
             background_opacity: 1.0,
+            sync_profiles: Vec::new(),
+            default_sync_profile_id: None,
+            last_used_sync_profile_id: None,
         }
     }
 }
@@ -1138,6 +1163,150 @@ async fn register_quick_date_hotkey(
 }
 
 #[tauri::command]
+async fn register_sync_window_hotkey(
+    hotkey: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let normalized = normalize_hotkey_for_plugin(&hotkey)?;
+    let (previous, panel_hotkey, quick_date_hotkey) = {
+        let rt = state.runtime.lock().await;
+        (
+            rt.registered_sync_window_hotkey.clone(),
+            rt.registered_hotkey.clone(),
+            rt.registered_quick_date_hotkey.clone(),
+        )
+    };
+    if panel_hotkey.as_deref() == Some(normalized.as_str())
+        || quick_date_hotkey.as_deref() == Some(normalized.as_str())
+    {
+        return Err("同步窗口快捷键不能与其他快捷键重复".into());
+    }
+    let manager = app.global_shortcut();
+
+    if previous.as_deref() == Some(normalized.as_str())
+        && manager.is_registered(normalized.as_str())
+    {
+        return Ok(normalized);
+    }
+
+    manager
+        .register(normalized.as_str())
+        .map_err(|e| format!("同步窗口快捷键注册失败: {e}"))?;
+
+    if let Some(prev) = previous {
+        if prev != normalized {
+            let _ = manager.unregister(prev.as_str());
+        }
+    }
+
+    *state.sync_window_hotkey_sync.write().unwrap() = Some(normalized.clone());
+    state.runtime.lock().await.registered_sync_window_hotkey = Some(normalized.clone());
+    Ok(normalized)
+}
+
+#[tauri::command]
+async fn show_sync_workspace_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = ensure_sync_workspace_window(&app)?;
+    window.show().map_err(|e| e.to_string())?;
+    let _ = window.unminimize();
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn hide_sync_workspace_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(SYNC_WORKSPACE_WINDOW_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn toggle_sync_workspace_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = ensure_sync_workspace_window(&app)?;
+    let visible = window.is_visible().map_err(|e| e.to_string())?;
+    if visible {
+        window.hide().map_err(|e| e.to_string())?;
+    } else {
+        window.show().map_err(|e| e.to_string())?;
+        let _ = window.unminimize();
+        window.set_focus().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn run_sync_profile(
+    profile_id: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<SyncRunOutcome, String> {
+    let profile = {
+        let mut rt = state.runtime.lock().await;
+        if rt.sync_running {
+            return Err("当前已有同步任务在进行中，请等待完成后再试".into());
+        }
+        let profile = rt
+            .config
+            .personal
+            .sync_profiles
+            .iter()
+            .find(|item| item.id == profile_id)
+            .cloned()
+            .ok_or_else(|| format!("未找到同步配置: {profile_id}"))?;
+        rt.sync_running = true;
+        profile
+    };
+
+    let app_handle = app.clone();
+    let profile_for_run = profile.clone();
+    let outcome_result = tauri::async_runtime::spawn_blocking(move || {
+        execute_sync_pipeline(&app_handle, &profile_for_run)
+    })
+    .await
+    .map_err(|e| format!("同步任务线程失败: {e}"))?;
+
+    let finished_at = Utc::now().to_rfc3339();
+    let mut rt = state.runtime.lock().await;
+    rt.sync_running = false;
+    rt.config.personal.last_used_sync_profile_id = Some(profile_id.clone());
+
+    match outcome_result {
+        Ok(outcome) => {
+            if let Some(item) = rt
+                .config
+                .personal
+                .sync_profiles
+                .iter_mut()
+                .find(|item| item.id == profile_id)
+            {
+                item.last_run_status = "success".into();
+                item.last_run_at = Some(finished_at);
+                item.last_run_summary = outcome.summary.clone();
+            }
+            save_config_to_disk(&app, &rt.config)?;
+            Ok(outcome)
+        }
+        Err(error) => {
+            if let Some(item) = rt
+                .config
+                .personal
+                .sync_profiles
+                .iter_mut()
+                .find(|item| item.id == profile_id)
+            {
+                item.last_run_status = "error".into();
+                item.last_run_at = Some(finished_at);
+                item.last_run_summary = summarize_sync_error(&error);
+            }
+            save_config_to_disk(&app, &rt.config)?;
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
 async fn show_panel_window(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -1353,6 +1522,41 @@ fn ensure_panel_window(
     Ok(panel)
 }
 
+fn ensure_sync_workspace_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(SYNC_WORKSPACE_WINDOW_LABEL) {
+        return Ok(window);
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        SYNC_WORKSPACE_WINDOW_LABEL,
+        WebviewUrl::App("index.html".into()),
+    )
+    .title("DB Scout Sync")
+    .inner_size(SYNC_WORKSPACE_WIDTH, SYNC_WORKSPACE_HEIGHT)
+    .min_inner_size(680.0, 500.0)
+    .resizable(true)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(false)
+    .skip_taskbar(false)
+    .visible(false)
+    .drag_and_drop(false)
+    .build()
+    .map_err(|e| format!("failed to create sync workspace window: {e}"))?;
+
+    let window_for_events = window.clone();
+    window.on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let _ = window_for_events.hide();
+        }
+    });
+
+    Ok(window)
+}
+
 fn ensure_pet_menu_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
     if let Some(menu) = app.get_webview_window(PET_MENU_WINDOW_LABEL) {
         return Ok(menu);
@@ -1501,6 +1705,24 @@ fn open_panel_from_global_shortcut(app: tauri::AppHandle) {
             }
         }
     });
+}
+
+fn open_sync_workspace_from_global_shortcut(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        if let Ok(window) = ensure_sync_workspace_window(&app) {
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+        }
+    });
+}
+
+fn summarize_sync_error(error: &str) -> String {
+    error
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.trim().to_string())
+        .unwrap_or_else(|| "同步失败".to_string())
 }
 
 fn input_today_date_globally() -> Result<(), String> {
@@ -2154,11 +2376,17 @@ pub fn run() {
                     let state = app.state::<AppState>().inner().clone();
                     let panel_hotkey = state.panel_hotkey_sync.read().unwrap().clone();
                     let quick_date_hotkey = state.quick_date_hotkey_sync.read().unwrap().clone();
+                    let sync_window_hotkey = state.sync_window_hotkey_sync.read().unwrap().clone();
 
                     if quick_date_hotkey.as_deref() == Some(triggered.as_str()) {
                         if let Err(e) = input_today_date_globally() {
                             eprintln!("failed to input quick date: {e}");
                         }
+                        return;
+                    }
+
+                    if sync_window_hotkey.as_deref() == Some(triggered.as_str()) {
+                        open_sync_workspace_from_global_shortcut(app.clone());
                         return;
                     }
 
@@ -2178,6 +2406,9 @@ pub fn run() {
             let mut loaded = load_config_from_disk(&app.handle()).unwrap_or_default();
             if loaded.personal.quick_date_hotkey.trim().is_empty() {
                 loaded.personal.quick_date_hotkey = "F9".into();
+            }
+            if loaded.personal.sync_window_hotkey.trim().is_empty() {
+                loaded.personal.sync_window_hotkey = default_sync_window_hotkey();
             }
             let pet_position = loaded.personal.pet_position.clone();
             let registered_hotkey = match normalize_hotkey_for_plugin(&loaded.personal.hotkey) {
@@ -2214,15 +2445,40 @@ pub fn run() {
                         None
                     }
                 };
+            let registered_sync_window_hotkey =
+                match normalize_hotkey_for_plugin(&loaded.personal.sync_window_hotkey) {
+                    Ok(shortcut) => {
+                        if registered_hotkey.as_deref() == Some(shortcut.as_str())
+                            || registered_quick_date_hotkey.as_deref() == Some(shortcut.as_str())
+                        {
+                            eprintln!("sync workspace hotkey conflicts with existing hotkeys, skipped");
+                            None
+                        } else {
+                            match app.global_shortcut().register(shortcut.as_str()) {
+                                Ok(()) => Some(shortcut),
+                                Err(e) => {
+                                    eprintln!("failed to register sync workspace hotkey: {e}");
+                                    None
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("invalid sync workspace hotkey config: {e}");
+                        None
+                    }
+                };
             // Sync-write hotkey values for the global shortcut handler
             *st.panel_hotkey_sync.write().unwrap() = registered_hotkey.clone();
             *st.quick_date_hotkey_sync.write().unwrap() = registered_quick_date_hotkey.clone();
+            *st.sync_window_hotkey_sync.write().unwrap() = registered_sync_window_hotkey.clone();
             tauri::async_runtime::block_on(async move {
                 let mut rt = st.runtime.lock().await;
                 rt.config = loaded;
                 rt.schema_cache = mock_schema_cache();
                 rt.registered_hotkey = registered_hotkey;
                 rt.registered_quick_date_hotkey = registered_quick_date_hotkey;
+                rt.registered_sync_window_hotkey = registered_sync_window_hotkey;
             });
 
             if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
@@ -2306,6 +2562,11 @@ pub fn run() {
             save_config,
             register_hotkey,
             register_quick_date_hotkey,
+            register_sync_window_hotkey,
+            show_sync_workspace_window,
+            hide_sync_workspace_window,
+            toggle_sync_workspace_window,
+            run_sync_profile,
             show_panel_window,
             hide_panel_window,
             toggle_panel_window,
