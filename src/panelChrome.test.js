@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   buildPanelTabs,
+  describeTableFolderChip,
   normalizeBackgroundOpacity,
 } from "./panelChrome.js";
 
@@ -48,7 +49,53 @@ test("buildPanelTabs keeps starred tables first and marks the active opened tab"
 
 test("normalizeBackgroundOpacity clamps values into the supported range", () => {
   assert.equal(normalizeBackgroundOpacity(undefined), 1);
-  assert.equal(normalizeBackgroundOpacity("0.1"), 0.45);
-  assert.equal(normalizeBackgroundOpacity(0.7), 0.7);
+  assert.equal(normalizeBackgroundOpacity("0.1"), 0.75);
+  assert.equal(normalizeBackgroundOpacity(0.7), 0.75);
   assert.equal(normalizeBackgroundOpacity(1.5), 1);
+});
+
+test("describeTableFolderChip hides the badge when no folder contains the table", () => {
+  const chip = describeTableFolderChip("users", []);
+
+  assert.deepEqual(chip, {
+    label: "",
+    extraCount: 0,
+    title: "",
+    visible: false,
+    uncategorized: true,
+    folders: [],
+  });
+});
+
+test("describeTableFolderChip returns the first folder label when the table belongs to one folder", () => {
+  const chip = describeTableFolderChip("users", [
+    { id: "folder-a", name: "core", tables: ["users", "orders"] },
+    { id: "folder-b", name: "reports", tables: ["reports"] },
+  ]);
+
+  assert.deepEqual(chip, {
+    label: "core",
+    extraCount: 0,
+    title: "core",
+    visible: true,
+    uncategorized: false,
+    folders: ["core"],
+  });
+});
+
+test("describeTableFolderChip exposes the first folder and overflow count when the table belongs to many folders", () => {
+  const chip = describeTableFolderChip("users", [
+    { id: "folder-a", name: "core", tables: ["users"] },
+    { id: "folder-b", name: "account", tables: ["users", "roles"] },
+    { id: "folder-c", name: "archive", tables: ["logs", "users"] },
+  ]);
+
+  assert.deepEqual(chip, {
+    label: "core",
+    extraCount: 2,
+    title: "core · account · archive",
+    visible: true,
+    uncategorized: false,
+    folders: ["core", "account", "archive"],
+  });
 });

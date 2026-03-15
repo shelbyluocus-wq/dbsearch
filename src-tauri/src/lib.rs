@@ -67,10 +67,10 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const PANEL_WINDOW_LABEL: &str = "panel";
 const PET_MENU_WINDOW_LABEL: &str = "pet_menu";
 const SYNC_WORKSPACE_WINDOW_LABEL: &str = "sync_workspace";
-const PANEL_WIDTH: f64 = 620.0;
-const PANEL_HEIGHT: f64 = 760.0;
+const PANEL_WIDTH: f64 = 780.0;
+const PANEL_HEIGHT: f64 = 860.0;
 const PET_MENU_WIDTH: f64 = 212.0;
-const PET_MENU_HEIGHT: f64 = 176.0;
+const PET_MENU_HEIGHT: f64 = 184.0;
 const SYNC_WORKSPACE_WIDTH: f64 = 760.0;
 const SYNC_WORKSPACE_HEIGHT: f64 = 640.0;
 
@@ -1488,7 +1488,7 @@ fn ensure_panel_window(
     )
     .title("DB Scout")
     .inner_size(PANEL_WIDTH, PANEL_HEIGHT)
-    .min_inner_size(520.0, 620.0)
+    .min_inner_size(680.0, 720.0)
     .resizable(true)
     .decorations(false)
     .transparent(true)
@@ -1696,12 +1696,17 @@ fn open_panel_from_global_shortcut(app: tauri::AppHandle) {
     });
 }
 
-fn open_sync_workspace_from_global_shortcut(app: tauri::AppHandle) {
+fn toggle_sync_workspace_from_global_shortcut(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         if let Ok(window) = ensure_sync_workspace_window(&app) {
-            let _ = window.show();
-            let _ = window.unminimize();
-            let _ = window.set_focus();
+            let visible = window.is_visible().unwrap_or(false);
+            if visible {
+                let _ = window.hide();
+            } else {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
         }
     });
 }
@@ -2375,7 +2380,7 @@ pub fn run() {
                     }
 
                     if sync_window_hotkey.as_deref() == Some(triggered.as_str()) {
-                        open_sync_workspace_from_global_shortcut(app.clone());
+                        toggle_sync_workspace_from_global_shortcut(app.clone());
                         return;
                     }
 

@@ -8,6 +8,7 @@ import "./styles.css";
 import { WeatherEngine } from "./weatherEngine.js";
 import {
   buildPanelTabs,
+  describeTableFolderChip,
   normalizeBackgroundOpacity,
   panelChromeConstants,
 } from "./panelChrome.js";
@@ -39,7 +40,6 @@ const settingsTabDir = ref(0);
 const SETTINGS_TABS = [
   { id: 'connection', label: '连接' },
   { id: 'shortcuts',  label: '快捷键' },
-  { id: 'search',     label: '搜索' },
   { id: 'appearance', label: '外观' },
 ];
 const tableOpen = ref(false);
@@ -276,7 +276,7 @@ const skyOpacities = computed(() => {
 const skyBackgroundFilter = computed(() => {
   const cat = weatherSkinState.value.category
   const dark = cat === 'cloudy' || cat === 'lightRain' || cat === 'heavyRain'
-  return dark ? 'brightness(0.5) saturate(0.8)' : 'brightness(1) saturate(1)'
+  return dark ? 'brightness(0.62) saturate(0.85)' : 'brightness(1) saturate(1)'
 })
 
 const weatherQuality = ref('high') // 'high' = CSS effects, 'low' = canvas engine
@@ -289,6 +289,15 @@ const WEATHER_ICON_MAP = {
   heavyRain: '⛈️',
   snow: '❄️',
 };
+
+const UNCATEGORIZED_TABLE_FOLDER_CHIP = Object.freeze({
+  label: "",
+  extraCount: 0,
+  title: "",
+  visible: false,
+  uncategorized: true,
+  folders: [],
+});
 
 // ── CSS weather effect elements (computed arrays for v-for) ──
 const effectiveWeatherType = computed(() => weatherSkinState.value.category)
@@ -398,6 +407,7 @@ const slashQuery = ref("");
 const slashActiveIndex = ref(0);
 const tableTabs = ref([]);
 const activeTableTabId = ref("");
+const tableTabsCompressed = ref(false);
 const recentTables = ref([]);
 const recentTabsDropdownOpen = ref(false);
 const RECENT_TABLES_MAX = 10;
@@ -445,6 +455,7 @@ let columnResizeState = null;
 let tableLayoutObserver = null;
 let tableLayoutRaf = 0;
 let tablePageSizeAdjustToken = 0;
+let tableTabsMeasureRaf = 0;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const IDLE_STATE_CHANGE_MS = 6 * 1000;
 const UI_SCALE_MIN = 0.8;
@@ -1225,6 +1236,18 @@ const tableOptionCommentMap = computed(() => {
   });
   return out;
 });
+const tableFolderChipMap = computed(() => {
+  const out = new Map();
+  for (const folder of tableFolders.value) {
+    const tables = Array.isArray(folder?.tables) ? folder.tables : [];
+    for (const tableName of tables) {
+      const key = String(tableName || "").trim().toLowerCase();
+      if (!key || out.has(key)) continue;
+      out.set(key, describeTableFolderChip(tableName, tableFolders.value));
+    }
+  }
+  return out;
+});
 
 function normalizeDbTemplateIdentity(db = {}) {
   return {
@@ -1913,6 +1936,12 @@ function getTableComment(tableName) {
   return tableOptionCommentMap.value.get(key) || "";
 }
 
+function getTableFolderChip(tableName) {
+  const key = String(tableName || "").trim().toLowerCase();
+  if (!key) return UNCATEGORIZED_TABLE_FOLDER_CHIP;
+  return tableFolderChipMap.value.get(key) || UNCATEGORIZED_TABLE_FOLDER_CHIP;
+}
+
 function onKeywordInputKeydown(event) {
   if (!slashModeOpen.value && event.key === "/" && !event.ctrlKey && !event.metaKey && !event.altKey) {
     event.preventDefault();
@@ -2192,6 +2221,52 @@ function scrollTableTabIntoView(tabId, behavior = "smooth") {
     } else if (tabRect.right > wrapRect.right) {
       wrap.scrollBy({ left: tabRect.right - wrapRect.right + 8, behavior });
     }
+  });
+}
+
+function stopTableTabsCompressionMeasure() {
+  if (tableTabsMeasureRaf) {
+    cancelAnimationFrame(tableTabsMeasureRaf);
+    tableTabsMeasureRaf = 0;
+  }
+  if (!tableOpen.value) {
+    tableTabsCompressed.value = false;
+  }
+}
+
+function scheduleTableTabsCompressionMeasure() {
+  stopTableTabsCompressionMeasure();
+  if (!tableOpen.value) {
+    tableTabsCompressed.value = false;
+    return;
+  }
+  tableTabsMeasureRaf = requestAnimationFrame(() => {
+    tableTabsMeasureRaf = 0;
+    const wrap = tableTabsRef.value;
+    if (!(wrap instanceof HTMLElement)) {
+      tableTabsCompressed.value = false;
+      return;
+    }
+    const tabEls = [...wrap.querySelectorAll(".table-tab")].filter((item) => item instanceof HTMLElement);
+    if (tabEls.length === 0) {
+      tableTabsCompressed.value = false;
+      return;
+    }
+    const addButton = wrap.querySelector(".table-tab-add");
+    const gapWidth = 8;
+    let desiredWidth = addButton instanceof HTMLElement ? addButton.offsetWidth : 0;
+
+    tabEls.forEach((tabEl) => {
+      const labelEl = tabEl.querySelector(".table-tab-label");
+      const closeEl = tabEl.querySelector(".table-tab-close");
+      const labelWidth = labelEl instanceof HTMLElement ? labelEl.scrollWidth : 0;
+      const closeWidth = closeEl instanceof HTMLElement ? closeEl.offsetWidth + 8 : 0;
+      const naturalWidth = Math.min(220, Math.max(132, labelWidth + closeWidth + 36));
+      desiredWidth += naturalWidth;
+    });
+
+    desiredWidth += Math.max(0, tabEls.length) * gapWidth;
+    tableTabsCompressed.value = desiredWidth > wrap.clientWidth;
   });
 }
 
@@ -2800,6 +2875,7 @@ onBeforeUnmount(() => {
   clearTimeout(idleStateTimer);
   clearTimeout(copyToastTimer);
   clearTimeout(uiScalePersistTimer);
+  stopTableTabsCompressionMeasure();
   stopTableLayoutObserver();
   stopColumnResize();
 });
@@ -3074,6 +3150,19 @@ watch(tableDetailView, (view) => {
   scheduleAdaptiveTablePageSize();
 });
 
+watch(
+  () => [tableOpen.value, tableTabs.value.length, activeTableTabId.value, config.personal.ui_scale],
+  async ([open]) => {
+    if (!open) {
+      stopTableTabsCompressionMeasure();
+      tableTabsCompressed.value = false;
+      return;
+    }
+    await nextTick();
+    scheduleTableTabsCompressionMeasure();
+  },
+);
+
 watch(slashCandidates, (items) => {
   if (items.length === 0) {
     slashActiveIndex.value = 0;
@@ -3245,6 +3334,7 @@ function onWindowWheel(event) {
 
 function onWindowResize() {
   scheduleAdaptiveTablePageSize();
+  scheduleTableTabsCompressionMeasure();
 }
 
 function formatTodayYmdByLocalTime() {
@@ -5044,6 +5134,8 @@ function doCloseTableDialog() {
   snapshotActiveTableTab();
   resetTableFindState();
   clearColumnWidths();
+  stopTableTabsCompressionMeasure();
+  tableTabsCompressed.value = false;
   stopTableLayoutObserver();
   exitTableFullscreen().catch(() => {});
   closeTableCommandPalette();
@@ -5436,7 +5528,7 @@ async function contextAction(action) {
     if (action === "open") {
       await invoke("show_panel_window", { openSettings: false });
     } else if (action === "sync") {
-      await invoke("show_sync_workspace_window");
+      await invoke("toggle_sync_workspace_window");
     } else if (action === "settings") {
       await invoke("show_panel_window", { openSettings: true });
     } else if (action === "exit") {
@@ -5777,39 +5869,41 @@ function escapeRegExp(str) {
       <div class="panel-content-viewport">
       <div class="panel-content-scale" :style="contentScaleStyle">
       <section class="search-panel search-panel--demo">
-        <div class="search-input-wrap">
-          <span class="search-icon">🔍</span>
-          <div v-if="selectedTables.length > 0" class="selected-table-chips">
-            <span v-for="tableName in selectedTables" :key="tableName" class="selected-table-chip">
-              <code>{{ tableName }}</code>
-              <button title="移除表范围" @click.stop="removeSelectedTable(tableName)">✕</button>
-            </span>
+        <div class="search-composer">
+          <div class="search-input-wrap">
+            <span class="search-icon">🔍</span>
+            <div v-if="selectedTables.length > 0" class="selected-table-chips">
+              <span v-for="tableName in selectedTables" :key="tableName" class="selected-table-chip">
+                <code>{{ tableName }}</code>
+                <button title="移除表范围" @click.stop="removeSelectedTable(tableName)">✕</button>
+              </span>
+            </div>
+            <input id="keywordInput" v-model="keyword" type="text" placeholder="输入关键词搜索表名、字段名、备注..." autocomplete="off" @keydown="onKeywordInputKeydown" />
+            <button id="historyBtn" class="ghost-btn" @click="toggleHistory">历史</button>
           </div>
-          <input id="keywordInput" v-model="keyword" type="text" placeholder="输入关键词搜索表名、字段名、备注..." autocomplete="off" @keydown="onKeywordInputKeydown" />
-          <button id="historyBtn" class="ghost-btn" @click="toggleHistory">历史</button>
-        </div>
 
-        <div v-if="slashModeOpen" id="slashDropdown" class="slash-dropdown">
-          <div class="slash-query">选择表范围 / {{ slashQuery || "..." }}</div>
-          <button
-            v-for="(item, idx) in slashCandidates"
-            :key="item.table_name"
-            :id="`slash-item-${idx}`"
-            :class="['slash-item', { active: idx === slashActiveIndex }]"
-            @click="selectSlashCandidate(item)"
-          >
-            <div class="main">{{ item.table_name }}</div>
-            <div class="sub">{{ item.table_comment || "-" }}</div>
-          </button>
-          <div v-if="slashCandidates.length === 0" class="muted p-12">暂无可选表</div>
-        </div>
-
-        <div v-if="historyOpen && !slashModeOpen" id="historyDropdown" class="history-dropdown">
-          <div v-for="item in history" :key="item" class="history-row">
-            <button class="history-item" @click="chooseHistory(item)">{{ item }}</button>
-            <button class="history-delete" title="删除该记录" @click.stop="removeHistory(item)">✕</button>
+          <div v-if="slashModeOpen" id="slashDropdown" class="slash-dropdown">
+            <div class="slash-query">选择表范围 / {{ slashQuery || "..." }}</div>
+            <button
+              v-for="(item, idx) in slashCandidates"
+              :key="item.table_name"
+              :id="`slash-item-${idx}`"
+              :class="['slash-item', { active: idx === slashActiveIndex }]"
+              @click="selectSlashCandidate(item)"
+            >
+              <div class="main">{{ item.table_name }}</div>
+              <div class="sub">{{ item.table_comment || "-" }}</div>
+            </button>
+            <div v-if="slashCandidates.length === 0" class="muted p-12">暂无可选表</div>
           </div>
-          <div v-if="history.length === 0" class="muted p-12">暂无历史</div>
+
+          <div v-if="historyOpen && !slashModeOpen" id="historyDropdown" class="history-dropdown">
+            <div v-for="item in history" :key="item" class="history-row">
+              <button class="history-item" @click="chooseHistory(item)">{{ item }}</button>
+              <button class="history-delete" title="删除该记录" @click.stop="removeHistory(item)">✕</button>
+            </div>
+            <div v-if="history.length === 0" class="muted p-12">暂无历史</div>
+          </div>
         </div>
 
         <div class="actions-row">
@@ -5899,7 +5993,14 @@ function escapeRegExp(str) {
                 <span :class="['star-btn', { starred: starredTables.has(item.table_name) }]" @click.stop="toggleStar(item.table_name)" title="星标">{{ starredTables.has(item.table_name) ? '★' : '☆' }}</span>
                 <div class="main" v-html="renderHighlighted(item.table_name)"></div>
                 <div class="sub">{{ getTableComment(item.table_name) || "-" }}</div>
-                <span class="badge">TABLE</span>
+                <span
+                  v-if="getTableFolderChip(item.table_name).visible"
+                  :class="['badge', 'folder-badge', { 'is-uncategorized': getTableFolderChip(item.table_name).uncategorized }]"
+                  :title="getTableFolderChip(item.table_name).title"
+                >
+                  <span class="folder-badge-label">{{ getTableFolderChip(item.table_name).label }}</span>
+                  <span v-if="getTableFolderChip(item.table_name).extraCount > 0" class="folder-badge-more">+{{ getTableFolderChip(item.table_name).extraCount }}</span>
+                </span>
                 <span class="copy-icon-btn" @click.stop="copyText(item.table_name)" title="复制">⎘</span>
               </button>
               <button
@@ -6358,7 +6459,14 @@ function escapeRegExp(str) {
           <template v-if="resultZoomType === 'table'">
             <button v-for="item in resultZoomItems" :key="`${item.table_name}-${item.match_type}-${item.matched_text}`" class="list-item" @click="openFromMeta(item)">
               <div class="main" v-html="renderHighlighted(item.table_name)"></div>
-              <span class="badge">TABLE</span>
+              <span
+                v-if="getTableFolderChip(item.table_name).visible"
+                :class="['badge', 'folder-badge', { 'is-uncategorized': getTableFolderChip(item.table_name).uncategorized }]"
+                :title="getTableFolderChip(item.table_name).title"
+              >
+                <span class="folder-badge-label">{{ getTableFolderChip(item.table_name).label }}</span>
+                <span v-if="getTableFolderChip(item.table_name).extraCount > 0" class="folder-badge-more">+{{ getTableFolderChip(item.table_name).extraCount }}</span>
+              </span>
               <span class="copy-icon-btn" role="button" tabindex="0" @click.stop="copyText(item.table_name)" title="复制">⎘</span>
             </button>
           </template>
@@ -6418,7 +6526,7 @@ function escapeRegExp(str) {
           <button class="icon-btn" @click="closeTableDialog">✕</button>
         </div>
       </header>
-      <section ref="tableTabsRef" class="table-tabs" @wheel="onTableTabsWheel">
+      <section ref="tableTabsRef" :class="['table-tabs', { 'is-compressed': tableTabsCompressed }]" @wheel="onTableTabsWheel">
         <button
           v-for="tab in tableTabs"
           :key="tab.id"
@@ -6821,20 +6929,8 @@ function escapeRegExp(str) {
             </div>
           </div>
 
-          <!-- Tab 2: 搜索 -->
-          <div v-else-if="settingsTab === 2" key="search" class="settings-tab-pane">
-            <div class="glass-card">
-              <h4 class="glass-card-title">搜索设置</h4>
-              <div class="glass-form-grid">
-                <label class="glass-form-label full">排除表（正则，逗号分隔）<input v-model="settingsDraft.excludeTables" type="text" class="glass-input" /></label>
-                <label class="glass-form-label">单表超时(秒)<input v-model.number="settingsDraft.perTableTimeoutSec" type="number" class="glass-input" /></label>
-                <label class="glass-form-label">每表最大行数<input v-model.number="settingsDraft.perTableMaxRows" type="number" class="glass-input" /></label>
-              </div>
-            </div>
-          </div>
-
-          <!-- Tab 3: 外观 -->
-          <div v-else-if="settingsTab === 3" key="appearance" class="settings-tab-pane">
+          <!-- Tab 2: 外观 -->
+          <div v-else-if="settingsTab === 2" key="appearance" class="settings-tab-pane">
             <div class="glass-card glass-card-weather-control">
               <div class="settings-section-lead">
                 <div>

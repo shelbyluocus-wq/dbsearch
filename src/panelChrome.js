@@ -1,4 +1,4 @@
-const BACKGROUND_OPACITY_MIN = 0.60;
+const BACKGROUND_OPACITY_MIN = 0.75;
 const BACKGROUND_OPACITY_MAX = 1;
 const BACKGROUND_OPACITY_STEP = 0.05;
 
@@ -33,6 +33,7 @@ export function buildPanelTabs({
   for (const tableName of starredTables) {
     const normalized = normalizeTableName(tableName);
     if (!normalized || seen.has(normalized)) continue;
+
     const item = {
       key: `starred:${normalized}`,
       tableName: String(tableName).trim(),
@@ -41,6 +42,7 @@ export function buildPanelTabs({
       opened: false,
       active: false,
     };
+
     seen.set(normalized, item);
     merged.push(item);
   }
@@ -53,7 +55,10 @@ export function buildPanelTabs({
     if (existing) {
       existing.opened = true;
       existing.tabId = existing.tabId || String(tab.id || "");
-      existing.active = existing.active || existing.tabId === activeTableTabId || String(tab.id || "") === activeTableTabId;
+      existing.active =
+        existing.active ||
+        existing.tabId === activeTableTabId ||
+        String(tab.id || "") === activeTableTabId;
       continue;
     }
 
@@ -65,11 +70,55 @@ export function buildPanelTabs({
       opened: true,
       active: String(tab.id || "") === activeTableTabId,
     };
+
     seen.set(normalized, item);
     merged.push(item);
   }
 
   return merged;
+}
+
+export function describeTableFolderChip(tableName, tableFolders = []) {
+  const normalizedTable = normalizeTableName(tableName);
+  if (!normalizedTable) {
+    return {
+      label: "",
+      extraCount: 0,
+      title: "",
+      visible: false,
+      uncategorized: true,
+      folders: [],
+    };
+  }
+
+  const folders = [];
+  for (const folder of Array.isArray(tableFolders) ? tableFolders : []) {
+    const folderName = String(folder?.name || "").trim();
+    const tables = Array.isArray(folder?.tables) ? folder.tables : [];
+    if (!folderName) continue;
+    if (!tables.some((item) => normalizeTableName(item) === normalizedTable)) continue;
+    folders.push(folderName);
+  }
+
+  if (folders.length === 0) {
+    return {
+      label: "",
+      extraCount: 0,
+      title: "",
+      visible: false,
+      uncategorized: true,
+      folders: [],
+    };
+  }
+
+  return {
+    label: folders[0],
+    extraCount: Math.max(0, folders.length - 1),
+    title: folders.join(" · "),
+    visible: true,
+    uncategorized: false,
+    folders,
+  };
 }
 
 export const panelChromeConstants = {
