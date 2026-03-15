@@ -1189,12 +1189,6 @@ async fn register_sync_window_hotkey(
         .register(normalized.as_str())
         .map_err(|e| format!("同步窗口快捷键注册失败: {e}"))?;
 
-    if let Some(prev) = previous {
-        if prev != normalized {
-            let _ = manager.unregister(prev.as_str());
-        }
-    }
-
     *state.sync_window_hotkey_sync.write().unwrap() = Some(normalized.clone());
     state.runtime.lock().await.registered_sync_window_hotkey = Some(normalized.clone());
     Ok(normalized)

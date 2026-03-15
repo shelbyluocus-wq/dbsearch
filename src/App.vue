@@ -2627,6 +2627,7 @@ onMounted(async () => {
   }
 
   if (isSyncWorkspaceWindow.value) {
+    await loadConfig();
     loadSyncWorkspaceSettingsFromConfig();
     if (isTauriWindow) {
       unlistenSyncWorkspaceProgress = await listen("sync-workspace-progress", (event) => {
