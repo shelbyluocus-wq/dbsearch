@@ -1101,21 +1101,17 @@ async fn register_hotkey(
     }
     let manager = app.global_shortcut();
 
-    if previous.as_deref() == Some(normalized.as_str())
-        && manager.is_registered(normalized.as_str())
-    {
+    if previous.as_deref() == Some(normalized.as_str()) {
         return Ok(normalized);
+    }
+
+    if let Some(ref prev) = previous {
+        let _ = manager.unregister(prev.as_str());
     }
 
     manager
         .register(normalized.as_str())
         .map_err(|e| format!("快捷键注册失败: {e}"))?;
-
-    if let Some(prev) = previous {
-        if prev != normalized {
-            let _ = manager.unregister(prev.as_str());
-        }
-    }
 
     *state.panel_hotkey_sync.write().unwrap() = Some(normalized.clone());
     state.runtime.lock().await.registered_hotkey = Some(normalized.clone());
@@ -1141,21 +1137,17 @@ async fn register_quick_date_hotkey(
     }
     let manager = app.global_shortcut();
 
-    if previous.as_deref() == Some(normalized.as_str())
-        && manager.is_registered(normalized.as_str())
-    {
+    if previous.as_deref() == Some(normalized.as_str()) {
         return Ok(normalized);
+    }
+
+    if let Some(ref prev) = previous {
+        let _ = manager.unregister(prev.as_str());
     }
 
     manager
         .register(normalized.as_str())
         .map_err(|e| format!("日期快捷键注册失败: {e}"))?;
-
-    if let Some(prev) = previous {
-        if prev != normalized {
-            let _ = manager.unregister(prev.as_str());
-        }
-    }
 
     *state.quick_date_hotkey_sync.write().unwrap() = Some(normalized.clone());
     state.runtime.lock().await.registered_quick_date_hotkey = Some(normalized.clone());
@@ -1184,10 +1176,13 @@ async fn register_sync_window_hotkey(
     }
     let manager = app.global_shortcut();
 
-    if previous.as_deref() == Some(normalized.as_str())
-        && manager.is_registered(normalized.as_str())
-    {
+    if previous.as_deref() == Some(normalized.as_str()) {
         return Ok(normalized);
+    }
+
+    // Unregister previous before registering the new one
+    if let Some(ref prev) = previous {
+        let _ = manager.unregister(prev.as_str());
     }
 
     manager
