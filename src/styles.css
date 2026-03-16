@@ -2120,6 +2120,9 @@ mark {
   min-height: 400px;
   max-width: calc(100vw - 12px);
   max-height: calc(100vh - 12px);
+  background: rgba(245, 245, 247, 0.96);
+  backdrop-filter: blur(20px) saturate(1.2);
+  -webkit-backdrop-filter: blur(20px) saturate(1.2);
 }
 
 .table-modal.fullscreen {

@@ -4,7 +4,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save, open } from "@tauri-apps/plugin-dialog";
-import { openPath } from "@tauri-apps/plugin-opener";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import "./styles.css";
 import { WeatherEngine } from "./weatherEngine.js";
 import {
@@ -957,7 +957,7 @@ function syncWorkspaceHeaderPointerDown(event) {
 async function openSyncTargetDir() {
   if (!activeSyncProfile.value?.target_path) return;
   try {
-    await openPath(activeSyncProfile.value.target_path);
+    await revealItemInDir(activeSyncProfile.value.target_path);
   } catch (e) {
     console.warn("Failed to open path:", e);
   }
@@ -5827,7 +5827,7 @@ function escapeRegExp(str) {
         <button
           class="header-weather header-weather--action"
           :title="`${FIXED_WEATHER_CITY} ${weatherHeaderLabel} ${weatherTemp}°C`"
-          @click="openSettings()"
+          @click="openSettings('appearance')"
         >
           <span class="header-weather-icon">{{ weatherHeaderIcon }}</span>
           <span class="header-weather-city">{{ FIXED_WEATHER_CITY }}</span>
