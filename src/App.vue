@@ -4,6 +4,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save, open } from "@tauri-apps/plugin-dialog";
+import { openPath } from "@tauri-apps/plugin-opener";
 import "./styles.css";
 import { WeatherEngine } from "./weatherEngine.js";
 import {
@@ -36,7 +37,6 @@ const FIXED_WEATHER_CITY = "厦门市";
 
 const settingsOpen = ref(false);
 const settingsTab = ref(-1);
-const settingsTabDir = ref(0);
 const SETTINGS_TABS = [
   { id: 'connection', label: '连接', icon: '\u{1F5C4}' },
   { id: 'shortcuts',  label: '快捷键', icon: '\u2328' },
@@ -952,6 +952,15 @@ function syncWorkspaceHeaderPointerDown(event) {
     return;
   }
   getCurrentWindow().startDragging().catch(() => {});
+}
+
+async function openSyncTargetDir() {
+  if (!activeSyncProfile.value?.target_path) return;
+  try {
+    await openPath(activeSyncProfile.value.target_path);
+  } catch (e) {
+    console.warn("Failed to open path:", e);
+  }
 }
 
 // Custom skin editor state
@@ -3927,9 +3936,15 @@ function panelHeaderPointerDown(event) {
   getCurrentWindow().startDragging().catch(() => {});
 }
 
+function modalHeaderPointerDown(event) {
+  if (event.button !== 0 || !isTauriWindow) return;
+  const target = event.target;
+  if (target instanceof Element && target.closest("button, input, textarea, select, label, a")) return;
+  getCurrentWindow().startDragging().catch(() => {});
+}
+
 function switchSettingsTab(index) {
   if (index < -1 || index >= SETTINGS_TABS.length || index === settingsTab.value) return;
-  settingsTabDir.value = index > settingsTab.value ? 1 : -1;
   settingsTab.value = index;
 }
 
@@ -3937,7 +3952,6 @@ function openSettings(target = null) {
   const targetIndex = target === null ? -1 : (typeof target === "number"
     ? target
     : Math.max(0, SETTINGS_TABS.findIndex((tab) => tab.id === target)));
-  settingsTabDir.value = 0;
   settingsTab.value = targetIndex;
   syncSettingsDraftDbFields();
   settingsDraft.hotkey = normalizeHotkeyDisplay(config.personal.hotkey);
@@ -5813,7 +5827,7 @@ function escapeRegExp(str) {
         <button
           class="header-weather header-weather--action"
           :title="`${FIXED_WEATHER_CITY} ${weatherHeaderLabel} ${weatherTemp}°C`"
-          @click="openSettings('appearance')"
+          @click="openSettings()"
         >
           <span class="header-weather-icon">{{ weatherHeaderIcon }}</span>
           <span class="header-weather-city">{{ FIXED_WEATHER_CITY }}</span>
@@ -5822,7 +5836,7 @@ function escapeRegExp(str) {
         <div class="header-actions">
           <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
           <span class="db-name" id="dbName">{{ dbConnected ? dbName : '未连接' }}</span>
-          <button class="icon-btn icon-btn-subtle" title="设置" @click="openSettings('connection')">⚙</button>
+          <button class="icon-btn icon-btn-subtle" title="设置" @click="openSettings()">⚙</button>
         </div>
       </header>
 
@@ -6113,12 +6127,6 @@ function escapeRegExp(str) {
             ▶
           </button>
         </div>
-        <div class="panel-footer-dots" aria-hidden="true">
-          <span class="panel-dot is-active"></span>
-          <span class="panel-dot" :class="{ 'is-active': weatherEnabled }"></span>
-          <span class="panel-dot" :class="{ 'is-active': dbConnected }"></span>
-          <span class="panel-dot" :style="{ background: weatherPresentation.accentColor }"></span>
-        </div>
       </div>
     </section>
   </main>
@@ -6231,6 +6239,14 @@ function escapeRegExp(str) {
             @click="runActiveSyncProfile"
           >
             {{ syncWorkspaceRunning ? '⏳ 同步中...' : '▶ 运行同步' }}
+          </button>
+          <button
+            v-if="activeSyncProfile.target_path"
+            class="sw-open-dir-btn"
+            @click="openSyncTargetDir"
+            title="在资源管理器中打开项目目标路径"
+          >
+            📂 打开目标目录
           </button>
         </div>
 
@@ -6505,8 +6521,8 @@ function escapeRegExp(str) {
       editGlowPhase !== 'none' ? `edit-glow-${editGlowPhase}` : '',
       { 'edit-mode-active': editMode },
     ]">
-      <header class="modal-header" @pointerdown="panelHeaderPointerDown">
-        <div class="modal-title-row" @pointerdown.stop>
+      <header class="modal-header" @pointerdown="modalHeaderPointerDown">
+        <div class="modal-title-row">
           <h3
             class="modal-table-title"
             data-schema-key="table_name"
@@ -6842,7 +6858,7 @@ function escapeRegExp(str) {
   <div v-if="settingsOpen" class="dialog-mask-v2" @click.self="closeSettings" @dragover.prevent @drop.prevent="onDropConfig">
     <section class="settings-modal-v2">
       <!-- Header -->
-      <header class="settings-header-v2">
+      <header class="settings-header-v2" @pointerdown="modalHeaderPointerDown">
         <div style="display:flex;align-items:center;gap:8px">
           <button v-if="settingsTab >= 0" class="settings-back-btn" @click="settingsTab = -1" title="返回">
             <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -6861,27 +6877,8 @@ function escapeRegExp(str) {
         </div>
       </div>
 
-      <!-- Cover Flow Nav (when a tab is selected) -->
-      <nav v-if="settingsTab >= 0" class="coverflow-nav">
-        <button class="coverflow-arrow" :disabled="settingsTab === 0" @click="switchSettingsTab(settingsTab - 1)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-        <div class="coverflow-track">
-          <button v-for="(tab, i) in SETTINGS_TABS" :key="tab.id"
-                  :class="['coverflow-item', {
-                    active: i === settingsTab,
-                    prev: i === settingsTab - 1,
-                    next: i === settingsTab + 1,
-                    hidden: Math.abs(i - settingsTab) > 1
-                  }]"
-                  @click="switchSettingsTab(i)">
-            {{ tab.label }}
-          </button>
-        </div>
-        <button class="coverflow-arrow" :disabled="settingsTab === SETTINGS_TABS.length - 1" @click="switchSettingsTab(settingsTab + 1)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M5 3L9 7L5 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
-      </nav>
-
       <!-- Tab Content -->
       <div v-if="settingsTab >= 0" class="settings-body-v2 settings-detail-expand">
-        <Transition :name="settingsTabDir > 0 ? 'stab-left' : 'stab-right'" mode="out-in">
           <!-- Tab 0: 连接 -->
           <div v-if="settingsTab === 0" key="connection" class="settings-tab-pane">
             <div class="glass-card">
@@ -7071,7 +7068,6 @@ function escapeRegExp(str) {
               </label>
             </div>
           </div>
-        </Transition>
       </div>
 
       <!-- Footer -->
@@ -7088,7 +7084,7 @@ function escapeRegExp(str) {
   <!-- 皮肤编辑器弹窗 -->
   <div v-if="skinEditorOpen" class="dialog-mask" @click.self="closeSkinEditor">
     <section class="modal-card skin-editor-modal">
-      <header class="modal-header">
+      <header class="modal-header" @pointerdown="modalHeaderPointerDown">
         <h3>{{ skinEditorEditingId ? '编辑皮肤' : '创建自定义皮肤' }}</h3>
         <button class="icon-btn" @click="closeSkinEditor">✕</button>
       </header>
