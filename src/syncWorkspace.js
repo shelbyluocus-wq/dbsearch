@@ -1,10 +1,57 @@
-const DEFAULT_SYNC_WINDOW_HOTKEY = "Ctrl+S";
+const DEFAULT_SYNC_WINDOW_HOTKEY = "Shift+S";
 const STATUS_LABELS = {
   idle: "未执行",
   running: "进行中",
   success: "上次成功",
   error: "上次失败",
 };
+
+const HOTKEY_ALIASES = {
+  "?": "/",
+  _: "-",
+  "+": "=",
+  ":": ";",
+  "\"": "'",
+  "<": ",",
+  ">": ".",
+  "{": "[",
+  "}": "]",
+  "|": "\\",
+  "~": "`",
+  slash: "/",
+  question: "/",
+  backslash: "\\",
+  pipe: "\\",
+  semicolon: ";",
+  colon: ";",
+  quote: "'",
+  apostrophe: "'",
+  comma: ",",
+  lessthan: ",",
+  period: ".",
+  dot: ".",
+  greaterthan: ".",
+  minus: "-",
+  underscore: "-",
+  dash: "-",
+  hyphen: "-",
+  equal: "=",
+  equals: "=",
+  plus: "=",
+  bracketleft: "[",
+  leftbracket: "[",
+  braceleft: "[",
+  bracketright: "]",
+  rightbracket: "]",
+  braceright: "]",
+  backquote: "`",
+  grave: "`",
+};
+
+function resolveHotkeyAlias(token) {
+  const normalized = String(token || "").trim().toLowerCase();
+  return HOTKEY_ALIASES[normalized] || "";
+}
 
 function normalizeHotkeyToken(token) {
   const raw = String(token || "").trim();
@@ -16,17 +63,42 @@ function normalizeHotkeyToken(token) {
   if (lower === "meta" || lower === "super" || lower === "win" || lower === "command" || lower === "cmd") {
     return "Meta";
   }
-  if (lower.length === 1) return lower.toUpperCase();
-  if (lower.startsWith("f") && lower.slice(1).match(/^\d+$/)) {
-    return `F${lower.slice(1)}`;
-  }
-  if (lower.startsWith("arrow")) {
-    return `Arrow${lower.slice(5, 6).toUpperCase()}${lower.slice(6)}`;
-  }
-  return raw.slice(0, 1).toUpperCase() + raw.slice(1);
+
+  const aliased = resolveHotkeyAlias(lower) || resolveHotkeyAlias(raw);
+  if (aliased) return aliased;
+
+  if (/^f\d+$/i.test(raw)) return raw.toUpperCase();
+  if (raw.length === 1 && /[a-z0-9]/i.test(raw)) return raw.toUpperCase();
+
+  const named = {
+    escape: "Esc",
+    esc: "Esc",
+    enter: "Enter",
+    tab: "Tab",
+    space: "Space",
+    backspace: "Backspace",
+    delete: "Delete",
+    del: "Delete",
+    insert: "Insert",
+    ins: "Insert",
+    home: "Home",
+    end: "End",
+    pageup: "PageUp",
+    pagedown: "PageDown",
+    arrowup: "Up",
+    arrowdown: "Down",
+    arrowleft: "Left",
+    arrowright: "Right",
+    up: "Up",
+    down: "Down",
+    left: "Left",
+    right: "Right",
+  };
+
+  return named[lower] || `${raw.slice(0, 1).toUpperCase()}${raw.slice(1)}`;
 }
 
-function normalizeHotkeyDisplay(value) {
+export function normalizeHotkeyDisplay(value) {
   return String(value || "")
     .split("+")
     .map((part) => normalizeHotkeyToken(part))
@@ -59,6 +131,49 @@ function normalizeSyncProfile(profile, index) {
     last_run_at: profile?.last_run_at ? String(profile.last_run_at) : "",
     last_run_summary: profile?.last_run_summary ? String(profile.last_run_summary) : "",
   };
+}
+
+function mapEventKeyToHotkey(event = {}) {
+  const key = String(event.key || "");
+  const code = String(event.code || "");
+  const lower = key.toLowerCase();
+  const lowerCode = code.toLowerCase();
+
+  if (["control", "shift", "alt", "meta", "os"].includes(lower)) {
+    return "";
+  }
+
+  const aliased = resolveHotkeyAlias(lower) || resolveHotkeyAlias(lowerCode);
+  if (aliased) return aliased;
+
+  if (/^f\d+$/i.test(key)) return key.toUpperCase();
+  if (key.length === 1) {
+    if (key === " ") return "Space";
+    if (/[a-z0-9]/i.test(key)) return key.toUpperCase();
+  }
+
+  return normalizeHotkeyToken(code || key);
+}
+
+export function buildHotkeyFromEvent(event = {}) {
+  const parts = [];
+  if (event.ctrlKey) parts.push("Ctrl");
+  const key = mapEventKeyToHotkey(event);
+  const shiftedSymbolChars = new Set(["?", "_", "+", ":", "\"", "<", ">", "|", "~"]);
+  const shouldFoldShift = event.shiftKey
+    && shiftedSymbolChars.has(String(event.key || ""))
+    && /^[^\w\s]$/.test(key);
+  if (event.shiftKey && !shouldFoldShift) parts.push("Shift");
+  if (event.altKey) parts.push("Alt");
+  if (event.metaKey) parts.push("Meta");
+  if (key) parts.push(key);
+  return normalizeHotkeyDisplay(parts.join("+"));
+}
+
+export function isEventMatchingHotkey(event, hotkey) {
+  const target = normalizeHotkeyDisplay(hotkey);
+  if (!target) return false;
+  return buildHotkeyFromEvent(event) === target;
 }
 
 export function normalizeSyncWindowHotkey(value) {
@@ -130,4 +245,19 @@ export function reduceSyncTimeline(timeline = [], event = {}) {
       timestamp: event.timestamp || new Date().toISOString(),
     },
   ];
+}
+
+export function appendTimelineByProfile(timelineByProfile = {}, event = {}) {
+  const profileId = String(event.profileId || event.profile_id || "").trim();
+  if (!profileId) return { ...timelineByProfile };
+  return {
+    ...timelineByProfile,
+    [profileId]: reduceSyncTimeline(timelineByProfile[profileId] || [], event),
+  };
+}
+
+export function getTimelineForProfile(timelineByProfile = {}, profileId = "") {
+  const key = String(profileId || "").trim();
+  if (!key) return [];
+  return Array.isArray(timelineByProfile[key]) ? timelineByProfile[key] : [];
 }

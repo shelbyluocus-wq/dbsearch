@@ -1128,11 +1128,14 @@ mark {
   height: 100%;
   padding: 0;
   background: transparent;
+  overflow-y: auto;
 }
 
 .pet-menu-window {
   width: 100%;
   height: 100%;
+  min-height: 100%;
+  box-sizing: border-box;
   display: flex;
   flex-direction: column;
   gap: 4px;
@@ -1143,6 +1146,14 @@ mark {
   padding: 10px 8px;
   backdrop-filter: blur(18px);
   -webkit-backdrop-filter: blur(18px);
+}
+
+.pet-menu-window.reduced-transparency {
+  background: color-mix(in srgb, var(--surface-menu) 94%, var(--bg-panel) 6%);
+  border-color: color-mix(in srgb, var(--border-glass) 72%, transparent);
+  box-shadow: 0 18px 36px rgba(15, 23, 42, 0.14);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
 }
 
 .pet-menu-window button {
@@ -1173,6 +1184,10 @@ mark {
   height: 1px;
   background: rgba(255, 255, 255, 0.08);
   margin: 2px 8px;
+}
+
+.pet-menu-window.reduced-transparency hr {
+  background: color-mix(in srgb, var(--border-glass) 72%, transparent);
 }
 
 .pet-menu-btn {
@@ -2125,6 +2140,18 @@ mark {
   -webkit-backdrop-filter: blur(20px) saturate(1.2);
 }
 
+.table-modal.reduced-transparency {
+  background: color-mix(in srgb, var(--glass-bg) 74%, var(--bg-panel) 26%);
+  border-color: color-mix(in srgb, var(--glass-border) 62%, var(--border-glass) 38%);
+  outline-color: color-mix(in srgb, var(--glass-border-outer) 42%, transparent);
+  color: var(--text-main);
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--glass-highlight) 88%, transparent),
+    0 24px 64px rgba(15, 23, 42, 0.18);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 .table-modal.fullscreen {
   width: calc(100vw - 12px) !important;
   height: calc(100vh - 12px) !important;
@@ -2271,6 +2298,75 @@ mark {
   padding: 8px 12px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
   background: rgba(248, 250, 252, 0.96);
+}
+
+.table-modal.reduced-transparency .modal-header,
+.table-modal.reduced-transparency .table-tabs,
+.table-modal.reduced-transparency .table-find-bar {
+  background: color-mix(in srgb, var(--surface-nav) 92%, var(--bg-panel) 8%);
+  border-color: color-mix(in srgb, var(--border-glass) 72%, transparent);
+}
+
+.table-modal.reduced-transparency .table-tab {
+  background: color-mix(in srgb, var(--surface-nav-tab) 90%, var(--bg-panel) 10%);
+  border-color: color-mix(in srgb, var(--surface-nav-tab-border) 82%, transparent);
+  color: var(--text-sub);
+}
+
+.table-modal.reduced-transparency .table-tab.active {
+  background: color-mix(in srgb, var(--surface-nav-tab-active) 88%, var(--bg-panel) 12%);
+  border-color: color-mix(in srgb, var(--surface-nav-tab-active-border) 86%, transparent);
+  color: var(--accent-text);
+}
+
+.table-modal.reduced-transparency .table-tab:hover,
+.table-modal.reduced-transparency .table-tab-add:hover {
+  background: color-mix(in srgb, var(--accent-soft) 72%, var(--surface-nav-tab) 28%);
+}
+
+.table-modal.reduced-transparency .table-tab-add {
+  background: color-mix(in srgb, var(--surface-nav-tab) 90%, var(--bg-panel) 10%);
+}
+
+.table-modal.reduced-transparency .table-find-bar input,
+.table-modal.reduced-transparency .edit-cell-input,
+.table-modal.reduced-transparency .edit-date-body input {
+  background: color-mix(in srgb, var(--bg-input) 90%, var(--bg-panel) 10%);
+  border-color: color-mix(in srgb, var(--accent-line) 76%, var(--border-glass) 24%);
+  color: var(--text-main);
+}
+
+.table-modal.reduced-transparency .table-content,
+.table-modal.reduced-transparency .schema-box,
+.table-modal.reduced-transparency .data-box {
+  background: color-mix(in srgb, var(--bg-panel) 94%, transparent);
+  color: var(--text-main);
+}
+
+.table-modal.reduced-transparency .table-comment,
+.table-modal.reduced-transparency .edit-toolbar,
+.table-modal.reduced-transparency .edit-no-pk-warning,
+.table-modal.reduced-transparency .edit-save-warn {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.table-modal.reduced-transparency .edit-toolbar {
+  background: color-mix(in srgb, var(--surface-nav) 90%, var(--bg-panel) 10%);
+  border-top-color: color-mix(in srgb, var(--border-glass) 72%, transparent);
+}
+
+.table-modal.reduced-transparency .data-table th {
+  background: color-mix(in srgb, var(--surface-card-strong) 90%, var(--bg-panel) 10%);
+  color: var(--text-main);
+}
+
+.table-modal.reduced-transparency .data-table td,
+.table-modal.reduced-transparency .schema-table th,
+.table-modal.reduced-transparency .schema-table td,
+.table-modal.reduced-transparency .data-table th {
+  border-bottom-color: color-mix(in srgb, var(--border-glass) 58%, transparent);
+  border-right-color: color-mix(in srgb, var(--border-glass) 34%, transparent);
 }
 
 .table-command-mask {
@@ -8238,6 +8334,106 @@ mark {
 .widget--demo-shell[data-weather-skin="snow"] .demo-result-card,
 .widget--demo-shell[data-weather-skin="sunny"] .demo-result-card {
   background: rgba(255, 255, 255, calc(0.56 * var(--panel-opacity)));
+}
+
+.panel-shell.reduced-transparency .widget--demo-shell,
+.panel-shell .widget--demo-shell.reduced-transparency {
+  --demo-text-main: var(--text-main);
+  --demo-text-sub: var(--text-sub);
+  --demo-text-dim: var(--text-dim);
+  --demo-card-bg: color-mix(in srgb, var(--surface-card) 88%, var(--bg-panel) 12%);
+  --demo-card-hover: color-mix(in srgb, var(--surface-card-hover) 78%, var(--surface-card) 22%);
+  --demo-card-border: color-mix(in srgb, var(--surface-card-border) 76%, transparent);
+  --demo-card-shadow: 0 18px 40px rgba(15, 23, 42, 0.16);
+  --demo-sidebar-bg: color-mix(in srgb, var(--surface-nav) 88%, var(--bg-panel) 12%);
+  --demo-header-bg: color-mix(in srgb, var(--surface-nav) 90%, var(--bg-panel) 10%);
+  --demo-footer-bg: color-mix(in srgb, var(--surface-nav) 86%, var(--bg-panel) 14%);
+  --demo-input-bg: color-mix(in srgb, var(--bg-input) 82%, var(--bg-panel) 18%);
+  --demo-input-border: color-mix(in srgb, var(--accent-line) 78%, var(--border-glass) 22%);
+  --glass-neutral: color-mix(in srgb, var(--bg-glass) 74%, var(--bg-panel) 26%);
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  border-color: color-mix(in srgb, var(--border-glass) 76%, transparent);
+  box-shadow: 0 24px 56px rgba(15, 23, 42, 0.18);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.panel-shell.reduced-transparency .widget--demo-shell .widget-header,
+.panel-shell.reduced-transparency .widget--demo-shell .result-sidebar,
+.panel-shell.reduced-transparency .widget--demo-shell .results,
+.panel-shell.reduced-transparency .widget--demo-shell .search-input-wrap,
+.panel-shell.reduced-transparency .widget--demo-shell .result-group,
+.panel-shell.reduced-transparency .widget--demo-shell .panel-footer,
+.panel-shell.reduced-transparency .widget--demo-shell .org-toolbar,
+.panel-shell.reduced-transparency .table-command-header,
+.panel-shell.reduced-transparency .table-command-input-wrap,
+.panel-shell.reduced-transparency .table-command-palette {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.panel-shell.reduced-transparency .widget--demo-shell .widget-header,
+.panel-shell.reduced-transparency .widget--demo-shell .panel-footer,
+.panel-shell.reduced-transparency .widget--demo-shell .org-toolbar,
+.panel-shell.reduced-transparency .table-command-header,
+.panel-shell.reduced-transparency .table-command-input-wrap,
+.panel-shell.reduced-transparency .table-command-palette {
+  background: color-mix(in srgb, var(--surface-nav) 90%, var(--bg-panel) 10%);
+  border-color: color-mix(in srgb, var(--border-glass) 72%, transparent);
+}
+
+.panel-shell.reduced-transparency .widget--demo-shell .result-sidebar,
+.panel-shell.reduced-transparency .widget--demo-shell .results {
+  background: color-mix(in srgb, var(--bg-panel) 90%, var(--surface-nav) 10%);
+}
+
+.panel-shell.reduced-transparency .widget--demo-shell .search-input-wrap,
+.panel-shell.reduced-transparency .table-command-input-wrap input {
+  background: color-mix(in srgb, var(--bg-input) 82%, var(--bg-panel) 18%);
+  border-color: color-mix(in srgb, var(--accent-line) 78%, var(--border-glass) 22%);
+  color: var(--text-main);
+  box-shadow: none;
+}
+
+.panel-shell.reduced-transparency .widget--demo-shell .result-group {
+  background: color-mix(in srgb, var(--surface-card) 88%, var(--bg-panel) 12%);
+  border-color: color-mix(in srgb, var(--surface-card-border) 76%, transparent);
+}
+
+.panel-shell.reduced-transparency .widget--demo-shell .demo-result-card:hover,
+.panel-shell.reduced-transparency .widget--demo-shell .demo-result-card.kb-active,
+.panel-shell.reduced-transparency .widget--demo-shell .result-group:hover {
+  background: color-mix(in srgb, var(--surface-card-hover) 82%, var(--surface-card) 18%);
+}
+
+.panel-shell.reduced-transparency .widget--demo-shell .sidebar-item--demo,
+.panel-shell.reduced-transparency .widget--demo-shell .sidebar-count,
+.panel-shell.reduced-transparency .widget--demo-shell .copy-icon-btn,
+.panel-shell.reduced-transparency .widget--demo-shell .star-btn {
+  color: var(--demo-text-sub);
+}
+
+.panel-shell.reduced-transparency .table-command-main {
+  color: var(--text-main);
+}
+
+.panel-shell.reduced-transparency .table-command-sub,
+.panel-shell.reduced-transparency .table-command-input-wrap input::placeholder {
+  color: var(--text-sub);
+}
+
+.panel-shell.reduced-transparency .table-command-palette {
+  color-scheme: light dark;
+}
+
+[data-theme="midnight"] .panel-shell.reduced-transparency .widget--demo-shell,
+[data-theme="midnight"] .panel-shell .widget--demo-shell.reduced-transparency {
+  --demo-card-shadow: 0 20px 42px rgba(2, 6, 23, 0.26);
+}
+
+[data-theme="typewrite_dark"] .panel-shell.reduced-transparency .widget--demo-shell,
+[data-theme="typewrite_dark"] .panel-shell .widget--demo-shell.reduced-transparency {
+  --demo-card-shadow: 0 20px 42px rgba(20, 16, 12, 0.24);
 }
 
 .settings-section-lead {

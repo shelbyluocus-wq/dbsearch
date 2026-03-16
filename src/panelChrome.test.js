@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import * as panelChrome from "./panelChrome.js";
 import {
   buildPanelTabs,
   describeTableFolderChip,
@@ -98,4 +99,48 @@ test("describeTableFolderChip exposes the first folder and overflow count when t
     uncategorized: false,
     folders: ["core", "account", "archive"],
   });
+});
+
+test("rankTableSearchCandidates reuses fuzzy acronym scoring for abbreviated table lookups", () => {
+  assert.equal(typeof panelChrome.rankTableSearchCandidates, "function");
+
+  const ranked = panelChrome.rankTableSearchCandidates("gdp", [
+    { table_name: "group_detail_profile", table_comment: "group profile details" },
+    { table_name: "goodsprop", table_comment: "goods property table" },
+    { table_name: "gold_deposit_pool", table_comment: "deposit pool" },
+  ]);
+
+  assert.equal(ranked[0].table_name, "goodsprop");
+  assert.deepEqual(
+    ranked.map((item) => item.table_name),
+    ["goodsprop", "gold_deposit_pool", "group_detail_profile"],
+  );
+});
+
+test("shouldUseReducedTransparencyMode excludes settings surfaces but enables other windows", () => {
+  assert.equal(typeof panelChrome.shouldUseReducedTransparencyMode, "function");
+  assert.equal(
+    panelChrome.shouldUseReducedTransparencyMode({
+      reduceTransparency: true,
+      isSettingsSurface: false,
+      windowLabel: "panel",
+    }),
+    true,
+  );
+  assert.equal(
+    panelChrome.shouldUseReducedTransparencyMode({
+      reduceTransparency: true,
+      isSettingsSurface: true,
+      windowLabel: "panel",
+    }),
+    false,
+  );
+  assert.equal(
+    panelChrome.shouldUseReducedTransparencyMode({
+      reduceTransparency: false,
+      isSettingsSurface: false,
+      windowLabel: "pet_menu",
+    }),
+    false,
+  );
 });

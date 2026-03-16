@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, Window } from "@tauri-apps/api/window";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import "./styles.css";
 import { WeatherEngine } from "./weatherEngine.js";
@@ -11,6 +11,8 @@ import {
   describeTableFolderChip,
   normalizeBackgroundOpacity,
   panelChromeConstants,
+  rankTableSearchCandidates,
+  shouldUseReducedTransparencyMode,
 } from "./panelChrome.js";
 import {
   getWeatherPresentation,
@@ -18,13 +20,18 @@ import {
   resolveWeatherSkinState,
 } from "./weatherSkin.js";
 import {
+  appendTimelineByProfile,
+  buildHotkeyFromEvent,
   describeSyncProfileCard,
+  getTimelineForProfile,
+  isEventMatchingHotkey,
+  normalizeHotkeyDisplay,
   normalizeSyncWindowHotkey,
   normalizeSyncWorkspaceSettings,
-  reduceSyncTimeline,
   resolveSyncTargetDirectoryOpenRequest,
   resolveSyncProfileSelection,
 } from "./syncWorkspace.js";
+import { runPetMenuAction } from "./petMenu.js";
 
 const isTauriWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const windowLabel = ref("browser");
@@ -163,7 +170,7 @@ const config = reactive({
     widget_mode: "tray",
     hotkey: "Ctrl+Shift+F",
     quick_date_hotkey: "F9",
-    sync_window_hotkey: "Ctrl+S",
+    sync_window_hotkey: "Shift+S",
     always_on_top: true,
     auto_start: false,
     ui_scale: 1.0,
@@ -191,13 +198,14 @@ const config = reactive({
     custom_font: null,
     weather_enabled: true,
     background_opacity: 1.0,
+    reduce_transparency_mode: false,
     sync_profiles: [],
     default_sync_profile_id: null,
     last_used_sync_profile_id: null,
   },
 });
 
-const syncWorkspaceHotkey = ref("Ctrl+S");
+const syncWorkspaceHotkey = ref("Shift+S");
 const syncWorkspaceProfiles = ref([]);
 const syncWorkspaceDefaultProfileId = ref("");
 const syncWorkspaceLastUsedProfileId = ref("");
@@ -205,7 +213,7 @@ const syncWorkspaceActiveProfileId = ref("");
 const syncWorkspaceRunning = ref(false);
 const syncWorkspaceMessage = ref("");
 const syncWorkspaceMessageTone = ref("neutral");
-const syncWorkspaceTimeline = ref([]);
+const syncWorkspaceTimelineByProfile = ref({});
 const syncWorkspaceRunProfileId = ref("");
 const syncWorkspaceDirty = ref(false);
 const syncSettingsOpen = ref(false);
@@ -574,6 +582,7 @@ const settingsDraft = reactive({
   customFont: null,
   weatherEnabled: true,
   backgroundOpacity: 1.0,
+  reduceTransparencyMode: false,
 });
 const backgroundOpacityPercent = computed(() =>
   `${Math.round(normalizeBackgroundOpacity(settingsDraft.backgroundOpacity) * 100)}%`,
@@ -603,18 +612,25 @@ const activeSyncProfile = computed(() =>
   syncWorkspaceProfiles.value.find((profile) => profile.id === syncWorkspaceActiveProfileId.value) || null,
 );
 const currentProfileStatusText = computed(() => {
-  if (syncWorkspaceRunning.value) return "\u540C\u6B65\u8FDB\u884C\u4E2D";
+  if (syncWorkspaceRunning.value && activeSyncProfile.value?.id === syncWorkspaceRunProfileId.value) {
+    return "\u540C\u6B65\u8FDB\u884C\u4E2D";
+  }
   const status = activeSyncProfile.value?.last_run_status || "idle";
   return SYNC_STATUS_TEXT[status] || "\u672A\u6267\u884C";
 });
 const currentProfileStatusTone = computed(() => {
-  if (syncWorkspaceRunning.value) return "running";
+  if (syncWorkspaceRunning.value && activeSyncProfile.value?.id === syncWorkspaceRunProfileId.value) {
+    return "running";
+  }
   const status = activeSyncProfile.value?.last_run_status || "idle";
   return SYNC_STATUS_TONE[status] || "idle";
 });
 const PIPELINE_STEPS = ["validate", "launch_tool", "locate_artifact", "svn_update", "copy", "finish"];
+const activeSyncWorkspaceTimeline = computed(() =>
+  getTimelineForProfile(syncWorkspaceTimelineByProfile.value, syncWorkspaceActiveProfileId.value),
+);
 const pipelineStepsView = computed(() => {
-  const timeline = syncWorkspaceTimeline.value;
+  const timeline = activeSyncWorkspaceTimeline.value;
   return PIPELINE_STEPS.map((stepKey) => {
     const entry = timeline.find((e) => e.step === stepKey);
     const status = entry ? entry.status : "pending";
@@ -643,7 +659,7 @@ const syncWorkspaceProfilesView = computed(() => {
   });
 });
 const syncWorkspaceTimelineView = computed(() =>
-  syncWorkspaceTimeline.value.map((entry, index) => ({
+  activeSyncWorkspaceTimeline.value.map((entry, index) => ({
     ...entry,
     key: `${entry.timestamp}-${entry.step}-${index}`,
     stepLabel: SYNC_STEP_LABELS[entry.step] || entry.step,
@@ -714,6 +730,11 @@ function loadSyncWorkspaceSettingsFromConfig() {
     lastUsedProfileId: syncWorkspaceLastUsedProfileId.value,
     defaultProfileId: syncWorkspaceDefaultProfileId.value,
   });
+  syncWorkspaceTimelineByProfile.value = Object.fromEntries(
+    Object.entries(syncWorkspaceTimelineByProfile.value).filter(([profileId]) =>
+      syncWorkspaceProfiles.value.some((profile) => profile.id === profileId),
+    ),
+  );
   syncWorkspaceDirty.value = false;
 }
 
@@ -796,6 +817,9 @@ function addSyncProfile() {
 
 function removeSyncProfile(profileId) {
   syncWorkspaceProfiles.value = syncWorkspaceProfiles.value.filter((profile) => profile.id !== profileId);
+  const nextTimelineByProfile = { ...syncWorkspaceTimelineByProfile.value };
+  delete nextTimelineByProfile[profileId];
+  syncWorkspaceTimelineByProfile.value = nextTimelineByProfile;
   if (syncWorkspaceDefaultProfileId.value === profileId) {
     syncWorkspaceDefaultProfileId.value = syncWorkspaceProfiles.value[0]?.id || "";
   }
@@ -870,13 +894,20 @@ function canRunSyncProfile(profile) {
 
 function handleSyncWorkspaceProgress(payload) {
   if (!payload || typeof payload !== "object") return;
-  if (syncWorkspaceRunProfileId.value && payload.profileId && payload.profileId !== syncWorkspaceRunProfileId.value) {
-    return;
+  const normalizedPayload = {
+    ...payload,
+    profileId:
+      String(payload.profileId || payload.profile_id || "").trim() ||
+      syncWorkspaceRunProfileId.value ||
+      syncWorkspaceActiveProfileId.value,
+  };
+  if (!syncWorkspaceRunProfileId.value && normalizedPayload.profileId) {
+    syncWorkspaceRunProfileId.value = normalizedPayload.profileId;
   }
-  if (!syncWorkspaceRunProfileId.value && payload.profileId) {
-    syncWorkspaceRunProfileId.value = payload.profileId;
-  }
-  syncWorkspaceTimeline.value = reduceSyncTimeline(syncWorkspaceTimeline.value, payload);
+  syncWorkspaceTimelineByProfile.value = appendTimelineByProfile(
+    syncWorkspaceTimelineByProfile.value,
+    normalizedPayload,
+  );
 }
 
 async function refreshSyncWorkspaceConfigState() {
@@ -901,7 +932,10 @@ async function runSyncProfileFromWorkspace(profileId) {
 
   syncWorkspaceRunning.value = true;
   syncWorkspaceRunProfileId.value = profileId;
-  syncWorkspaceTimeline.value = [];
+  syncWorkspaceTimelineByProfile.value = {
+    ...syncWorkspaceTimelineByProfile.value,
+    [profileId]: [],
+  };
   syncWorkspaceMessage.value = `正在执行 ${profile.name}...`;
   syncWorkspaceMessageTone.value = "running";
 
@@ -916,6 +950,7 @@ async function runSyncProfileFromWorkspace(profileId) {
     syncWorkspaceMessageTone.value = "error";
   } finally {
     syncWorkspaceRunning.value = false;
+    syncWorkspaceRunProfileId.value = "";
   }
 }
 
@@ -981,7 +1016,9 @@ const skinEditorEditingId = ref(null);
 const customSkins = ref([]);
 const skinEditorCanvasRefs = ref([]);
 
-const totalMetaCount = computed(() => results.table.length + results.column.length + results.comment.length);
+const totalMetaCount = computed(() =>
+  sortedSearchTableResults.value.length + results.column.length + results.comment.length,
+);
 const canSearchData = computed(() => dbConnected.value && keyword.value.trim().length > 0);
 const isKeywordEmpty = computed(() => keyword.value.trim().length === 0);
 // ── 表整理：持久化 ──
@@ -1182,8 +1219,17 @@ const activeResultTab = ref('全部');
 const tableTabCount = computed(() => (isKeywordEmpty.value ? defaultTableResults.value.length : sortedSearchTableResults.value.length));
 
 const sortedSearchTableResults = computed(() => {
-  const base = results.table.map((i) => ({ ...i, _type: "table" }));
-  return applyStarPinning(applyFolderFilter(sortTableItems(base, sortMode.value)));
+  if (isKeywordEmpty.value) return defaultTableResults.value;
+  const base = applyFolderFilter(
+    (Array.isArray(tableOptions.value) ? tableOptions.value : []).map((item) => ({
+      ...item,
+      match_type: "TableName",
+      matched_text: item.table_name,
+      score: 0,
+      _type: "table",
+    })),
+  );
+  return applyStarPinning(rankTableSearchCandidates(keyword.value, base));
 });
 const sortedSearchColumnResults = computed(() => {
   const base = results.column.map((i) => ({ ...i, _type: "column" }));
@@ -1310,33 +1356,10 @@ const tableSwitchCandidates = computed(() => {
   return out;
 });
 const tableCommandCandidates = computed(() => {
-  const query = tableCommandQuery.value.trim().toLowerCase();
+  const query = tableCommandQuery.value.trim();
   const base = Array.isArray(tableOptions.value) ? tableOptions.value : [];
   if (!query) return base.slice(0, TABLE_COMMAND_LIMIT);
-
-  const scored = [];
-  for (const item of base) {
-    const name = item.table_name.toLowerCase();
-    const comment = String(item.table_comment || "").toLowerCase();
-
-    if (name.startsWith(query)) {
-      scored.push({ item, score: 3000 + (1000 - name.length) });
-    } else if (name.includes(query)) {
-      scored.push({ item, score: 2000 + (1000 - name.length) });
-    } else {
-      const nameMatch = fuzzyMatch(query, name);
-      const commentMatch = fuzzyMatch(query, comment);
-      if (nameMatch.matched) {
-        scored.push({ item, score: 1000 + nameMatch.score });
-      } else if (comment.includes(query)) {
-        scored.push({ item, score: 500 });
-      } else if (commentMatch.matched) {
-        scored.push({ item, score: commentMatch.score });
-      }
-    }
-  }
-  scored.sort((a, b) => b.score - a.score);
-  return scored.map((s) => s.item).slice(0, TABLE_COMMAND_LIMIT);
+  return rankTableSearchCandidates(query, base).slice(0, TABLE_COMMAND_LIMIT);
 });
 const tableCommandHint = computed(() =>
   tableCommandSlashMode.value ? "Slash 模式 / 选择表" : "Ctrl+P 输入表名，Enter 打开",
@@ -1351,6 +1374,7 @@ const resultZoomTitle = computed(() => {
 });
 const resultZoomItems = computed(() => results[resultZoomType.value] || []);
 const petDragging = ref(false);
+const petHiddenForSession = ref(false);
 const petSpriteClasses = computed(() => ({
   searching: progress.show,
   found: petFound.value,
@@ -1498,6 +1522,12 @@ const spriteSheetStyle = computed(() => {
 });
 const hotkeyPlaceholder = "点击后按下快捷键";
 const quickDateHotkeyPlaceholder = "点击后按下快捷键";
+const reducedTransparencyEnabled = computed(() =>
+  shouldUseReducedTransparencyMode({
+    reduceTransparency: config.personal.reduce_transparency_mode,
+    windowLabel: windowLabel.value,
+  }),
+);
 const contentScaleStyle = computed(() => ({
   "--content-scale": String(normalizeUiScale(config.personal.ui_scale)),
 }));
@@ -2908,6 +2938,12 @@ watch(() => settingsDraft.backgroundOpacity, (val) => {
   }
 });
 
+watch(() => settingsDraft.reduceTransparencyMode, (val) => {
+  if (settingsOpen.value) {
+    config.personal.reduce_transparency_mode = !!val;
+  }
+});
+
 watch(() => settingsDraft.weatherEnabled, (val) => {
   if (!settingsOpen.value) return;
   if (val) {
@@ -3680,14 +3716,22 @@ function onWindowKeydown(event) {
       jumpHitRow(1).catch(() => {});
       return;
     }
-    if (lower === "w") {
-      event.preventDefault();
-      toggleTableFullscreen();
-      return;
-    }
     if (event.key === '`') {
       event.preventDefault();
       onEditToggleClick();
+      return;
+    }
+  }
+
+  if (tableOpen.value && !settingsOpen.value && !isEditableTarget(event.target) && lower === "w") {
+    if (withPrimary && !event.altKey) {
+      event.preventDefault();
+      closeTableDialog();
+      return;
+    }
+    if (!withPrimary && event.altKey) {
+      event.preventDefault();
+      closeTableDialogAndClearTabs();
       return;
     }
   }
@@ -3771,14 +3815,6 @@ async function togglePanel() {
   await invoke("toggle_panel_window", { openSettings: false });
 }
 
-function normalizeHotkeyDisplay(value) {
-  return String(value || "")
-    .split("+")
-    .map((part) => normalizeHotkeyToken(part))
-    .filter(Boolean)
-    .join("+");
-}
-
 function normalizeQuickDateHotkey(value) {
   const normalized = normalizeHotkeyDisplay(value);
   if (!normalized || isModifierOnlyHotkey(normalized)) return "F9";
@@ -3791,43 +3827,6 @@ function normalizeTemplateSwitchHotkey(value, fallback) {
   return normalized;
 }
 
-function normalizeHotkeyToken(token) {
-  const raw = String(token || "").trim();
-  if (!raw) return "";
-  const lower = raw.toLowerCase();
-  if (lower === "ctrl" || lower === "control") return "Ctrl";
-  if (lower === "shift") return "Shift";
-  if (lower === "alt" || lower === "option") return "Alt";
-  if (lower === "meta" || lower === "win" || lower === "super" || lower === "command" || lower === "cmd") return "Meta";
-  if (/^f\d{1,2}$/i.test(raw)) return raw.toUpperCase();
-  if (raw.length === 1 && /[a-z0-9]/i.test(raw)) return raw.toUpperCase();
-  const named = {
-    escape: "Esc",
-    esc: "Esc",
-    enter: "Enter",
-    tab: "Tab",
-    space: "Space",
-    backspace: "Backspace",
-    delete: "Delete",
-    del: "Delete",
-    insert: "Insert",
-    ins: "Insert",
-    home: "Home",
-    end: "End",
-    pageup: "PageUp",
-    pagedown: "PageDown",
-    arrowup: "Up",
-    arrowdown: "Down",
-    arrowleft: "Left",
-    arrowright: "Right",
-    up: "Up",
-    down: "Down",
-    left: "Left",
-    right: "Right",
-  };
-  return named[lower] || raw;
-}
-
 function isModifierOnlyHotkey(value) {
   const parts = String(value || "")
     .split("+")
@@ -3836,54 +3835,6 @@ function isModifierOnlyHotkey(value) {
   if (parts.length === 0) return true;
   const modifiers = new Set(["ctrl", "control", "shift", "alt", "option", "meta", "win", "super", "command", "cmd"]);
   return parts.every((part) => modifiers.has(part));
-}
-
-function mapEventKeyToHotkey(event) {
-  const key = String(event.key || "");
-  const lower = key.toLowerCase();
-  if (lower === "control" || lower === "shift" || lower === "alt" || lower === "meta" || lower === "os") {
-    return "";
-  }
-  if (/^f\d{1,2}$/i.test(key)) return key.toUpperCase();
-  if (key.length === 1) {
-    if (key === " ") return "Space";
-    if (/[a-z0-9]/i.test(key)) return key.toUpperCase();
-  }
-  const named = {
-    escape: "Esc",
-    enter: "Enter",
-    tab: "Tab",
-    backspace: "Backspace",
-    delete: "Delete",
-    insert: "Insert",
-    home: "Home",
-    end: "End",
-    pageup: "PageUp",
-    pagedown: "PageDown",
-    arrowup: "Up",
-    arrowdown: "Down",
-    arrowleft: "Left",
-    arrowright: "Right",
-  };
-  return named[lower] || "";
-}
-
-function buildHotkeyFromEvent(event) {
-  const parts = [];
-  if (event.ctrlKey) parts.push("Ctrl");
-  if (event.shiftKey) parts.push("Shift");
-  if (event.altKey) parts.push("Alt");
-  if (event.metaKey) parts.push("Meta");
-  const key = mapEventKeyToHotkey(event);
-  if (key) parts.push(key);
-  return parts.join("+");
-}
-
-function isEventMatchingHotkey(event, hotkey) {
-  const target = normalizeHotkeyDisplay(hotkey);
-  if (!target) return false;
-  const actual = buildHotkeyFromEvent(event);
-  return target === actual;
 }
 
 function onDraftHotkeyInputKeydown(event, draftKey) {
@@ -3984,7 +3935,9 @@ function openSettings(target = null) {
   settingsDraft.customFont = config.personal.custom_font || null;
   settingsDraft.weatherEnabled = config.personal.weather_enabled !== false;
   settingsDraft.backgroundOpacity = normalizeBackgroundOpacity(config.personal.background_opacity);
+  settingsDraft.reduceTransparencyMode = !!config.personal.reduce_transparency_mode;
   _opacityBeforeSettings = config.personal.background_opacity;
+  _reduceTransparencyBeforeSettings = !!config.personal.reduce_transparency_mode;
   _weatherBeforeSettings = weatherEnabled.value;
   if (isTauriWindow) {
     invoke("list_system_fonts").then((fonts) => { systemFonts.value = fonts; }).catch(() => {});
@@ -3994,11 +3947,13 @@ function openSettings(target = null) {
 }
 
 let _opacityBeforeSettings = 1;
+let _reduceTransparencyBeforeSettings = false;
 let _weatherBeforeSettings = true;
 
 function closeSettings() {
   clearIdlePreview();
   config.personal.background_opacity = _opacityBeforeSettings;
+  config.personal.reduce_transparency_mode = _reduceTransparencyBeforeSettings;
   // Restore weather state if toggled during settings without saving
   if (_weatherBeforeSettings !== weatherEnabled.value) {
     weatherEnabled.value = _weatherBeforeSettings;
@@ -4124,6 +4079,7 @@ async function saveSettings() {
   config.personal.custom_font = settingsDraft.customFont || null;
   config.personal.weather_enabled = !!settingsDraft.weatherEnabled;
   config.personal.background_opacity = normalizeBackgroundOpacity(settingsDraft.backgroundOpacity);
+  config.personal.reduce_transparency_mode = !!settingsDraft.reduceTransparencyMode;
   weatherEnabled.value = !!settingsDraft.weatherEnabled;
   if (weatherEnabled.value) {
     themeId.value = 'azure'
@@ -4203,6 +4159,9 @@ async function saveSettings() {
   } else {
     await refreshConnectionStatus();
   }
+  _opacityBeforeSettings = config.personal.background_opacity;
+  _reduceTransparencyBeforeSettings = !!config.personal.reduce_transparency_mode;
+  _weatherBeforeSettings = weatherEnabled.value;
   applyCustomFont();
   clearIdlePreview();
   settingsOpen.value = false;
@@ -4992,24 +4951,6 @@ function containsAllTerms(text, terms) {
   return normalizedTerms.every((term) => value.includes(term));
 }
 
-function fuzzyMatch(query, text) {
-  if (!query || !text) return { matched: false, score: 0 };
-  let qi = 0;
-  let score = 0;
-  let lastMatchIdx = -1;
-  for (let ti = 0; ti < text.length && qi < query.length; ti++) {
-    if (text[ti] === query[qi]) {
-      score += 1;
-      if (ti === 0) score += 5;
-      if (lastMatchIdx >= 0 && ti === lastMatchIdx + 1) score += 3;
-      if (ti > 0 && /[_\-.\s]/.test(text[ti - 1])) score += 3;
-      lastMatchIdx = ti;
-      qi++;
-    }
-  }
-  return { matched: qi === query.length, score };
-}
-
 function containsAnyTerms(text, terms) {
   const normalizedTerms = sanitizeTerms(terms).map((item) => item.toLowerCase());
   if (normalizedTerms.length === 0) return false;
@@ -5048,7 +4989,7 @@ function isDataCellHit(row, columnName) {
 
 async function openFromMeta(item) {
   let externalHitCount = 0;
-  if (item.match_type === "TableName") externalHitCount = isKeywordEmpty.value ? defaultTableResults.value.length : results.table.length;
+  if (item.match_type === "TableName") externalHitCount = tableTabCount.value;
   else if (item.match_type === "ColumnName") externalHitCount = results.column.length;
   else externalHitCount = results.comment.length;
 
@@ -5147,6 +5088,16 @@ function closeTableDialog() {
   }
   forceExitEditMode()
   doCloseTableDialog()
+}
+function closeTableDialogAndClearTabs() {
+  if (editMode.value && editDirty.value) {
+    editUnsavedDialogOpen.value = true
+    editUnsavedCallback.value = () => { forceExitEditMode(); doCloseTableDialog(); clearTableTabs() }
+    return
+  }
+  forceExitEditMode()
+  doCloseTableDialog()
+  clearTableTabs()
 }
 function doCloseTableDialog() {
   snapshotActiveTableTab();
@@ -5491,6 +5442,7 @@ async function loadConfig() {
   );
   config.personal.reset_on_open_to_all_tables = config.personal.reset_on_open_to_all_tables !== false;
   config.personal.background_opacity = normalizeBackgroundOpacity(config.personal.background_opacity);
+  config.personal.reduce_transparency_mode = !!config.personal.reduce_transparency_mode;
   {
     const syncSettings = normalizeSyncWorkspaceSettings(config.personal);
     const defaultProfileId = syncSettings.defaultProfileId || syncSettings.profiles[0]?.id || null;
@@ -5542,24 +5494,14 @@ async function openContextMenu(event) {
 }
 
 async function contextAction(action) {
-  try {
-    if (action === "open") {
-      await invoke("show_panel_window", { openSettings: false });
-    } else if (action === "sync") {
-      await invoke("toggle_sync_workspace_window");
-    } else if (action === "settings") {
-      await invoke("show_panel_window", { openSettings: true });
-    } else if (action === "exit") {
-      await invoke("quit_app");
-      return;
-    }
-  } catch {
-    // ignore runtime errors to keep menu responsive
-  } finally {
-    if (isTauriWindow) {
-      await invoke("hide_pet_menu").catch(() => {});
-    }
-  }
+  await runPetMenuAction(action, {
+    isTauriWindow,
+    invoke,
+    getWindowByLabel: Window.getByLabel,
+    setPetHiddenForSession(value) {
+      petHiddenForSession.value = value;
+    },
+  });
 }
 
 function petPointerDown(event) {
@@ -5785,11 +5727,20 @@ function escapeRegExp(str) {
 </script>
 
 <template>
-  <main v-if="isPanelWindow" class="app-shell open panel-shell" id="appShell" @contextmenu.prevent>
+  <main
+    v-if="isPanelWindow"
+    :class="['app-shell', 'open', 'panel-shell', { 'reduced-transparency': reducedTransparencyEnabled }]"
+    id="appShell"
+    @contextmenu.prevent
+  >
     <section
       class="widget widget--demo-shell"
       id="widget"
-      :class="{ 'no-weather': !weatherEnabled, 'is-weather-preview': weatherPreviewActive }"
+      :class="{
+        'no-weather': !weatherEnabled,
+        'is-weather-preview': weatherPreviewActive,
+        'reduced-transparency': reducedTransparencyEnabled,
+      }"
       :data-surface-tone="weatherPresentation.surfaceTone"
       :data-text-tone="weatherPresentation.textTone"
       :data-weather-skin="weatherSkinState.category"
@@ -6241,7 +6192,7 @@ function escapeRegExp(str) {
             :disabled="!canRunSyncProfile(activeSyncProfile) || syncWorkspaceRunning"
             @click="runActiveSyncProfile"
           >
-            {{ syncWorkspaceRunning ? '⏳ 同步中...' : '▶ 运行同步' }}
+            {{ syncWorkspaceRunning && syncWorkspaceRunProfileId === activeSyncProfile.id ? '⏳ 同步中...' : '▶ 运行同步' }}
           </button>
           <button
             v-if="activeSyncProfile.target_path"
@@ -6447,7 +6398,7 @@ function escapeRegExp(str) {
   </main>
 
   <div v-else-if="isMenuWindow" class="pet-menu-root">
-    <section class="pet-menu-window">
+    <section :class="['pet-menu-window', { 'reduced-transparency': reducedTransparencyEnabled }]">
       <button class="pet-menu-btn" @click="contextAction('open')">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 1 0 4.031 11.604l4.433 4.433 1.414-1.414-4.433-4.433A6.5 6.5 0 0 0 10.5 4Zm0 2a4.5 4.5 0 1 1 0 9a4.5 4.5 0 0 1 0-9Z" fill="currentColor"/></svg>
         <span>打开搜索</span>
@@ -6459,6 +6410,10 @@ function escapeRegExp(str) {
       <button class="pet-menu-btn" @click="contextAction('settings')">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.036-.31.06-.62.06-.94s-.024-.63-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.12 7.12 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 14.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54c-.58.23-1.12.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L3.7 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.046.31-.07.62-.07.94s.024.63.07.94L3.82 14.16a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.05.72 1.63.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54c.58-.23 1.12-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" fill="currentColor"/></svg>
         <span>设置</span>
+      </button>
+      <button class="pet-menu-btn" @click="contextAction('hide_pet')">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.75 4.5 5.25 19.5 20.25 18 21.75l-3.07-3.07A11.54 11.54 0 0 1 12 19.5C6.75 19.5 2.27 16.24.5 12c.91-2.17 2.49-4.05 4.5-5.45L3 6.75Zm6.31 6.31a3.75 3.75 0 0 0 5.63 1.63l-1.55-1.55a1.75 1.75 0 0 1-2.53-2.53l-1.55-1.55ZM12 4.5c5.25 0 9.73 3.26 11.5 7.5a12.12 12.12 0 0 1-3.88 4.87l-1.45-1.45A9.76 9.76 0 0 0 21.26 12C19.68 8.76 16.09 6.5 12 6.5c-1.1 0-2.17.16-3.18.46L7.2 5.34A11.8 11.8 0 0 1 12 4.5Zm-.07 3.01A4.5 4.5 0 0 1 16.43 12c0 .41-.06.81-.16 1.19l-4.3-4.31c.38-.1.78-.16 1.18-.16Z" fill="currentColor"/></svg>
+        <span>隐藏宠物</span>
       </button>
       <hr />
       <button class="pet-menu-btn danger" @click="contextAction('exit')">
@@ -6523,6 +6478,7 @@ function escapeRegExp(str) {
       { fullscreen: tableFullscreen },
       editGlowPhase !== 'none' ? `edit-glow-${editGlowPhase}` : '',
       { 'edit-mode-active': editMode },
+      { 'reduced-transparency': reducedTransparencyEnabled },
     ]">
       <header class="modal-header" @pointerdown="modalHeaderPointerDown">
         <div class="modal-title-row">
@@ -6537,7 +6493,7 @@ function escapeRegExp(str) {
         </div>
         <div class="table-header-actions">
           <button class="small-btn" @click="toggleTableDetailView">{{ tableDetailView === 'full' ? '只看命中(Tab)' : '返回原页(Tab)' }}</button>
-          <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏(W)' : '全屏查看(W)' }}</button>
+          <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏' : '全屏查看' }}</button>
           <button :class="['small-btn', 'edit-toggle-btn', { active: editMode }]"
             :disabled="!dbConnected" @click="onEditToggleClick"
             :title="editMode ? '退出编辑模式' : '进入编辑模式'">
@@ -6981,6 +6937,10 @@ function escapeRegExp(str) {
                   :max="panelChromeConstants.BACKGROUND_OPACITY_MAX"
                   :step="panelChromeConstants.BACKGROUND_OPACITY_STEP"
                 />
+              </label>
+              <label class="glass-toggle" style="margin-top:14px">
+                <input v-model="settingsDraft.reduceTransparencyMode" type="checkbox" />
+                <span class="glass-toggle-track"></span>降低界面透明度
               </label>
             </div>
             <div class="glass-card glass-card-weather-control">

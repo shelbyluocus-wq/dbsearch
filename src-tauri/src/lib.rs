@@ -61,6 +61,7 @@ struct RuntimeState {
     registered_quick_date_hotkey: Option<String>,
     registered_sync_window_hotkey: Option<String>,
     sync_running: bool,
+    pet_hidden_this_session: bool,
 }
 
 const MAIN_WINDOW_LABEL: &str = "main";
@@ -70,7 +71,13 @@ const SYNC_WORKSPACE_WINDOW_LABEL: &str = "sync_workspace";
 const PANEL_WIDTH: f64 = 780.0;
 const PANEL_HEIGHT: f64 = 860.0;
 const PET_MENU_WIDTH: f64 = 212.0;
-const PET_MENU_HEIGHT: f64 = 184.0;
+const PET_MENU_HEIGHT: f64 = 248.0;
+const PET_MENU_BUTTON_COUNT: f64 = 5.0;
+const PET_MENU_CHILD_COUNT: f64 = 6.0;
+const PET_MENU_BUTTON_HEIGHT: f64 = 38.0;
+const PET_MENU_ROW_GAP: f64 = 4.0;
+const PET_MENU_DIVIDER_BLOCK_HEIGHT: f64 = 5.0;
+const PET_MENU_VERTICAL_PADDING: f64 = 20.0;
 const SYNC_WORKSPACE_WIDTH: f64 = 760.0;
 const SYNC_WORKSPACE_HEIGHT: f64 = 640.0;
 
@@ -146,6 +153,8 @@ struct PersonalConfig {
     #[serde(default = "default_background_opacity")]
     background_opacity: f32,
     #[serde(default)]
+    reduce_transparency_mode: bool,
+    #[serde(default)]
     sync_profiles: Vec<SyncProfile>,
     #[serde(default)]
     default_sync_profile_id: Option<String>,
@@ -162,7 +171,7 @@ fn default_always_on_top_hotkey() -> String {
     "P".into()
 }
 fn default_sync_window_hotkey() -> String {
-    "Ctrl+S".into()
+    "Shift+S".into()
 }
 fn default_pet_skin() -> String {
     "eagle".into()
@@ -173,7 +182,7 @@ impl Default for PersonalConfig {
             widget_mode: "tray".into(),
             hotkey: "Ctrl+Shift+F".into(),
             quick_date_hotkey: "F9".into(),
-            sync_window_hotkey: "Ctrl+S".into(),
+            sync_window_hotkey: "Shift+S".into(),
             always_on_top: true,
             auto_start: false,
             ui_scale: 1.0,
@@ -201,6 +210,7 @@ impl Default for PersonalConfig {
             custom_font: None,
             weather_enabled: true,
             background_opacity: 1.0,
+            reduce_transparency_mode: false,
             sync_profiles: Vec::new(),
             default_sync_profile_id: None,
             last_used_sync_profile_id: None,
@@ -1418,7 +1428,13 @@ async fn show_pet_menu(
     x: f64,
     y: f64,
 ) -> Result<(), String> {
-    let pet_locked = state.runtime.lock().await.config.personal.pet_locked;
+    let pet_locked = {
+        let rt = state.runtime.lock().await;
+        if rt.pet_hidden_this_session {
+            return Ok(());
+        }
+        rt.config.personal.pet_locked
+    };
     let menu = ensure_pet_menu_window(&app)?;
 
     let mut menu_x = x + 6.0;
@@ -1451,6 +1467,21 @@ async fn show_pet_menu(
 async fn hide_pet_menu(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(menu) = app.get_webview_window(PET_MENU_WINDOW_LABEL) {
         menu.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn hide_pet_window(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.runtime.lock().await.pet_hidden_this_session = true;
+    if let Some(menu) = app.get_webview_window(PET_MENU_WINDOW_LABEL) {
+        let _ = menu.hide();
+    }
+    if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        main_window.hide().map_err(|e| e.to_string())?;
     }
     Ok(())
 }
@@ -1677,6 +1708,20 @@ fn normalize_shortcut_main_key(token: &str) -> Option<String> {
         if c.is_ascii_alphanumeric() {
             return Some(c.to_ascii_lowercase().to_string());
         }
+        return match c {
+            '/' | '?' => Some("slash".into()),
+            '\\' | '|' => Some("backslash".into()),
+            ';' | ':' => Some("semicolon".into()),
+            '\'' | '"' => Some("quote".into()),
+            ',' | '<' => Some("comma".into()),
+            '.' | '>' => Some("period".into()),
+            '[' | '{' => Some("bracketleft".into()),
+            ']' | '}' => Some("bracketright".into()),
+            '-' | '_' => Some("minus".into()),
+            '=' | '+' => Some("equal".into()),
+            '`' | '~' => Some("backquote".into()),
+            _ => None,
+        };
     }
 
     // Handle global_hotkey Code Display format: "keya"→"a", "keyf"→"f"
@@ -1715,6 +1760,17 @@ fn normalize_shortcut_main_key(token: &str) -> Option<String> {
         "down" | "arrowdown" => Some("down".into()),
         "left" | "arrowleft" => Some("left".into()),
         "right" | "arrowright" => Some("right".into()),
+        "slash" | "question" => Some("slash".into()),
+        "backslash" | "pipe" => Some("backslash".into()),
+        "semicolon" | "colon" => Some("semicolon".into()),
+        "quote" | "apostrophe" => Some("quote".into()),
+        "comma" | "lessthan" => Some("comma".into()),
+        "period" | "dot" | "greaterthan" => Some("period".into()),
+        "bracketleft" | "leftbracket" | "braceleft" => Some("bracketleft".into()),
+        "bracketright" | "rightbracket" | "braceright" => Some("bracketright".into()),
+        "minus" | "underscore" | "dash" | "hyphen" => Some("minus".into()),
+        "equal" | "equals" | "plus" => Some("equal".into()),
+        "backquote" | "grave" => Some("backquote".into()),
         _ => None,
     }
 }
@@ -2609,6 +2665,7 @@ pub fn run() {
             set_panel_always_on_top,
             show_pet_menu,
             hide_pet_menu,
+            hide_pet_window,
             toggle_pet_lock,
             save_pet_position,
             quit_app,
@@ -2629,4 +2686,22 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pet_menu_height_fits_all_actions() {
+        let min_height = PET_MENU_VERTICAL_PADDING
+            + PET_MENU_BUTTON_COUNT * PET_MENU_BUTTON_HEIGHT
+            + PET_MENU_DIVIDER_BLOCK_HEIGHT
+            + (PET_MENU_CHILD_COUNT - 1.0) * PET_MENU_ROW_GAP;
+
+        assert!(
+            PET_MENU_HEIGHT >= min_height,
+            "pet menu height {PET_MENU_HEIGHT} is smaller than required minimum {min_height}"
+        );
+    }
 }
