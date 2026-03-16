@@ -35,12 +35,12 @@ const isPanelWindow = computed(() => !isTauriWindow || windowLabel.value === "br
 const FIXED_WEATHER_CITY = "厦门市";
 
 const settingsOpen = ref(false);
-const settingsTab = ref(0);
+const settingsTab = ref(-1);
 const settingsTabDir = ref(0);
 const SETTINGS_TABS = [
-  { id: 'connection', label: '连接' },
-  { id: 'shortcuts',  label: '快捷键' },
-  { id: 'appearance', label: '外观' },
+  { id: 'connection', label: '连接', icon: '\u{1F5C4}' },
+  { id: 'shortcuts',  label: '快捷键', icon: '\u2328' },
+  { id: 'appearance', label: '外观', icon: '\u{1F3A8}' },
 ];
 const tableOpen = ref(false);
 const tableDetailView = ref("hits");
@@ -3928,15 +3928,15 @@ function panelHeaderPointerDown(event) {
 }
 
 function switchSettingsTab(index) {
-  if (index < 0 || index >= SETTINGS_TABS.length || index === settingsTab.value) return;
+  if (index < -1 || index >= SETTINGS_TABS.length || index === settingsTab.value) return;
   settingsTabDir.value = index > settingsTab.value ? 1 : -1;
   settingsTab.value = index;
 }
 
-function openSettings(target = "connection") {
-  const targetIndex = typeof target === "number"
+function openSettings(target = null) {
+  const targetIndex = target === null ? -1 : (typeof target === "number"
     ? target
-    : Math.max(0, SETTINGS_TABS.findIndex((tab) => tab.id === target));
+    : Math.max(0, SETTINGS_TABS.findIndex((tab) => tab.id === target)));
   settingsTabDir.value = 0;
   settingsTab.value = targetIndex;
   syncSettingsDraftDbFields();
@@ -4003,6 +4003,7 @@ function closeSettings() {
       document.documentElement.dataset.theme = preferredThemeId.value
     }
   }
+  settingsTab.value = -1;
   settingsOpen.value = false;
 }
 
@@ -6842,12 +6843,26 @@ function escapeRegExp(str) {
     <section class="settings-modal-v2">
       <!-- Header -->
       <header class="settings-header-v2">
-        <h3>设置</h3>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button v-if="settingsTab >= 0" class="settings-back-btn" @click="settingsTab = -1" title="返回">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <h3>{{ settingsTab >= 0 ? SETTINGS_TABS[settingsTab].label : '设置' }}</h3>
+        </div>
         <button class="icon-btn" @click="closeSettings">✕</button>
       </header>
 
-      <!-- Cover Flow Nav -->
-      <nav class="coverflow-nav">
+      <!-- Entry Card Grid (when no tab selected) -->
+      <div v-if="settingsTab === -1" class="settings-entry-grid">
+        <div v-for="(tab, i) in SETTINGS_TABS" :key="tab.id" class="settings-entry-card" @click="switchSettingsTab(i)">
+          <span class="entry-icon">{{ tab.icon }}</span>
+          <span class="entry-title">{{ tab.label }}</span>
+          <span v-if="tab.id === 'connection' && config.shared.db.host" class="entry-summary">{{ config.shared.db.host }}:{{ config.shared.db.port }}</span>
+        </div>
+      </div>
+
+      <!-- Cover Flow Nav (when a tab is selected) -->
+      <nav v-if="settingsTab >= 0" class="coverflow-nav">
         <button class="coverflow-arrow" :disabled="settingsTab === 0" @click="switchSettingsTab(settingsTab - 1)"><svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M9 3L5 7L9 11" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
         <div class="coverflow-track">
           <button v-for="(tab, i) in SETTINGS_TABS" :key="tab.id"
@@ -6865,7 +6880,7 @@ function escapeRegExp(str) {
       </nav>
 
       <!-- Tab Content -->
-      <div class="settings-body-v2">
+      <div v-if="settingsTab >= 0" class="settings-body-v2 settings-detail-expand">
         <Transition :name="settingsTabDir > 0 ? 'stab-left' : 'stab-right'" mode="out-in">
           <!-- Tab 0: 连接 -->
           <div v-if="settingsTab === 0" key="connection" class="settings-tab-pane">
@@ -7060,7 +7075,7 @@ function escapeRegExp(str) {
       </div>
 
       <!-- Footer -->
-      <footer class="settings-footer-v2">
+      <footer v-if="settingsTab >= 0" class="settings-footer-v2">
         <span v-if="settingsMsg" class="settings-msg" :class="{ ok: settingsMsg.startsWith('✓'), err: settingsMsg.startsWith('✗') }">{{ settingsMsg }}</span>
         <button v-show="settingsTab === 0" class="glass-btn-secondary" @click="triggerImport">导入共享配置</button>
         <button v-show="settingsTab === 0" class="glass-btn-secondary" @click="testConnect">测试连接</button>
