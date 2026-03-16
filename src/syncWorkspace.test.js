@@ -5,6 +5,7 @@ import {
   describeSyncProfileCard,
   normalizeSyncWorkspaceSettings,
   reduceSyncTimeline,
+  resolveSyncTargetDirectoryOpenRequest,
   resolveSyncProfileSelection,
 } from "./syncWorkspace.js";
 
@@ -91,4 +92,24 @@ test("reduceSyncTimeline tracks step transitions from running to failure", () =>
   assert.equal(finished[1].step, "svn_update");
   assert.equal(finished[1].status, "error");
   assert.equal(finished[1].detail, "Summary of conflicts");
+});
+
+test("resolveSyncTargetDirectoryOpenRequest keeps the full directory path and uses backend explorer command", () => {
+  assert.deepEqual(
+    resolveSyncTargetDirectoryOpenRequest("D:\\Versions\\nzg"),
+    {
+      method: "invoke",
+      command: "open_directory_in_explorer",
+      path: "D:\\Versions\\nzg",
+    },
+  );
+
+  assert.deepEqual(
+    resolveSyncTargetDirectoryOpenRequest("D:/Versions/nzg"),
+    {
+      method: "invoke",
+      command: "open_directory_in_explorer",
+      path: "D:/Versions/nzg",
+    },
+  );
 });

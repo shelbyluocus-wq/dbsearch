@@ -4,7 +4,6 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { save, open } from "@tauri-apps/plugin-dialog";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
 import "./styles.css";
 import { WeatherEngine } from "./weatherEngine.js";
 import {
@@ -23,6 +22,7 @@ import {
   normalizeSyncWindowHotkey,
   normalizeSyncWorkspaceSettings,
   reduceSyncTimeline,
+  resolveSyncTargetDirectoryOpenRequest,
   resolveSyncProfileSelection,
 } from "./syncWorkspace.js";
 
@@ -955,10 +955,13 @@ function syncWorkspaceHeaderPointerDown(event) {
 }
 
 async function openSyncTargetDir() {
-  if (!activeSyncProfile.value?.target_path) return;
+  const request = resolveSyncTargetDirectoryOpenRequest(activeSyncProfile.value?.target_path);
+  if (!request) return;
   try {
-    await revealItemInDir(activeSyncProfile.value.target_path);
+    await invoke(request.command, { path: request.path });
   } catch (e) {
+    syncWorkspaceMessage.value = `✗ 打开目标目录失败：${String(e)}`;
+    syncWorkspaceMessageTone.value = "error";
     console.warn("Failed to open path:", e);
   }
 }

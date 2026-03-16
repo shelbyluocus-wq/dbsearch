@@ -107,6 +107,16 @@ export function describeSyncProfileCard(profile, { defaultProfileId = "" } = {})
   return parts.join(" · ");
 }
 
+export function resolveSyncTargetDirectoryOpenRequest(targetPath) {
+  const path = String(targetPath || "").trim();
+  if (!path) return null;
+  return {
+    method: "invoke",
+    command: "open_directory_in_explorer",
+    path,
+  };
+}
+
 export function reduceSyncTimeline(timeline = [], event = {}) {
   return [
     ...timeline,

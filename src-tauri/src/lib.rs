@@ -1226,6 +1226,46 @@ async fn toggle_sync_workspace_window(app: tauri::AppHandle) -> Result<(), Strin
 }
 
 #[tauri::command]
+async fn open_directory_in_explorer(path: String) -> Result<(), String> {
+    let path = PathBuf::from(path.trim());
+    if path.as_os_str().is_empty() {
+        return Err("目标目录不能为空".into());
+    }
+    if !path.exists() {
+        return Err(format!("目标目录不存在: {}", path.display()));
+    }
+    if !path.is_dir() {
+        return Err(format!("目标路径不是目录: {}", path.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("打开资源管理器失败: {e}"))?;
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("打开目录失败: {e}"))?;
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("打开目录失败: {e}"))?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn run_sync_profile(
     profile_id: String,
     app: tauri::AppHandle,
@@ -2560,6 +2600,7 @@ pub fn run() {
             show_sync_workspace_window,
             hide_sync_workspace_window,
             toggle_sync_workspace_window,
+            open_directory_in_explorer,
             run_sync_profile,
             show_panel_window,
             hide_panel_window,
