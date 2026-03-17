@@ -3093,7 +3093,42 @@ mark {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  padding-right: 10px;
+  padding-right: 34px;
+}
+
+.column-collapse-badge {
+  position: absolute;
+  top: 4px;
+  right: 11px;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent-line);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--surface-card) 84%, transparent);
+  color: var(--text-sub);
+  font-size: 10px;
+  line-height: 1;
+  opacity: 0.88;
+  cursor: default;
+  user-select: none;
+  transition: background 140ms ease, color 140ms ease, border-color 140ms ease, transform 140ms ease;
+}
+
+.column-collapse-badge:hover {
+  background: var(--accent-tint);
+  color: var(--accent-text);
+  border-color: var(--accent-line);
+  transform: translateY(-1px);
+}
+
+.column-collapse-badge.active {
+  background: var(--accent-tint);
+  color: var(--accent-text);
+  border-color: var(--accent-line);
 }
 
 .col-resize-handle {

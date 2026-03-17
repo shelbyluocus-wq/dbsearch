@@ -38,6 +38,11 @@ import {
   buildCellViewerPreview,
   normalizeCellViewerLanguage,
 } from "./cellViewer.js";
+import {
+  clearCollapsedColumnState,
+  computeAutoCollapsedWidth,
+  toggleColumnCollapsedState,
+} from "./columnCollapse.js";
 
 const isTauriWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const windowLabel = ref("browser");
@@ -492,9 +497,13 @@ let idleTimer = null;
 let idleStateTimer = null;
 let resetIdleHandler = null;
 const columnWidthMap = reactive({});
+const collapsedColumnMap = reactive({});
+const collapsedColumnRestoreWidthMap = reactive({});
+const overflowingColumnMap = reactive({});
 let columnResizeState = null;
 let tableLayoutObserver = null;
 let tableLayoutRaf = 0;
+let columnOverflowMeasureRaf = 0;
 let tablePageSizeAdjustToken = 0;
 let tableTabsMeasureRaf = 0;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -509,6 +518,9 @@ const TABLE_PAGE_SIZE_MIN = 1;
 const TABLE_PAGE_SIZE_MAX = 200;
 const TABLE_ROW_HEIGHT_FALLBACK = 28;
 const TABLE_HEADER_HEIGHT_FALLBACK = 32;
+const COLUMN_COLLAPSE_HORIZONTAL_PADDING = 16;
+const COLUMN_COLLAPSE_BADGE_ALLOWANCE = 20;
+const COLUMN_COLLAPSE_RESIZE_ALLOWANCE = 8;
 const ALLOWED_IDLE_STATES = [
   "float_breathe",
   "sleep_zzz",
@@ -2171,6 +2183,14 @@ function cloneColumnWidthMap(input = columnWidthMap) {
   return out;
 }
 
+function cloneBooleanMap(input = {}) {
+  const out = {};
+  Object.entries(input || {}).forEach(([key, value]) => {
+    if (value) out[key] = true;
+  });
+  return out;
+}
+
 function nextTableTabId() {
   tableTabIdSeed += 1;
   return `table-tab-${tableTabIdSeed}`;
@@ -2208,6 +2228,8 @@ function createLiveTableSnapshot({ id, tableName } = {}) {
     allHitRows: cloneHitRows(allHitRows.value),
     allHitRowsLoading: allHitRowsLoading.value,
     columnWidthMap: cloneColumnWidthMap(columnWidthMap),
+    collapsedColumnMap: cloneBooleanMap(collapsedColumnMap),
+    collapsedColumnRestoreWidthMap: cloneColumnWidthMap(collapsedColumnRestoreWidthMap),
   };
 }
 
@@ -2245,6 +2267,8 @@ function createNewTableSnapshot(tableName, rowIndex = null, columnName = null, h
     allHitRows: [],
     allHitRowsLoading: false,
     columnWidthMap: {},
+    collapsedColumnMap: {},
+    collapsedColumnRestoreWidthMap: {},
   };
 }
 
@@ -2254,6 +2278,24 @@ function applyColumnWidthMap(nextMap = {}) {
     const width = Number(value);
     if (Number.isFinite(width) && width > 0) {
       columnWidthMap[key] = width;
+    }
+  });
+}
+
+function clearCollapsedColumnMaps() {
+  Object.keys(collapsedColumnMap).forEach((key) => { delete collapsedColumnMap[key]; });
+  Object.keys(collapsedColumnRestoreWidthMap).forEach((key) => { delete collapsedColumnRestoreWidthMap[key]; });
+}
+
+function applyCollapsedColumnState(nextCollapsedMap = {}, nextRestoreWidthMap = {}) {
+  clearCollapsedColumnMaps();
+  Object.entries(nextCollapsedMap || {}).forEach(([key, value]) => {
+    if (value) collapsedColumnMap[key] = true;
+  });
+  Object.entries(nextRestoreWidthMap || {}).forEach(([key, value]) => {
+    const width = Number(value);
+    if (Number.isFinite(width) && width > 0) {
+      collapsedColumnRestoreWidthMap[key] = width;
     }
   });
 }
@@ -2297,7 +2339,9 @@ function restoreLiveStateFromTableSnapshot(tab) {
   allHitRows.value = cloneHitRows(tab.allHitRows);
   allHitRowsLoading.value = !!tab.allHitRowsLoading;
   applyColumnWidthMap(tab.columnWidthMap || {});
+  applyCollapsedColumnState(tab.collapsedColumnMap || {}, tab.collapsedColumnRestoreWidthMap || {});
   tableTabRestoring = false;
+  scheduleColumnOverflowMeasure();
 }
 
 function snapshotActiveTableTab() {
@@ -2981,6 +3025,10 @@ onBeforeUnmount(() => {
   clearTimeout(uiScalePersistTimer);
   stopTableTabsCompressionMeasure();
   stopTableLayoutObserver();
+  if (columnOverflowMeasureRaf) {
+    cancelAnimationFrame(columnOverflowMeasureRaf);
+    columnOverflowMeasureRaf = 0;
+  }
   stopColumnResize();
 });
 
@@ -3305,6 +3353,7 @@ watch(
   ([open]) => {
     if (!open) {
       stopTableLayoutObserver();
+      clearOverflowingColumns();
       return;
     }
     if (tableDetailView.value === "full" && !dataCollapsed.value) {
@@ -3313,6 +3362,7 @@ watch(
       stopTableLayoutObserver();
     }
     scheduleAdaptiveTablePageSize();
+    scheduleColumnOverflowMeasure();
   },
 );
 
@@ -3320,8 +3370,20 @@ watch(
   () => [tableView.rows.length, tableView.columns.length, tableView.page],
   () => {
     scheduleAdaptiveTablePageSize();
+    scheduleColumnOverflowMeasure();
   },
 );
+
+watch(
+  () => [tableDetailView.value, hitOnlyDisplayColumns.value.join("|"), hitOnlyRows.value.length],
+  () => {
+    scheduleColumnOverflowMeasure();
+  },
+);
+
+watch(columnWidthMap, () => {
+  scheduleColumnOverflowMeasure();
+}, { deep: true });
 
 watch(selectedTables, () => {
   if (!isPanelWindow.value) return;
@@ -3445,6 +3507,7 @@ function onWindowWheel(event) {
 function onWindowResize() {
   scheduleAdaptiveTablePageSize();
   scheduleTableTabsCompressionMeasure();
+  scheduleColumnOverflowMeasure();
 }
 
 function formatTodayYmdByLocalTime() {
@@ -4689,6 +4752,7 @@ async function startTableLayoutObserver() {
 
   tableLayoutObserver = new ResizeObserver(() => {
     scheduleAdaptiveTablePageSize();
+    scheduleColumnOverflowMeasure();
   });
   targets.forEach((target) => tableLayoutObserver.observe(target));
   scheduleAdaptiveTablePageSize();
@@ -4978,6 +5042,72 @@ function renderDataCell(row, columnName) {
   return renderDetailHighlighted(row?.[columnName] || "");
 }
 
+function getActiveDataGridColumns() {
+  if (!tableOpen.value || dataCollapsed.value) return [];
+  if (tableDetailView.value === "hits") return [...hitOnlyDisplayColumns.value];
+  return tableView.columns.map((column) => column.column_name);
+}
+
+function clearOverflowingColumns() {
+  Object.keys(overflowingColumnMap).forEach((key) => { delete overflowingColumnMap[key]; });
+}
+
+function getRenderedHeaderCell(columnName) {
+  const escaped = typeof CSS !== "undefined" && typeof CSS.escape === "function"
+    ? CSS.escape(columnName)
+    : String(columnName || "").replace(/"/g, '\\"');
+  return tableModalRef.value?.querySelector?.(`th[data-column-name="${escaped}"]`) || null;
+}
+
+function getRenderedColumnWidth(columnName) {
+  const th = getRenderedHeaderCell(columnName);
+  const rect = th?.getBoundingClientRect?.();
+  return Math.round(Number(rect?.width) || 0);
+}
+
+function getHeaderContentWidth(columnName) {
+  const th = getRenderedHeaderCell(columnName);
+  const content = th?.querySelector?.(".th-content");
+  return Math.round(Number(content?.scrollWidth) || Number(content?.getBoundingClientRect?.().width) || 0);
+}
+
+function replaceColumnCollapseState(nextCollapsedColumns = {}, nextRestoreWidths = {}) {
+  applyCollapsedColumnState(nextCollapsedColumns, nextRestoreWidths);
+}
+
+function clearColumnCollapseState(columnName) {
+  const next = clearCollapsedColumnState({
+    columnName,
+    collapsedColumns: collapsedColumnMap,
+    restoreWidths: collapsedColumnRestoreWidthMap,
+  });
+  replaceColumnCollapseState(next.nextCollapsedColumns, next.nextRestoreWidths);
+}
+
+function handleColumnCollapseToggle(columnName) {
+  if (!columnName) return;
+  const headerTextWidth = getHeaderContentWidth(columnName);
+  if (headerTextWidth <= 0) return;
+  const currentWidth = Number(columnWidthMap[columnName] || getRenderedColumnWidth(columnName) || 120);
+  const collapsedWidth = computeAutoCollapsedWidth({
+    headerTextWidth,
+    horizontalPadding: COLUMN_COLLAPSE_HORIZONTAL_PADDING,
+    badgeAllowance: COLUMN_COLLAPSE_BADGE_ALLOWANCE,
+    resizeHandleAllowance: COLUMN_COLLAPSE_RESIZE_ALLOWANCE,
+  });
+  const next = toggleColumnCollapsedState({
+    columnName,
+    currentWidth,
+    collapsedWidth,
+    collapsedColumns: collapsedColumnMap,
+    restoreWidths: collapsedColumnRestoreWidthMap,
+    fallbackWidth: currentWidth,
+  });
+  replaceColumnCollapseState(next.nextCollapsedColumns, next.nextRestoreWidths);
+  columnWidthMap[columnName] = next.nextWidth;
+  scheduleColumnOverflowMeasure();
+}
+
 function getColumnStyle(columnName) {
   const width = Number(columnWidthMap[columnName] || 0);
   if (width <= 0) return null;
@@ -5000,11 +5130,45 @@ function clearColumnWidths() {
   Object.keys(columnWidthMap).forEach((key) => { delete columnWidthMap[key]; });
 }
 
+function measureOverflowingColumns() {
+  clearOverflowingColumns();
+  if (!tableOpen.value || dataCollapsed.value) return;
+  const columns = getActiveDataGridColumns();
+  if (columns.length === 0) return;
+  const grid = tableModalRef.value?.querySelector?.(".grid-wrap .data-table");
+  if (!grid) return;
+  columns.forEach((columnName) => {
+    const escaped = typeof CSS !== "undefined" && typeof CSS.escape === "function"
+      ? CSS.escape(columnName)
+      : String(columnName || "").replace(/"/g, '\\"');
+    const clips = grid.querySelectorAll(`td[data-column-name="${escaped}"] .td-clip`);
+    const hasOverflow = Array.from(clips).some((clip) => {
+      const clientWidth = Number(clip?.clientWidth || 0);
+      const scrollWidth = Number(clip?.scrollWidth || 0);
+      return clientWidth > 0 && scrollWidth - clientWidth > 1;
+    });
+    if (hasOverflow) overflowingColumnMap[columnName] = true;
+  });
+}
+
+function scheduleColumnOverflowMeasure() {
+  if (columnOverflowMeasureRaf) {
+    cancelAnimationFrame(columnOverflowMeasureRaf);
+    columnOverflowMeasureRaf = 0;
+  }
+  columnOverflowMeasureRaf = requestAnimationFrame(async () => {
+    columnOverflowMeasureRaf = 0;
+    await nextTick();
+    measureOverflowingColumns();
+  });
+}
+
 function onColumnResizeMove(event) {
   if (!columnResizeState) return;
   const delta = event.clientX - columnResizeState.startX;
   const width = Math.max(80, Math.round(columnResizeState.startWidth + delta));
   columnWidthMap[columnResizeState.columnName] = width;
+  scheduleColumnOverflowMeasure();
 }
 
 function stopColumnResize() {
@@ -5016,6 +5180,7 @@ function stopColumnResize() {
 function startColumnResize(event, columnName) {
   event.preventDefault();
   event.stopPropagation();
+  clearColumnCollapseState(columnName);
   const th = event.currentTarget?.closest?.("th");
   const rect = th?.getBoundingClientRect?.();
   const startWidth = Number(columnWidthMap[columnName] || rect?.width || 120);
@@ -5164,6 +5329,7 @@ async function loadTablePage(options = {}) {
       allHitRowsLoading.value = false;
       tableView.hitNavCursor = -1;
     }
+    scheduleColumnOverflowMeasure();
   } catch (error) {
     summaryText.value = `读取表数据失败：${String(error)}`;
   }
@@ -6914,10 +7080,19 @@ function escapeHtml(str) {
                     <th
                       v-for="col in tableView.columns"
                       :key="col.column_name"
+                      :data-column-name="col.column_name"
                       :class="{ 'hit-col': isDataColumnHit(col.column_name) }"
                       :style="getColumnStyle(col.column_name)"
                     >
                       <div class="th-content" v-html="renderTableColumnHeader(col.column_name)"></div>
+                      <button
+                        v-if="overflowingColumnMap[col.column_name] || collapsedColumnMap[col.column_name]"
+                        class="column-collapse-badge"
+                        :class="{ active: collapsedColumnMap[col.column_name] }"
+                        :title="collapsedColumnMap[col.column_name] ? '双击恢复列宽' : '双击收窄到字段名宽度'"
+                        @click.stop.prevent
+                        @dblclick.stop.prevent="handleColumnCollapseToggle(col.column_name)"
+                      >◢</button>
                       <span class="col-resize-handle" @pointerdown="startColumnResize($event, col.column_name)"></span>
                     </th>
                   </tr>
@@ -6945,6 +7120,7 @@ function escapeHtml(str) {
                     <td
                       v-for="col in tableView.columns"
                       :key="col.column_name"
+                      :data-column-name="col.column_name"
                       :data-find-page="tableView.page"
                       :data-find-row="idx"
                       :data-find-col="col.column_name"
@@ -6977,6 +7153,7 @@ function escapeHtml(str) {
                       <button class="edit-remove-insert-btn" @click="removeNewRow(nIdx)" title="移除">✕</button>
                     </td>
                     <td v-for="col in tableView.columns" :key="col.column_name"
+                      :data-column-name="col.column_name"
                       :style="getColumnStyle(col.column_name)"
                       @click="onInsertCellClick(nIdx, col.column_name)"
                       @dblclick="onInsertCellDoubleClick(nIdx, col.column_name)"
@@ -7058,9 +7235,18 @@ function escapeHtml(str) {
                     <th
                       v-for="columnName in hitOnlyDisplayColumns"
                       :key="columnName"
+                      :data-column-name="columnName"
                       :style="getColumnStyle(columnName)"
                     >
                       <div class="th-content" v-html="renderDetailHighlighted(columnName)"></div>
+                      <button
+                        v-if="overflowingColumnMap[columnName] || collapsedColumnMap[columnName]"
+                        class="column-collapse-badge"
+                        :class="{ active: collapsedColumnMap[columnName] }"
+                        :title="collapsedColumnMap[columnName] ? '双击恢复列宽' : '双击收窄到字段名宽度'"
+                        @click.stop.prevent
+                        @dblclick.stop.prevent="handleColumnCollapseToggle(columnName)"
+                      >◢</button>
                       <span class="col-resize-handle" @pointerdown="startColumnResize($event, columnName)"></span>
                     </th>
                   </tr>
@@ -7076,6 +7262,7 @@ function escapeHtml(str) {
                     <td
                       v-for="columnName in hitOnlyDisplayColumns"
                       :key="columnName"
+                      :data-column-name="columnName"
                       :style="getColumnStyle(columnName)"
                       :class="{ 'hit-cell': isDataCellHit(item.row, columnName) }"
                       @dblclick="onHitCellDoubleClick(item, columnName)"
