@@ -34,6 +34,10 @@ import {
   resolveSyncProfileSelection,
 } from "./syncWorkspace.js";
 import { runPetMenuAction } from "./petMenu.js";
+import {
+  buildCellViewerPreview,
+  normalizeCellViewerLanguage,
+} from "./cellViewer.js";
 
 const isTauriWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const windowLabel = ref("browser");
@@ -75,7 +79,34 @@ const editNoPkWarningShown = ref(false)
 const editSaveDialogOpen = ref(false)
 const editUnsavedDialogOpen = ref(false)
 const editUnsavedCallback = ref(null)
+const editDateSuccessCallback = ref(null)
 let editGlowTimer = null
+let pendingCellEditTimer = null
+
+const CELL_VIEWER_LANGUAGE_OPTIONS = [
+  { value: "auto", label: "自动" },
+  { value: "json", label: "JSON" },
+  { value: "javascript", label: "JS" },
+  { value: "typescript", label: "TS" },
+  { value: "python", label: "Python" },
+  { value: "plaintext", label: "文本" },
+]
+const CELL_EDIT_DELAY_MS = 220
+
+const cellViewerOpen = ref(false)
+const cellViewerDiscardDialogOpen = ref(false)
+const cellViewer = reactive({
+  rowIndex: -1,
+  page: 1,
+  globalIndex: null,
+  columnName: "",
+  isInsert: false,
+  sourceKind: "page",
+  originalText: "",
+  draftText: "",
+  mode: "preview",
+  manualLanguage: "auto",
+})
 
 // ── 导出 ──
 const exportDialogOpen = ref(false)
@@ -1579,6 +1610,29 @@ const tableFindCounterText = computed(() => {
   if (tableFindIndexing.value) return "索引中...";
   if (tableFindMatches.value.length === 0 || tableFindCursor.value < 0) return "0/0";
   return `${tableFindCursor.value + 1}/${tableFindMatches.value.length}`;
+});
+const cellViewerDirty = computed(() => cellViewer.draftText !== cellViewer.originalText);
+const cellViewerPreview = computed(() => buildCellViewerPreview({
+  text: cellViewer.draftText,
+  manualLanguage: cellViewer.manualLanguage,
+}));
+const cellViewerCanSave = computed(() => editMode.value && cellViewerDirty.value);
+const cellViewerEditSupported = computed(() =>
+  cellViewer.isInsert ||
+  cellViewer.sourceKind === "page" ||
+  (cellViewer.sourceKind === "hit" && cellViewer.page === tableView.page)
+);
+const cellViewerCanEnterEdit = computed(() => cellViewerEditSupported.value && (!editMode.value || cellViewer.mode !== "edit"));
+const cellViewerTitle = computed(() => {
+  if (!cellViewer.columnName) return "单元格详细内容";
+  const rowLabel = cellViewer.isInsert
+    ? "新增行"
+    : (cellViewer.globalIndex != null ? `第 ${cellViewer.globalIndex} 行` : `第 ${cellViewer.rowIndex + 1} 行`);
+  return `${cellViewer.columnName} · ${rowLabel}`;
+});
+const cellViewerEditHint = computed(() => {
+  if (cellViewerEditSupported.value) return "";
+  return "汇总命中视图仅支持查看，编辑请切回原页数据";
 });
 
 function normalizeUiScale(value) {
@@ -3579,6 +3633,28 @@ function onWindowKeydown(event) {
 
   if (tableCommandOpen.value) return;
 
+  if (cellViewerDiscardDialogOpen.value && event.key === "Escape") {
+    event.preventDefault();
+    cellViewerDiscardDialogOpen.value = false;
+    return;
+  }
+
+  if (cellViewerOpen.value) {
+    if (withPrimary && !event.altKey && lower === "s" && cellViewer.mode === "edit" && cellViewerCanSave.value) {
+      event.preventDefault();
+      saveCellViewerChanges();
+      return;
+    }
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCellViewer();
+      return;
+    }
+    if (!isEditableTarget(event.target)) {
+      return;
+    }
+  }
+
   if (tableOpen.value && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
     event.preventDefault();
     openTableFind();
@@ -3774,6 +3850,16 @@ function onWindowKeydown(event) {
 
   if (resultZoomOpen.value) {
     resultZoomOpen.value = false;
+    return;
+  }
+
+  if (cellViewerDiscardDialogOpen.value) {
+    cellViewerDiscardDialogOpen.value = false;
+    return;
+  }
+
+  if (cellViewerOpen.value) {
+    closeCellViewer();
     return;
   }
 
@@ -5141,9 +5227,183 @@ function doCloseTableDialog() {
   tableView.hitNavCursor = -1;
   tableView.focusedHitLocalIndex = null;
   setDetailHitContext();
+  forceCloseCellViewer();
 }
 
 // ── 编辑模式：工具函数 ──
+function clearPendingCellEditTimer() {
+  if (pendingCellEditTimer) {
+    clearTimeout(pendingCellEditTimer)
+    pendingCellEditTimer = null
+  }
+}
+
+function scheduleCellEditStart(rowIndex, columnName, isInsert = false) {
+  if (!editMode.value) return
+  clearPendingCellEditTimer()
+  pendingCellEditTimer = setTimeout(() => {
+    pendingCellEditTimer = null
+    if (isInsert) {
+      startNewRowCellEdit(rowIndex, columnName)
+      return
+    }
+    startCellEdit(rowIndex, columnName)
+  }, CELL_EDIT_DELAY_MS)
+}
+
+function forceCloseCellViewer() {
+  cellViewerOpen.value = false
+  cellViewerDiscardDialogOpen.value = false
+  Object.assign(cellViewer, {
+    rowIndex: -1,
+    page: tableView.page,
+    globalIndex: null,
+    columnName: "",
+    isInsert: false,
+    sourceKind: "page",
+    originalText: "",
+    draftText: "",
+    mode: "preview",
+    manualLanguage: "auto",
+  })
+}
+
+function closeCellViewer() {
+  if (cellViewerDirty.value) {
+    cellViewerDiscardDialogOpen.value = true
+    return
+  }
+  forceCloseCellViewer()
+}
+
+function discardCellViewerChanges() {
+  cellViewerDiscardDialogOpen.value = false
+  forceCloseCellViewer()
+}
+
+function resolvePageCellValue(rowIndex, columnName) {
+  return String(tableView.rows[rowIndex]?.[columnName] ?? "")
+}
+
+function resolveInsertCellValue(insertIndex, columnName) {
+  return String(editChanges.inserts[insertIndex]?.[columnName] ?? "")
+}
+
+function openCellViewer({
+  rowIndex,
+  columnName,
+  value,
+  page = tableView.page,
+  globalIndex = null,
+  isInsert = false,
+  sourceKind = "page",
+} = {}) {
+  clearPendingCellEditTimer()
+  confirmCellEdit()
+  Object.assign(cellViewer, {
+    rowIndex,
+    page,
+    globalIndex,
+    columnName,
+    isInsert,
+    sourceKind,
+    originalText: String(value ?? ""),
+    draftText: String(value ?? ""),
+    mode: "preview",
+    manualLanguage: "auto",
+  })
+  cellViewerDiscardDialogOpen.value = false
+  cellViewerOpen.value = true
+}
+
+function openPageCellViewer(rowIndex, columnName) {
+  openCellViewer({
+    rowIndex,
+    columnName,
+    value: resolvePageCellValue(rowIndex, columnName),
+    globalIndex: (tableView.page - 1) * tableView.pageSize + rowIndex + 1,
+    sourceKind: "page",
+  })
+}
+
+function openInsertCellViewer(insertIndex, columnName) {
+  openCellViewer({
+    rowIndex: insertIndex,
+    columnName,
+    value: resolveInsertCellValue(insertIndex, columnName),
+    isInsert: true,
+    sourceKind: "insert",
+  })
+}
+
+function openHitCellViewer(item, columnName) {
+  openCellViewer({
+    rowIndex: Number(item?.localIndex ?? -1),
+    columnName,
+    value: String(item?.row?.[columnName] ?? ""),
+    page: Number(item?.page || tableView.page),
+    globalIndex: Number.isFinite(Number(item?.globalIndex)) ? Number(item.globalIndex) : null,
+    sourceKind: "hit",
+  })
+}
+
+function onPageCellClick(rowIndex, columnName) {
+  scheduleCellEditStart(rowIndex, columnName, false)
+}
+
+function onPageCellDoubleClick(rowIndex, columnName) {
+  openPageCellViewer(rowIndex, columnName)
+}
+
+function onInsertCellClick(insertIndex, columnName) {
+  scheduleCellEditStart(insertIndex, columnName, true)
+}
+
+function onInsertCellDoubleClick(insertIndex, columnName) {
+  openInsertCellViewer(insertIndex, columnName)
+}
+
+function onHitCellDoubleClick(item, columnName) {
+  openHitCellViewer(item, columnName)
+}
+
+function focusCellViewerEditor() {
+  nextTick(() => {
+    const el = document.getElementById("cell-viewer-editor")
+    if (el) el.focus()
+  })
+}
+
+function enterCellViewerEditMode() {
+  if (!cellViewerEditSupported.value) return
+  cellViewer.mode = "edit"
+  focusCellViewerEditor()
+}
+
+function requestEditModeAccess(onSuccess) {
+  if (editMode.value) {
+    onSuccess()
+    return
+  }
+  editDateSuccessCallback.value = onSuccess
+  editDateInput.value = ""
+  editDateError.value = false
+  editDateDialogOpen.value = true
+  nextTick(() => document.getElementById("edit-date-input")?.focus())
+}
+
+function closeEditDateDialog() {
+  editDateDialogOpen.value = false
+  editDateSuccessCallback.value = null
+}
+
+function startCellViewerEditing() {
+  if (!cellViewerEditSupported.value) return
+  requestEditModeAccess(() => {
+    enterCellViewerEditMode()
+  })
+}
+
 function getTablePrimaryKeys() {
   return tableView.columns.filter(c => c.is_primary_key).map(c => c.column_name)
 }
@@ -5163,6 +5423,49 @@ const editSaveSummary = computed(() => {
   return { updates, inserts, deletes, total: updates + inserts + deletes }
 })
 
+function applyRowCellChange(rowIndex, columnName, nextValue) {
+  const row = tableView.rows[rowIndex]
+  if (!row) return false
+  const key = computeRowKey(row, rowIndex)
+  if (editChanges.deletes.has(key)) return false
+  if (!editChanges.updates.has(key)) {
+    const pks = getTablePrimaryKeys()
+    const whereKeys = {}
+    if (pks.length > 0) {
+      pks.forEach(pk => { whereKeys[pk] = String(row[pk] ?? "") })
+    } else {
+      tableView.columns.forEach(c => { whereKeys[c.column_name] = String(row[c.column_name] ?? "") })
+    }
+    editChanges.updates.set(key, { whereKeys, changes: {} })
+  }
+  editChanges.updates.get(key).changes[columnName] = nextValue
+  tableView.rows[rowIndex][columnName] = nextValue
+  editDirty.value = true
+  return true
+}
+
+function applyInsertCellChange(insertIndex, columnName, nextValue) {
+  if (!editChanges.inserts[insertIndex]) return false
+  editChanges.inserts[insertIndex][columnName] = nextValue
+  editDirty.value = true
+  return true
+}
+
+function saveCellViewerChanges() {
+  if (!editMode.value) return
+  const nextValue = cellViewer.draftText
+  let changed = false
+  if (cellViewer.isInsert) {
+    changed = applyInsertCellChange(cellViewer.rowIndex, cellViewer.columnName, nextValue)
+  } else if (cellViewer.sourceKind === "page" || (cellViewer.sourceKind === "hit" && cellViewer.page === tableView.page)) {
+    changed = applyRowCellChange(cellViewer.rowIndex, cellViewer.columnName, nextValue)
+  }
+  if (!changed) return
+  cellViewer.originalText = nextValue
+  showCopyToast("单元格内容已更新，记得保存更改", "success")
+  forceCloseCellViewer()
+}
+
 // ── 编辑模式：日期密码验证 ──
 function onEditToggleClick() {
   if (editMode.value) {
@@ -5173,10 +5476,9 @@ function onEditToggleClick() {
     }
     exitEditMode()
   } else {
-    editDateInput.value = ''
-    editDateError.value = false
-    editDateDialogOpen.value = true
-    nextTick(() => document.getElementById('edit-date-input')?.focus())
+    requestEditModeAccess(() => {
+      enterEditMode()
+    })
   }
 }
 function validateEditDate() {
@@ -5184,7 +5486,10 @@ function validateEditDate() {
   const expected = `${today.getFullYear()}${String(today.getMonth()+1).padStart(2,'0')}${String(today.getDate()).padStart(2,'0')}`
   if (editDateInput.value === expected) {
     editDateDialogOpen.value = false
-    enterEditMode()
+    const callback = editDateSuccessCallback.value
+    editDateSuccessCallback.value = null
+    if (callback) callback()
+    else enterEditMode()
   } else {
     editDateError.value = true
     setTimeout(() => { editDateError.value = false }, 500)
@@ -5253,6 +5558,7 @@ function triggerExitGlow(callback) {
 
 // ── 编辑模式：单元格编辑 ──
 function startCellEdit(rowIndex, columnName) {
+  clearPendingCellEditTimer()
   if (!editMode.value) return
   const key = computeRowKey(tableView.rows[rowIndex], rowIndex)
   if (editChanges.deletes.has(key)) return
@@ -5267,21 +5573,7 @@ function confirmCellEdit() {
   if (!editingCell.active) return
   const { rowIndex, columnName, originalValue, currentValue } = editingCell
   if (currentValue !== originalValue) {
-    const row = tableView.rows[rowIndex]
-    const key = computeRowKey(row, rowIndex)
-    if (!editChanges.updates.has(key)) {
-      const pks = getTablePrimaryKeys()
-      const whereKeys = {}
-      if (pks.length > 0) {
-        pks.forEach(pk => { whereKeys[pk] = String(row[pk] ?? '') })
-      } else {
-        tableView.columns.forEach(c => { whereKeys[c.column_name] = String(row[c.column_name] ?? '') })
-      }
-      editChanges.updates.set(key, { whereKeys, changes: {} })
-    }
-    editChanges.updates.get(key).changes[columnName] = currentValue
-    tableView.rows[rowIndex][columnName] = currentValue
-    editDirty.value = true
+    applyRowCellChange(rowIndex, columnName, currentValue)
   }
   Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
 }
@@ -5305,6 +5597,7 @@ function onCellEditKeydown(e) {
   }
 }
 function startNewRowCellEdit(insertIdx, columnName) {
+  clearPendingCellEditTimer()
   if (!editMode.value) return
   const original = String(editChanges.inserts[insertIdx]?.[columnName] ?? '')
   // Use a special index for new rows: offset by existing rows count
@@ -5318,10 +5611,7 @@ function startNewRowCellEdit(insertIdx, columnName) {
 function confirmNewRowCellEdit(insertIdx) {
   if (!editingCell.active) return
   const { columnName, currentValue } = editingCell
-  if (editChanges.inserts[insertIdx]) {
-    editChanges.inserts[insertIdx][columnName] = currentValue
-    editDirty.value = true
-  }
+  applyInsertCellChange(insertIdx, columnName, currentValue)
   Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
 }
 function onNewRowCellEditKeydown(e, insertIdx) {
@@ -6668,7 +6958,8 @@ function escapeHtml(str) {
                           tableFindFocus.columnName === col.column_name,
                         'edit-cell-modified': editMode && isCellModified(row, idx, col.column_name),
                       }"
-                      @click="editMode && startCellEdit(idx, col.column_name)"
+                      @click="onPageCellClick(idx, col.column_name)"
+                      @dblclick="onPageCellDoubleClick(idx, col.column_name)"
                     >
                       <input v-if="editingCell.active && editingCell.rowIndex === idx && editingCell.columnName === col.column_name"
                         id="edit-cell-input"
@@ -6687,7 +6978,8 @@ function escapeHtml(str) {
                     </td>
                     <td v-for="col in tableView.columns" :key="col.column_name"
                       :style="getColumnStyle(col.column_name)"
-                      @click="startNewRowCellEdit(nIdx, col.column_name)"
+                      @click="onInsertCellClick(nIdx, col.column_name)"
+                      @dblclick="onInsertCellDoubleClick(nIdx, col.column_name)"
                     >
                       <input v-if="editingCell.active && editingCell.rowIndex === (tableView.rows.length + nIdx) && editingCell.columnName === col.column_name"
                         id="edit-cell-input"
@@ -6786,6 +7078,7 @@ function escapeHtml(str) {
                       :key="columnName"
                       :style="getColumnStyle(columnName)"
                       :class="{ 'hit-cell': isDataCellHit(item.row, columnName) }"
+                      @dblclick="onHitCellDoubleClick(item, columnName)"
                     >
                       <div class="td-clip" v-html="renderDataCell(item.row, columnName)"></div>
                     </td>
@@ -6799,6 +7092,83 @@ function escapeHtml(str) {
       </div>
       </div>
       </div>
+    </section>
+  </div>
+
+  <div v-if="cellViewerOpen" class="dialog-mask cell-viewer-mask" @click.self="closeCellViewer">
+    <section class="modal-card wide cell-viewer-modal">
+      <header class="modal-header cell-viewer-header">
+        <div class="cell-viewer-title-wrap">
+          <h3>{{ cellViewerTitle }}</h3>
+          <p class="cell-viewer-subtitle">
+            {{ tableView.tableName }} · {{ cellViewerPreview.isFormattedJson ? "JSON 已自动美化" : "完整单元格内容" }}
+          </p>
+        </div>
+        <div class="cell-viewer-header-actions">
+          <select v-model="cellViewer.manualLanguage" class="cell-viewer-language-select">
+            <option v-for="option in CELL_VIEWER_LANGUAGE_OPTIONS" :key="option.value" :value="option.value">
+              {{ option.label }}
+            </option>
+          </select>
+          <button class="small-btn" @click="copyText(cellViewer.draftText)">复制</button>
+          <button
+            v-if="cellViewer.mode === 'preview'"
+            class="small-btn"
+            :disabled="!cellViewerCanEnterEdit"
+            :title="cellViewerEditHint || (editMode ? '在查看器中直接编辑当前单元格' : '通过日期校验后进入查看器编辑')"
+            @click="startCellViewerEditing"
+          >
+            {{ editMode ? "编辑" : "进入编辑" }}
+          </button>
+          <button v-else class="small-btn" @click="cellViewer.mode = 'preview'">返回预览</button>
+          <button class="icon-btn" @click="closeCellViewer">✕</button>
+        </div>
+      </header>
+      <div class="cell-viewer-body">
+        <div class="cell-viewer-meta">
+          <span class="cell-viewer-pill">检测：{{ cellViewerPreview.detectedLanguage }}</span>
+          <span class="cell-viewer-pill">显示：{{ cellViewerPreview.activeLanguage }}</span>
+          <span v-if="cellViewerEditHint" class="cell-viewer-hint">{{ cellViewerEditHint }}</span>
+        </div>
+        <div v-if="cellViewer.mode === 'preview'" class="cell-viewer-preview-shell">
+          <pre class="cell-viewer-preview"><code class="hljs" v-html="cellViewerPreview.html"></code></pre>
+        </div>
+        <div v-else class="cell-viewer-editor-shell">
+          <textarea
+            id="cell-viewer-editor"
+            v-model="cellViewer.draftText"
+            class="cell-viewer-editor"
+            spellcheck="false"
+          ></textarea>
+        </div>
+      </div>
+      <footer class="modal-footer cell-viewer-footer">
+        <span class="cell-viewer-footer-note">
+          {{ cellViewer.mode === "edit"
+            ? (cellViewerDirty ? "当前有未写回的修改" : "编辑器内容尚未变化")
+            : "支持 JSON / JavaScript / TypeScript / Python 的格式化预览" }}
+        </span>
+        <div class="cell-viewer-footer-actions">
+          <button v-if="cellViewer.mode === 'edit'" class="small-btn" :disabled="!cellViewerDirty" @click="cellViewer.draftText = cellViewer.originalText">重置</button>
+          <button v-if="cellViewer.mode === 'edit'" class="primary-btn" :disabled="!cellViewerCanSave" @click="saveCellViewerChanges">写回单元格</button>
+        </div>
+      </footer>
+    </section>
+  </div>
+
+  <div v-if="cellViewerDiscardDialogOpen" class="dialog-mask cell-viewer-discard-mask" @click.self="cellViewerDiscardDialogOpen = false">
+    <section class="modal-card cell-viewer-discard-dialog">
+      <header class="modal-header">
+        <h3>放弃查看器修改？</h3>
+        <button class="icon-btn" @click="cellViewerDiscardDialogOpen = false">✕</button>
+      </header>
+      <div class="edit-unsaved-body">
+        <p>当前单元格还有未写回的修改，关闭后这些查看器内的内容会丢失。</p>
+      </div>
+      <footer class="modal-footer">
+        <button class="small-btn" @click="cellViewerDiscardDialogOpen = false">继续编辑</button>
+        <button class="primary-btn danger" @click="discardCellViewerChanges">放弃修改</button>
+      </footer>
     </section>
   </div>
 
@@ -7158,11 +7528,11 @@ function escapeHtml(str) {
   </div>
 
   <!-- 日期密码验证弹窗 -->
-  <div v-if="editDateDialogOpen" class="dialog-mask" @click.self="editDateDialogOpen = false">
+  <div v-if="editDateDialogOpen" class="dialog-mask" @click.self="closeEditDateDialog">
     <section :class="['modal-card', 'edit-date-dialog', { shake: editDateError }]">
       <header class="modal-header">
         <h3>进入编辑模式</h3>
-        <button class="icon-btn" @click="editDateDialogOpen = false">✕</button>
+        <button class="icon-btn" @click="closeEditDateDialog">✕</button>
       </header>
       <div class="edit-date-body">
         <p>请输入当前日期以验证身份</p>
@@ -7173,7 +7543,7 @@ function escapeHtml(str) {
         <p v-if="editDateError" class="edit-date-error-text">日期不正确，请重试</p>
       </div>
       <footer class="modal-footer">
-        <button class="small-btn" @click="editDateDialogOpen = false">取消</button>
+        <button class="small-btn" @click="closeEditDateDialog">取消</button>
         <button class="primary-btn" @click="validateEditDate">确认</button>
       </footer>
     </section>
