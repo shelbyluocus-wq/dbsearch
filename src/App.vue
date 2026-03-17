@@ -7110,15 +7110,17 @@ function escapeHtml(str) {
                       :class="{ 'hit-col': isDataColumnHit(col.column_name) }"
                       :style="getColumnStyle(col.column_name)"
                     >
-                      <div class="th-content" v-html="renderTableColumnHeader(col.column_name)"></div>
-                      <button
-                        v-if="overflowingColumnMap[col.column_name] || collapsedColumnMap[col.column_name]"
-                        class="column-collapse-badge"
-                        :class="{ active: collapsedColumnMap[col.column_name] }"
-                        :title="collapsedColumnMap[col.column_name] ? '双击恢复列宽' : '双击收窄到字段名宽度'"
-                        @click.stop.prevent
-                        @dblclick.stop.prevent="handleColumnCollapseToggle(col.column_name)"
-                      >◢</button>
+                      <div class="th-content">
+                        <span class="th-label" v-html="renderTableColumnHeader(col.column_name)"></span>
+                        <button
+                          v-if="overflowingColumnMap[col.column_name] || collapsedColumnMap[col.column_name]"
+                          class="column-collapse-badge"
+                          :class="{ active: collapsedColumnMap[col.column_name] }"
+                          :title="collapsedColumnMap[col.column_name] ? '双击恢复列宽' : '双击收窄到字段名宽度'"
+                          @click.stop.prevent
+                          @dblclick.stop.prevent="handleColumnCollapseToggle(col.column_name)"
+                        >◢</button>
+                      </div>
                       <span class="col-resize-handle" @pointerdown="startColumnResize($event, col.column_name)"></span>
                     </th>
                   </tr>
@@ -7264,15 +7266,17 @@ function escapeHtml(str) {
                       :data-column-name="columnName"
                       :style="getColumnStyle(columnName)"
                     >
-                      <div class="th-content" v-html="renderDetailHighlighted(columnName)"></div>
-                      <button
-                        v-if="overflowingColumnMap[columnName] || collapsedColumnMap[columnName]"
-                        class="column-collapse-badge"
-                        :class="{ active: collapsedColumnMap[columnName] }"
-                        :title="collapsedColumnMap[columnName] ? '双击恢复列宽' : '双击收窄到字段名宽度'"
-                        @click.stop.prevent
-                        @dblclick.stop.prevent="handleColumnCollapseToggle(columnName)"
-                      >◢</button>
+                      <div class="th-content">
+                        <span class="th-label" v-html="renderDetailHighlighted(columnName)"></span>
+                        <button
+                          v-if="overflowingColumnMap[columnName] || collapsedColumnMap[columnName]"
+                          class="column-collapse-badge"
+                          :class="{ active: collapsedColumnMap[columnName] }"
+                          :title="collapsedColumnMap[columnName] ? '双击恢复列宽' : '双击收窄到字段名宽度'"
+                          @click.stop.prevent
+                          @dblclick.stop.prevent="handleColumnCollapseToggle(columnName)"
+                        >◢</button>
+                      </div>
                       <span class="col-resize-handle" @pointerdown="startColumnResize($event, columnName)"></span>
                     </th>
                   </tr>
