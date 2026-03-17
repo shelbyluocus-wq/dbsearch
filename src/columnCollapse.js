@@ -3,6 +3,18 @@ function toPositiveNumber(value, fallback = 0) {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : fallback;
 }
 
+export function measureColumnHeaderTextWidth({
+  text,
+  measureText,
+} = {}) {
+  const label = String(text || "");
+  if (!label) return 0;
+  if (typeof measureText === "function") {
+    return Math.max(1, Math.round(toPositiveNumber(measureText(label))));
+  }
+  return Math.max(1, Math.round(label.length * 8));
+}
+
 export function computeAutoCollapsedWidth({
   headerTextWidth,
   horizontalPadding = 16,

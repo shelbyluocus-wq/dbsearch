@@ -41,6 +41,7 @@ import {
 import {
   clearCollapsedColumnState,
   computeAutoCollapsedWidth,
+  measureColumnHeaderTextWidth,
   shouldShowColumnCollapseBadge,
   toggleColumnCollapsedState,
 } from "./columnCollapse.js";
@@ -505,6 +506,7 @@ let columnResizeState = null;
 let tableLayoutObserver = null;
 let tableLayoutRaf = 0;
 let columnOverflowMeasureRaf = 0;
+let columnHeaderMeasureCanvas = null;
 let tablePageSizeAdjustToken = 0;
 let tableTabsMeasureRaf = 0;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
@@ -5069,7 +5071,27 @@ function getRenderedColumnWidth(columnName) {
 function getHeaderContentWidth(columnName) {
   const th = getRenderedHeaderCell(columnName);
   const content = th?.querySelector?.(".th-content");
-  return Math.round(Number(content?.scrollWidth) || Number(content?.getBoundingClientRect?.().width) || 0);
+  const styles = content ? window.getComputedStyle(content) : null;
+  if (!columnHeaderMeasureCanvas && typeof document !== "undefined") {
+    columnHeaderMeasureCanvas = document.createElement("canvas");
+  }
+  const context = columnHeaderMeasureCanvas?.getContext?.("2d");
+  const font = styles
+    ? [
+        styles.fontStyle,
+        styles.fontVariant,
+        styles.fontWeight,
+        styles.fontSize,
+        styles.fontFamily,
+      ].filter(Boolean).join(" ")
+    : "";
+  if (context && font) {
+    context.font = font;
+  }
+  return measureColumnHeaderTextWidth({
+    text: columnName,
+    measureText: context ? (text) => context.measureText(text).width : null,
+  });
 }
 
 function replaceColumnCollapseState(nextCollapsedColumns = {}, nextRestoreWidths = {}) {

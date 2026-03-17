@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   clearCollapsedColumnState,
   computeAutoCollapsedWidth,
+  measureColumnHeaderTextWidth,
   shouldShowColumnCollapseBadge,
   toggleColumnCollapsedState,
 } from "./columnCollapse.js";
@@ -18,6 +19,15 @@ test("computeAutoCollapsedWidth uses header content width instead of forcing the
 
   assert.equal(width, 66);
   assert.ok(width < 80);
+});
+
+test("measureColumnHeaderTextWidth uses the actual text measurement instead of a stretched header box width", () => {
+  const width = measureColumnHeaderTextWidth({
+    text: "DutyDesc",
+    measureText: () => 58.4,
+  });
+
+  assert.equal(width, 58);
 });
 
 test("toggleColumnCollapsedState stores the previous width the first time a column is collapsed", () => {
