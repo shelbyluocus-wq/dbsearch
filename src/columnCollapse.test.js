@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   clearCollapsedColumnState,
   computeAutoCollapsedWidth,
+  shouldShowColumnCollapseBadge,
   toggleColumnCollapsedState,
 } from "./columnCollapse.js";
 
@@ -73,4 +74,34 @@ test("clearCollapsedColumnState removes collapse bookkeeping after manual resize
 
   assert.deepEqual(next.nextCollapsedColumns, { summary: true });
   assert.deepEqual(next.nextRestoreWidths, { summary: 180 });
+});
+
+test("shouldShowColumnCollapseBadge returns true when the current width is clearly larger than the target width", () => {
+  const visible = shouldShowColumnCollapseBadge({
+    currentWidth: 220,
+    targetWidth: 80,
+    isCollapsed: false,
+  });
+
+  assert.equal(visible, true);
+});
+
+test("shouldShowColumnCollapseBadge returns false when the current width is only slightly larger than the target width", () => {
+  const visible = shouldShowColumnCollapseBadge({
+    currentWidth: 102,
+    targetWidth: 80,
+    isCollapsed: false,
+  });
+
+  assert.equal(visible, false);
+});
+
+test("shouldShowColumnCollapseBadge stays visible for already collapsed columns", () => {
+  const visible = shouldShowColumnCollapseBadge({
+    currentWidth: 66,
+    targetWidth: 66,
+    isCollapsed: true,
+  });
+
+  assert.equal(visible, true);
 });

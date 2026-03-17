@@ -41,6 +41,7 @@ import {
 import {
   clearCollapsedColumnState,
   computeAutoCollapsedWidth,
+  shouldShowColumnCollapseBadge,
   toggleColumnCollapsedState,
 } from "./columnCollapse.js";
 
@@ -5135,19 +5136,22 @@ function measureOverflowingColumns() {
   if (!tableOpen.value || dataCollapsed.value) return;
   const columns = getActiveDataGridColumns();
   if (columns.length === 0) return;
-  const grid = tableModalRef.value?.querySelector?.(".grid-wrap .data-table");
-  if (!grid) return;
   columns.forEach((columnName) => {
-    const escaped = typeof CSS !== "undefined" && typeof CSS.escape === "function"
-      ? CSS.escape(columnName)
-      : String(columnName || "").replace(/"/g, '\\"');
-    const clips = grid.querySelectorAll(`td[data-column-name="${escaped}"] .td-clip`);
-    const hasOverflow = Array.from(clips).some((clip) => {
-      const clientWidth = Number(clip?.clientWidth || 0);
-      const scrollWidth = Number(clip?.scrollWidth || 0);
-      return clientWidth > 0 && scrollWidth - clientWidth > 1;
+    const headerTextWidth = getHeaderContentWidth(columnName);
+    if (headerTextWidth <= 0) return;
+    const currentWidth = Number(columnWidthMap[columnName] || getRenderedColumnWidth(columnName) || 0);
+    const targetWidth = computeAutoCollapsedWidth({
+      headerTextWidth,
+      horizontalPadding: COLUMN_COLLAPSE_HORIZONTAL_PADDING,
+      badgeAllowance: COLUMN_COLLAPSE_BADGE_ALLOWANCE,
+      resizeHandleAllowance: COLUMN_COLLAPSE_RESIZE_ALLOWANCE,
     });
-    if (hasOverflow) overflowingColumnMap[columnName] = true;
+    const visible = shouldShowColumnCollapseBadge({
+      currentWidth,
+      targetWidth,
+      isCollapsed: !!collapsedColumnMap[columnName],
+    });
+    if (visible) overflowingColumnMap[columnName] = true;
   });
 }
 

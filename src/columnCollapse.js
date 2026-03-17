@@ -81,3 +81,16 @@ export function clearCollapsedColumnState({
     nextRestoreWidths,
   };
 }
+
+export function shouldShowColumnCollapseBadge({
+  currentWidth,
+  targetWidth,
+  isCollapsed = false,
+} = {}) {
+  if (isCollapsed) return true;
+  const current = toPositiveNumber(currentWidth);
+  const target = toPositiveNumber(targetWidth);
+  if (current <= 0 || target <= 0) return false;
+  const threshold = Math.max(24, target * 0.25);
+  return current > target + threshold;
+}
