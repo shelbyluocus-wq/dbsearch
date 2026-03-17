@@ -5,7 +5,9 @@ import * as panelChrome from "./panelChrome.js";
 import {
   buildPanelTabs,
   describeTableFolderChip,
+  findHighlightRanges,
   normalizeBackgroundOpacity,
+  resolveTableDialogKeyAction,
 } from "./panelChrome.js";
 
 test("buildPanelTabs merges starred and opened tables without duplicates", () => {
@@ -114,6 +116,100 @@ test("rankTableSearchCandidates reuses fuzzy acronym scoring for abbreviated tab
   assert.deepEqual(
     ranked.map((item) => item.table_name),
     ["goodsprop", "gold_deposit_pool", "group_detail_profile"],
+  );
+});
+
+test("findHighlightRanges marks contiguous matches for full keyword hits", () => {
+  const ranges = findHighlightRanges("goodsprop", ["good"]);
+
+  assert.deepEqual(ranges, [{ start: 0, end: 4 }]);
+});
+
+test("findHighlightRanges marks fuzzy acronym letters in table names", () => {
+  const ranges = findHighlightRanges("goodsprop", ["gdp"]);
+
+  assert.deepEqual(ranges, [
+    { start: 0, end: 1 },
+    { start: 3, end: 4 },
+    { start: 5, end: 6 },
+  ]);
+});
+
+test("findHighlightRanges marks fuzzy acronym letters in comments", () => {
+  const ranges = findHighlightRanges("goods detail profile config", ["gdp"]);
+
+  assert.deepEqual(ranges, [
+    { start: 0, end: 1 },
+    { start: 3, end: 4 },
+    { start: 13, end: 14 },
+  ]);
+});
+
+test("findHighlightRanges handles case-insensitive matches and repeated letters", () => {
+  const ranges = findHighlightRanges("GoodsDepositPool", ["gdp"]);
+
+  assert.deepEqual(ranges, [
+    { start: 0, end: 1 },
+    { start: 3, end: 4 },
+    { start: 7, end: 8 },
+  ]);
+});
+
+test("findHighlightRanges returns empty ranges when nothing matches", () => {
+  assert.deepEqual(findHighlightRanges("orders", ["xyz"]), []);
+});
+
+test("resolveTableDialogKeyAction uses W for fullscreen and preserves close shortcuts", () => {
+  assert.equal(
+    resolveTableDialogKeyAction({
+      key: "w",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      tableOpen: true,
+      settingsOpen: false,
+      isEditable: false,
+    }),
+    "toggleFullscreen",
+  );
+
+  assert.equal(
+    resolveTableDialogKeyAction({
+      key: "w",
+      ctrlKey: true,
+      metaKey: false,
+      altKey: false,
+      tableOpen: true,
+      settingsOpen: false,
+      isEditable: false,
+    }),
+    "closeTable",
+  );
+
+  assert.equal(
+    resolveTableDialogKeyAction({
+      key: "w",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: true,
+      tableOpen: true,
+      settingsOpen: false,
+      isEditable: false,
+    }),
+    "closeAllTables",
+  );
+
+  assert.equal(
+    resolveTableDialogKeyAction({
+      key: "w",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      tableOpen: true,
+      settingsOpen: false,
+      isEditable: true,
+    }),
+    "none",
   );
 });
 

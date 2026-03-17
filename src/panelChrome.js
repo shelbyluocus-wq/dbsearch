@@ -10,11 +10,45 @@ function roundToStep(value, step) {
   return Math.round(value / step) * step;
 }
 
+function toSearchText(value) {
+  return String(value || "").toLowerCase();
+}
+
+function buildContiguousRanges(start, length) {
+  if (start < 0 || length <= 0) return [];
+  return [{ start, end: start + length }];
+}
+
+function mergeRanges(ranges = []) {
+  const normalized = (Array.isArray(ranges) ? ranges : [])
+    .filter((range) => Number.isFinite(range?.start) && Number.isFinite(range?.end) && range.end > range.start)
+    .sort((left, right) => {
+      if (left.start !== right.start) return left.start - right.start;
+      return left.end - right.end;
+    });
+
+  if (normalized.length === 0) return [];
+
+  const merged = [normalized[0]];
+  for (let index = 1; index < normalized.length; index += 1) {
+    const current = normalized[index];
+    const previous = merged[merged.length - 1];
+    if (current.start <= previous.end) {
+      previous.end = Math.max(previous.end, current.end);
+      continue;
+    }
+    merged.push({ ...current });
+  }
+
+  return merged;
+}
+
 function fuzzyMatch(query, text) {
-  if (!query || !text) return { matched: false, score: 0 };
+  if (!query || !text) return { matched: false, score: 0, mode: "none", ranges: [] };
   let qi = 0;
   let score = 0;
   let lastMatchIdx = -1;
+  const ranges = [];
   for (let ti = 0; ti < text.length && qi < query.length; ti += 1) {
     if (text[ti] === query[qi]) {
       score += 1;
@@ -22,10 +56,77 @@ function fuzzyMatch(query, text) {
       if (lastMatchIdx >= 0 && ti === lastMatchIdx + 1) score += 3;
       if (ti > 0 && /[_\-.\s]/.test(text[ti - 1])) score += 3;
       lastMatchIdx = ti;
+       ranges.push({ start: ti, end: ti + 1 });
       qi += 1;
     }
   }
-  return { matched: qi === query.length, score };
+  return {
+    matched: qi === query.length,
+    score: qi === query.length ? score : 0,
+    mode: qi === query.length ? "fuzzy" : "none",
+    ranges: qi === query.length ? ranges : [],
+  };
+}
+
+function matchSearchTerm(term, text) {
+  const normalizedTerm = toSearchText(term).trim();
+  const normalizedText = toSearchText(text);
+  if (!normalizedTerm || !normalizedText) {
+    return { matched: false, score: 0, mode: "none", ranges: [], index: -1 };
+  }
+
+  const index = normalizedText.indexOf(normalizedTerm);
+  if (index >= 0) {
+    return {
+      matched: true,
+      score: normalizedTerm.length * 10 + Math.max(0, 20 - index),
+      mode: "contiguous",
+      ranges: buildContiguousRanges(index, normalizedTerm.length),
+      index,
+    };
+  }
+
+  const fuzzy = fuzzyMatch(normalizedTerm, normalizedText);
+  return {
+    ...fuzzy,
+    index: fuzzy.ranges[0]?.start ?? -1,
+  };
+}
+
+export function findHighlightRanges(text, termsInput) {
+  const terms = [...new Set((Array.isArray(termsInput) ? termsInput : []).map((term) => String(term).trim()).filter(Boolean))]
+    .sort((left, right) => right.length - left.length);
+
+  if (!String(text || "") || terms.length === 0) return [];
+
+  return mergeRanges(
+    terms.flatMap((term) => {
+      const match = matchSearchTerm(term, text);
+      return match.matched ? match.ranges : [];
+    }),
+  );
+}
+
+export function resolveTableDialogKeyAction({
+  key = "",
+  ctrlKey = false,
+  metaKey = false,
+  altKey = false,
+  shiftKey = false,
+  tableOpen = false,
+  settingsOpen = false,
+  isEditable = false,
+} = {}) {
+  if (!tableOpen || settingsOpen || isEditable) return "none";
+
+  const lower = String(key || "").toLowerCase();
+  const withPrimary = ctrlKey || metaKey;
+  if (lower !== "w" || shiftKey) return "none";
+
+  if (withPrimary && !altKey) return "closeTable";
+  if (!withPrimary && altKey) return "closeAllTables";
+  if (!withPrimary && !altKey) return "toggleFullscreen";
+  return "none";
 }
 
 export function normalizeBackgroundOpacity(value) {
@@ -150,17 +251,17 @@ export function rankTableSearchCandidates(query, candidates = []) {
     const comment = String(item?.table_comment || "").trim().toLowerCase();
     if (!name) continue;
 
-    if (name.startsWith(normalizedQuery)) {
+    const nameMatch = matchSearchTerm(normalizedQuery, name);
+    if (nameMatch.matched && nameMatch.mode === "contiguous" && nameMatch.index === 0) {
       scored.push({ item, score: 3000 + Math.max(0, 1000 - name.length) });
       continue;
     }
 
-    if (name.includes(normalizedQuery)) {
+    if (nameMatch.matched && nameMatch.mode === "contiguous") {
       scored.push({ item, score: 2000 + Math.max(0, 1000 - name.length) });
       continue;
     }
 
-    const nameMatch = fuzzyMatch(normalizedQuery, name);
     if (nameMatch.matched) {
       scored.push({
         item,
@@ -169,12 +270,12 @@ export function rankTableSearchCandidates(query, candidates = []) {
       continue;
     }
 
-    if (comment.includes(normalizedQuery)) {
+    const commentMatch = matchSearchTerm(normalizedQuery, comment);
+    if (commentMatch.matched && commentMatch.mode === "contiguous") {
       scored.push({ item, score: 500 + Math.max(0, 500 - comment.length) });
       continue;
     }
 
-    const commentMatch = fuzzyMatch(normalizedQuery, comment);
     if (commentMatch.matched) {
       scored.push({ item, score: commentMatch.score });
     }

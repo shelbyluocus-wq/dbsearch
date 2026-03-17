@@ -9,9 +9,11 @@ import { WeatherEngine } from "./weatherEngine.js";
 import {
   buildPanelTabs,
   describeTableFolderChip,
+  findHighlightRanges,
   normalizeBackgroundOpacity,
   panelChromeConstants,
   rankTableSearchCandidates,
+  resolveTableDialogKeyAction,
   shouldUseReducedTransparencyMode,
 } from "./panelChrome.js";
 import {
@@ -1372,7 +1374,13 @@ const resultZoomTitle = computed(() => {
   if (resultZoomType.value === "data") return "数据值匹配";
   return "";
 });
-const resultZoomItems = computed(() => results[resultZoomType.value] || []);
+const resultZoomItems = computed(() => {
+  if (resultZoomType.value === "table") return sortedSearchTableResults.value;
+  if (resultZoomType.value === "column") return sortedSearchColumnResults.value;
+  if (resultZoomType.value === "comment") return sortedSearchCommentResults.value;
+  if (resultZoomType.value === "data") return sortedSearchDataResults.value;
+  return [];
+});
 const petDragging = ref(false);
 const petHiddenForSession = ref(false);
 const petSpriteClasses = computed(() => ({
@@ -3723,17 +3731,30 @@ function onWindowKeydown(event) {
     }
   }
 
-  if (tableOpen.value && !settingsOpen.value && !isEditableTarget(event.target) && lower === "w") {
-    if (withPrimary && !event.altKey) {
-      event.preventDefault();
-      closeTableDialog();
-      return;
-    }
-    if (!withPrimary && event.altKey) {
-      event.preventDefault();
-      closeTableDialogAndClearTabs();
-      return;
-    }
+  const tableDialogKeyAction = resolveTableDialogKeyAction({
+    key: event.key,
+    ctrlKey: event.ctrlKey,
+    metaKey: event.metaKey,
+    altKey: event.altKey,
+    shiftKey: event.shiftKey,
+    tableOpen: tableOpen.value,
+    settingsOpen: settingsOpen.value,
+    isEditable: isEditableTarget(event.target),
+  });
+  if (tableDialogKeyAction === "closeTable") {
+    event.preventDefault();
+    closeTableDialog();
+    return;
+  }
+  if (tableDialogKeyAction === "closeAllTables") {
+    event.preventDefault();
+    closeTableDialogAndClearTabs();
+    return;
+  }
+  if (tableDialogKeyAction === "toggleFullscreen") {
+    event.preventDefault();
+    toggleTableFullscreen().catch(() => {});
+    return;
   }
 
   if (!isEditableTarget(event.target) && isEventMatchingHotkey(event, config.personal.always_on_top_hotkey)) {
@@ -4934,14 +4955,18 @@ function sanitizeTerms(terms) {
 
 function renderHighlightedWithTerms(text, termsInput) {
   const content = String(text || "");
-  const terms = sanitizeTerms(termsInput).sort((a, b) => b.length - a.length);
-  if (terms.length === 0) return escapeHtml(content);
+  const ranges = findHighlightRanges(content, sanitizeTerms(termsInput));
+  if (ranges.length === 0) return escapeHtml(content);
 
-  const regex = new RegExp(`(${terms.map((term) => escapeRegExp(term)).join("|")})`, "ig");
-  const parts = content.split(regex);
-  return parts
-    .map((part, index) => (index % 2 === 1 ? `<mark>${escapeHtml(part)}</mark>` : escapeHtml(part)))
-    .join("");
+  let cursor = 0;
+  let output = "";
+  ranges.forEach((range) => {
+    output += escapeHtml(content.slice(cursor, range.start));
+    output += `<mark>${escapeHtml(content.slice(range.start, range.end))}</mark>`;
+    cursor = range.end;
+  });
+  output += escapeHtml(content.slice(cursor));
+  return output;
 }
 
 function containsAllTerms(text, terms) {
@@ -5721,9 +5746,6 @@ function escapeHtml(str) {
     .replace(/'/g, "&#039;");
 }
 
-function escapeRegExp(str) {
-  return String(str || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
 </script>
 
 <template>
@@ -5961,7 +5983,7 @@ function escapeRegExp(str) {
               >
                 <span :class="['star-btn', { starred: starredTables.has(item.table_name) }]" @click.stop="toggleStar(item.table_name)" title="星标">{{ starredTables.has(item.table_name) ? '★' : '☆' }}</span>
                 <div class="main" v-html="renderHighlighted(item.table_name)"></div>
-                <div class="sub">{{ getTableComment(item.table_name) || "-" }}</div>
+                <div class="sub" v-html="renderHighlighted(getTableComment(item.table_name) || '-')"></div>
                 <span
                   v-if="getTableFolderChip(item.table_name).visible"
                   :class="['badge', 'folder-badge', { 'is-uncategorized': getTableFolderChip(item.table_name).uncategorized }]"
@@ -6434,6 +6456,7 @@ function escapeRegExp(str) {
           <template v-if="resultZoomType === 'table'">
             <button v-for="item in resultZoomItems" :key="`${item.table_name}-${item.match_type}-${item.matched_text}`" class="list-item" @click="openFromMeta(item)">
               <div class="main" v-html="renderHighlighted(item.table_name)"></div>
+              <div class="sub" v-html="renderHighlighted(getTableComment(item.table_name) || '-')"></div>
               <span
                 v-if="getTableFolderChip(item.table_name).visible"
                 :class="['badge', 'folder-badge', { 'is-uncategorized': getTableFolderChip(item.table_name).uncategorized }]"
@@ -6461,9 +6484,9 @@ function escapeRegExp(str) {
             </button>
           </template>
           <template v-else>
-            <button v-for="item in resultZoomItems" :key="`${item.table_name}-${item.total_matches}`" class="list-item" @click="openFromData(item)">
-              <div class="main">{{ item.table_name }} · {{ item.total_matches }} 条命中</div>
-              <div class="sub">{{ (item.matched_columns || []).join(' · ') }}</div>
+            <button v-for="item in resultZoomItems" :key="`${item.table_name}-${item.row_index}-${item.column}`" class="list-item" @click="openFromData(item)">
+              <div class="main">{{ item.table_name }}</div>
+              <div class="sub" v-html="renderHighlighted(item.preview)"></div>
             </button>
           </template>
           <div v-if="resultZoomItems.length === 0" class="muted p-12">暂无结果</div>
