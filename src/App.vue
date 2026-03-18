@@ -6281,7 +6281,7 @@ function escapeHtml(str) {
           <button class="traffic-btn traffic-green" title="最大化/还原" @click="panelToggleMaximize"></button>
         </div>
         <div class="title-drag"></div>
-        <span class="window-title" @pointerdown.stop @dblclick.stop style="cursor:default">鹰捷v4.1</span>
+        <span class="window-title" @pointerdown.stop @dblclick.stop style="cursor:default">鹰捷v4.2</span>
         <button
           class="header-weather header-weather--action"
           :title="`${FIXED_WEATHER_CITY} ${weatherHeaderLabel} ${weatherTemp}°C`"
