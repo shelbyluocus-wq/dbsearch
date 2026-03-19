@@ -45,6 +45,17 @@ import {
   shouldShowColumnCollapseBadge,
   toggleColumnCollapsedState,
 } from "./columnCollapse.js";
+import { matchTableFindEntry } from "./tableFind.js";
+import {
+  applyPersistedTableTabOrder,
+  buildTableTabOrderStorageKey,
+  moveTableTab,
+  serializeTableTabOrder,
+} from "./tableTabsOrder.js";
+import {
+  hasExceededTabDragThreshold,
+  resolveTableTabDropIndex,
+} from "./tableTabDrag.js";
 
 const isTauriWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const windowLabel = ref("browser");
@@ -425,6 +436,7 @@ const allHitRows = ref([]);
 const allHitRowsLoading = ref(false);
 const tableFindOpen = ref(false);
 const tableFindKeyword = ref("");
+const tableFindExact = ref(false);
 const tableFindIndexing = ref(false);
 const tableFindMatches = ref([]);
 const tableFindCursor = ref(-1);
@@ -456,6 +468,17 @@ const slashActiveIndex = ref(0);
 const tableTabs = ref([]);
 const activeTableTabId = ref("");
 const tableTabsCompressed = ref(false);
+const tableTabDrag = reactive({
+  pointerId: null,
+  tabId: "",
+  startX: 0,
+  startY: 0,
+  overTabId: "",
+  insertAfter: false,
+  dragging: false,
+  didReorder: false,
+});
+const tableTabSuppressClickUntil = ref(0);
 const recentTables = ref([]);
 const recentTabsDropdownOpen = ref(false);
 const RECENT_TABLES_MAX = 10;
@@ -521,6 +544,7 @@ const TABLE_PAGE_SIZE_MIN = 1;
 const TABLE_PAGE_SIZE_MAX = 200;
 const TABLE_ROW_HEIGHT_FALLBACK = 28;
 const TABLE_HEADER_HEIGHT_FALLBACK = 32;
+const TABLE_TAB_DRAG_THRESHOLD = 6;
 const COLUMN_COLLAPSE_HORIZONTAL_PADDING = 16;
 const COLUMN_COLLAPSE_BADGE_ALLOWANCE = 20;
 const COLUMN_COLLAPSE_RESIZE_ALLOWANCE = 8;
@@ -1111,6 +1135,32 @@ function saveRecentTables() {
   try {
     localStorage.setItem(recentStorageKey(), JSON.stringify(recentTables.value));
   } catch { /* ignore */ }
+}
+function tableTabOrderStorageKey() {
+  return buildTableTabOrderStorageKey(config.shared.db);
+}
+function loadPersistedTableTabOrder() {
+  try {
+    const key = tableTabOrderStorageKey();
+    if (!key) return [];
+    const raw = localStorage.getItem(key);
+    if (!raw) return [];
+    const data = JSON.parse(raw);
+    return Array.isArray(data) ? data : [];
+  } catch {
+    return [];
+  }
+}
+function saveTableTabOrder(tabs = tableTabs.value) {
+  try {
+    const key = tableTabOrderStorageKey();
+    if (!key) return;
+    const order = serializeTableTabOrder(tabs);
+    if (order.length === 0) return;
+    localStorage.setItem(key, JSON.stringify(order));
+  } catch {
+    // ignore persistence failures
+  }
 }
 function addToRecentTables(tableName, tableComment) {
   recentTables.value = [
@@ -2219,6 +2269,7 @@ function createLiveTableSnapshot({ id, tableName } = {}) {
     tableFind: {
       open: tableFindOpen.value,
       keyword: tableFindKeyword.value,
+      exact: tableFindExact.value,
       indexing: tableFindIndexing.value,
       matches: cloneFindEntries(tableFindMatches.value),
       cursor: tableFindCursor.value,
@@ -2258,6 +2309,7 @@ function createNewTableSnapshot(tableName, rowIndex = null, columnName = null, h
     tableFind: {
       open: false,
       keyword: "",
+      exact: false,
       indexing: false,
       matches: [],
       cursor: -1,
@@ -2322,6 +2374,7 @@ function restoreLiveStateFromTableSnapshot(tab) {
   tableView.focusedHitLocalIndex = tab.focusedHitLocalIndex ?? null;
   tableFindOpen.value = !!tab.tableFind?.open;
   tableFindKeyword.value = String(tab.tableFind?.keyword || "");
+  tableFindExact.value = !!tab.tableFind?.exact;
   tableFindIndexing.value = false;
   tableFindMatches.value = cloneFindEntries(tab.tableFind?.matches);
   tableFindCursor.value = Number(tab.tableFind?.cursor ?? -1);
@@ -2356,6 +2409,25 @@ function snapshotActiveTableTab() {
     id: current.id,
     tableName: current.tableName,
   });
+}
+
+function detachTableTabDragListeners() {
+  window.removeEventListener("pointermove", onTableTabPointerMove);
+  window.removeEventListener("pointerup", onTableTabPointerUp);
+  window.removeEventListener("pointercancel", onTableTabPointerUp);
+  window.removeEventListener("blur", onTableTabPointerWindowBlur);
+}
+
+function clearTableTabDragState() {
+  detachTableTabDragListeners();
+  tableTabDrag.pointerId = null;
+  tableTabDrag.tabId = "";
+  tableTabDrag.startX = 0;
+  tableTabDrag.startY = 0;
+  tableTabDrag.overTabId = "";
+  tableTabDrag.insertAfter = false;
+  tableTabDrag.dragging = false;
+  tableTabDrag.didReorder = false;
 }
 
 function scrollTableTabIntoView(tabId, behavior = "smooth") {
@@ -2477,8 +2549,12 @@ async function openOrActivateTableTab(tableName, rowIndex = null, columnName = n
   snapshotActiveTableTab();
   hitCollectToken += 1;
   const nextTab = createNewTableSnapshot(normalizedName, rowIndex, columnName, hitContext);
-  tableTabs.value.push(nextTab);
+  tableTabs.value = applyPersistedTableTabOrder(
+    [...tableTabs.value, nextTab],
+    loadPersistedTableTabOrder(),
+  );
   activeTableTabId.value = nextTab.id;
+  saveTableTabOrder();
 
   resultZoomOpen.value = false;
   restoreLiveStateFromTableSnapshot(nextTab);
@@ -2517,6 +2593,9 @@ async function closeTableTab(tabId) {
   snapshotActiveTableTab();
   const wasActive = activeTableTabId.value === tabId;
   tableTabs.value.splice(index, 1);
+  if (tableTabs.value.length > 0) {
+    saveTableTabOrder();
+  }
 
   if (tableTabs.value.length === 0) {
     activeTableTabId.value = "";
@@ -2537,6 +2616,118 @@ async function closeTableTab(tabId) {
 function clearTableTabs() {
   tableTabs.value = [];
   activeTableTabId.value = "";
+  clearTableTabDragState();
+}
+
+function handleTableTabClick(tabId) {
+  if (Date.now() < tableTabSuppressClickUntil.value) return;
+  activateTableTab(tabId);
+}
+
+function handleTableTabClose(tabId) {
+  if (tableTabDrag.dragging) return;
+  closeTableTab(tabId);
+}
+
+function onTableTabPointerDown(event, tabId) {
+  if (event.button !== 0 || !tabId) return;
+  if (event.target?.closest?.(".table-tab-close")) return;
+  clearTableTabDragState();
+  tableTabDrag.pointerId = event.pointerId;
+  tableTabDrag.tabId = tabId;
+  tableTabDrag.startX = event.clientX;
+  tableTabDrag.startY = event.clientY;
+  const currentTarget = event.currentTarget;
+  if (currentTarget instanceof HTMLElement && typeof currentTarget.setPointerCapture === "function") {
+    currentTarget.setPointerCapture(event.pointerId);
+  }
+  window.addEventListener("pointermove", onTableTabPointerMove);
+  window.addEventListener("pointerup", onTableTabPointerUp);
+  window.addEventListener("pointercancel", onTableTabPointerUp);
+  window.addEventListener("blur", onTableTabPointerWindowBlur, { once: true });
+}
+
+function finalizeTableTabDrag() {
+  const draggedId = tableTabDrag.tabId;
+  const shouldSuppressClick = tableTabDrag.dragging;
+  const moved = tableTabDrag.didReorder;
+  clearTableTabDragState();
+  if (shouldSuppressClick) {
+    tableTabSuppressClickUntil.value = Date.now() + 180;
+  }
+  if (!moved) return;
+  saveTableTabOrder();
+  scrollTableTabIntoView(draggedId, "smooth");
+}
+
+function onTableTabPointerWindowBlur() {
+  finalizeTableTabDrag();
+}
+
+function onTableTabPointerUp(event) {
+  if (
+    tableTabDrag.pointerId !== null &&
+    event?.pointerId !== undefined &&
+    event.pointerId !== tableTabDrag.pointerId
+  ) {
+    return;
+  }
+  finalizeTableTabDrag();
+}
+
+function onTableTabPointerMove(event) {
+  if (
+    tableTabDrag.pointerId === null ||
+    event.pointerId !== tableTabDrag.pointerId ||
+    !tableTabDrag.tabId
+  ) {
+    return;
+  }
+
+  if (!tableTabDrag.dragging) {
+    const thresholdExceeded = hasExceededTabDragThreshold({
+      startX: tableTabDrag.startX,
+      startY: tableTabDrag.startY,
+      currentX: event.clientX,
+      currentY: event.clientY,
+      threshold: TABLE_TAB_DRAG_THRESHOLD,
+    });
+    if (!thresholdExceeded) return;
+    tableTabDrag.dragging = true;
+  }
+
+  event.preventDefault();
+  const hovered = document.elementFromPoint(event.clientX, event.clientY)?.closest?.(".table-tab");
+  if (!(hovered instanceof HTMLElement)) {
+    tableTabDrag.overTabId = "";
+    return;
+  }
+
+  const hoveredTabId = String(hovered.dataset.tabId || "");
+  if (!hoveredTabId || hoveredTabId === tableTabDrag.tabId) {
+    tableTabDrag.overTabId = "";
+    return;
+  }
+
+  const rect = hovered.getBoundingClientRect();
+  tableTabDrag.overTabId = hoveredTabId;
+  tableTabDrag.insertAfter = event.clientX >= rect.left + rect.width / 2;
+
+  const nextIndex = resolveTableTabDropIndex({
+    tabs: tableTabs.value,
+    draggedTabId: tableTabDrag.tabId,
+    hoveredTabId,
+    pointerX: event.clientX,
+    hoveredRect: rect,
+  });
+  if (nextIndex < 0) return;
+
+  const fromIndex = tableTabs.value.findIndex((tab) => tab.id === tableTabDrag.tabId);
+  if (fromIndex < 0 || fromIndex === nextIndex) return;
+
+  tableTabs.value = moveTableTab(tableTabs.value, fromIndex, nextIndex);
+  tableTabDrag.didReorder = true;
+  scheduleTableTabsCompressionMeasure();
 }
 
 function openTableCommandPalette({ slash = false } = {}) {
@@ -3033,6 +3224,7 @@ onBeforeUnmount(() => {
     columnOverflowMeasureRaf = 0;
   }
   stopColumnResize();
+  clearTableTabDragState();
 });
 
 watch(() => settingsDraft.petSkin, (newSkin) => {
@@ -3339,7 +3531,7 @@ watch(slashActiveIndex, async () => {
   active?.scrollIntoView?.({ block: "nearest" });
 });
 
-watch(tableFindKeyword, () => {
+watch(() => [tableFindKeyword.value, tableFindExact.value], () => {
   if (tableTabRestoring) return;
   runTableFind().catch(() => {});
 });
@@ -4650,6 +4842,7 @@ function invalidateTableFindIndex() {
 function resetTableFindState() {
   tableFindOpen.value = false;
   tableFindKeyword.value = "";
+  tableFindExact.value = false;
   invalidateTableFindIndex();
 }
 
@@ -4665,6 +4858,7 @@ function openTableFind() {
 function closeTableFind() {
   tableFindOpen.value = false;
   tableFindKeyword.value = "";
+  tableFindExact.value = false;
   invalidateTableFindIndex();
 }
 
@@ -4864,7 +5058,7 @@ async function focusTableFindMatch(match) {
 
 async function runTableFind() {
   if (!tableFindOpen.value) return;
-  const query = tableFindKeyword.value.trim().toLowerCase();
+  const query = tableFindKeyword.value.trim();
   if (!query) {
     tableFindMatches.value = [];
     tableFindCursor.value = -1;
@@ -4873,7 +5067,12 @@ async function runTableFind() {
   }
 
   await ensureTableFindIndex();
-  const matches = tableFindIndex.value.filter((item) => String(item.text || "").toLowerCase().includes(query));
+  const matches = tableFindIndex.value.filter((item) => matchTableFindEntry({
+    query,
+    exact: tableFindExact.value,
+    entryType: item?.type || "data",
+    text: item?.text || "",
+  }));
   tableFindMatches.value = matches;
   if (matches.length === 0) {
     tableFindCursor.value = -1;
@@ -5406,6 +5605,7 @@ function doCloseTableDialog() {
   snapshotActiveTableTab();
   resetTableFindState();
   clearColumnWidths();
+  clearTableTabDragState();
   stopTableTabsCompressionMeasure();
   tableTabsCompressed.value = false;
   stopTableLayoutObserver();
@@ -7012,17 +7212,42 @@ function escapeHtml(str) {
           v-for="tab in tableTabs"
           :key="tab.id"
           :id="`table-tab-${tab.id}`"
-          :class="['table-tab', { active: tab.id === activeTableTabId }]"
+          :data-tab-id="tab.id"
+          :class="[
+            'table-tab',
+            {
+              active: tab.id === activeTableTabId,
+              dragging: tab.id === tableTabDrag.tabId && tableTabDrag.dragging,
+              'drag-over-before': tableTabDrag.overTabId === tab.id && !tableTabDrag.insertAfter,
+              'drag-over-after': tableTabDrag.overTabId === tab.id && tableTabDrag.insertAfter,
+            },
+          ]"
           :title="tab.tableName"
-          @click="activateTableTab(tab.id)"
+          @click="handleTableTabClick(tab.id)"
+          @pointerdown="onTableTabPointerDown($event, tab.id)"
         >
           <span class="table-tab-label">{{ tab.tableName }}</span>
-          <span class="table-tab-close" title="关闭标签" @click.stop="closeTableTab(tab.id)">✕</span>
+          <span
+            class="table-tab-close"
+            title="关闭标签"
+            @pointerdown.stop
+            @click.stop="handleTableTabClose(tab.id)"
+          >✕</span>
         </button>
         <button class="table-tab-add" title="打开表 (Ctrl+P)" @click="openTableCommandPalette({ slash: true })">+</button>
       </section>
       <section v-if="tableFindOpen" class="table-find-bar">
         <input id="tableFindInput" v-model="tableFindKeyword" type="text" placeholder="检索当前表的全部分页文本..." @keydown="onTableFindInputKeydown" />
+        <label
+          :class="['table-find-exact-toggle', { active: tableFindExact }]"
+          title="仅对表数据单元格使用完全相等匹配"
+        >
+          <input v-model="tableFindExact" class="table-find-exact-input" type="checkbox" />
+          <span class="table-find-exact-pill">
+            <span class="table-find-exact-dot" aria-hidden="true"></span>
+            <span class="table-find-exact-text">精确</span>
+          </span>
+        </label>
         <span class="find-counter">{{ tableFindCounterText }}</span>
         <button class="small-btn" :disabled="tableFindMatches.length === 0" @click="jumpTableFind(-1)">上一条</button>
         <button class="small-btn" :disabled="tableFindMatches.length === 0" @click="jumpTableFind(1)">下一条</button>

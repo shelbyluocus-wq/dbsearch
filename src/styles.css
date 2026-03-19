@@ -2408,6 +2408,9 @@ mark {
   background: var(--surface-nav-tab);
   color: var(--text-sub);
   font-size: 12px;
+  position: relative;
+  cursor: pointer;
+  user-select: none;
   transition: flex-basis 220ms ease, min-width 220ms ease, max-width 220ms ease, padding 220ms ease, background 180ms ease, border-color 180ms ease, color 180ms ease, box-shadow 180ms ease, transform 160ms ease;
 }
 
@@ -2423,6 +2426,21 @@ mark {
   background: var(--surface-nav-tab-active);
   color: var(--accent-text);
   box-shadow: 0 10px 20px rgba(15, 23, 42, 0.08);
+}
+
+.table-tab.dragging {
+  opacity: 0.78;
+  cursor: grabbing;
+  transform: translateY(-3px) scale(1.02);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.18);
+}
+
+.table-tab.drag-over-before {
+  box-shadow: inset 3px 0 0 var(--accent-ring), 0 0 0 1px color-mix(in srgb, var(--accent-ring) 26%, transparent);
+}
+
+.table-tab.drag-over-after {
+  box-shadow: inset -3px 0 0 var(--accent-ring), 0 0 0 1px color-mix(in srgb, var(--accent-ring) 26%, transparent);
 }
 
 .table-tab-label {
@@ -2491,6 +2509,7 @@ mark {
 .table-find-bar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
   padding: 8px 12px;
   border-bottom: 1px solid rgba(0, 0, 0, 0.08);
@@ -2531,6 +2550,11 @@ mark {
   background: color-mix(in srgb, var(--bg-input) 90%, var(--bg-panel) 10%);
   border-color: color-mix(in srgb, var(--accent-line) 76%, var(--border-glass) 24%);
   color: var(--text-main);
+}
+
+.table-modal.reduced-transparency .table-find-exact-pill {
+  background: color-mix(in srgb, var(--surface-nav-tab) 90%, var(--bg-panel) 10%);
+  border-color: color-mix(in srgb, var(--accent-line) 76%, var(--border-glass) 24%);
 }
 
 .table-modal.reduced-transparency .table-content,
@@ -2711,7 +2735,7 @@ mark {
 
 .table-find-bar input {
   flex: 1;
-  min-width: 0;
+  min-width: 220px;
   height: 32px;
   border-radius: 8px;
   border: 1px solid rgba(2, 132, 199, 0.24);
@@ -2720,6 +2744,78 @@ mark {
   padding: 0 10px;
   font-size: 13px;
   outline: none;
+}
+
+.table-find-exact-toggle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+}
+
+.table-find-exact-input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.table-find-exact-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 62px;
+  height: 29px;
+  padding: 0 11px 0 10px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--surface-nav-tab-border) 92%, transparent);
+  background: color-mix(in srgb, var(--surface-nav-tab) 92%, rgba(255, 255, 255, 0.24) 8%);
+  color: var(--text-sub);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 1px 2px rgba(15, 23, 42, 0.06);
+  transition: background 160ms ease, border-color 160ms ease, color 160ms ease, box-shadow 160ms ease, transform 140ms ease;
+}
+
+.table-find-exact-toggle:hover .table-find-exact-pill {
+  border-color: var(--accent-line);
+  color: var(--text-main);
+  transform: translateY(-1px);
+}
+
+.table-find-exact-toggle.active .table-find-exact-pill {
+  background: color-mix(in srgb, var(--surface-nav-tab-active) 86%, var(--accent-soft) 14%);
+  border-color: var(--surface-nav-tab-active-border);
+  color: var(--accent-text);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18), 0 6px 16px color-mix(in srgb, var(--accent-ring) 18%, transparent);
+}
+
+.table-find-exact-input:focus-visible + .table-find-exact-pill {
+  outline: 2px solid color-mix(in srgb, var(--accent-ring) 88%, transparent);
+  outline-offset: 2px;
+}
+
+.table-find-exact-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  opacity: 0.44;
+  transform: scale(0.9);
+  transition: opacity 160ms ease, transform 160ms ease, box-shadow 160ms ease;
+}
+
+.table-find-exact-toggle.active .table-find-exact-dot {
+  opacity: 1;
+  transform: scale(1);
+  box-shadow: 0 0 0 4px color-mix(in srgb, currentColor 16%, transparent);
+}
+
+.table-find-exact-text {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .find-counter {
@@ -3877,6 +3973,17 @@ mark {
 [data-theme="midnight"] .table-find-bar input {
   background: rgba(255, 255, 255, 0.07);
 }
+[data-theme="midnight"] .table-find-exact-pill {
+  background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(34, 211, 238, 0.16);
+  color: #cbd5e1;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06), 0 1px 2px rgba(2, 8, 23, 0.26);
+}
+[data-theme="midnight"] .table-find-exact-toggle.active .table-find-exact-pill {
+  background: rgba(34, 211, 238, 0.16);
+  border-color: rgba(34, 211, 238, 0.42);
+  color: #67e8f9;
+}
 [data-theme="midnight"] .pet-menu-window {
   background: var(--surface-menu);
   border-color: rgba(255, 255, 255, 0.12);
@@ -4185,6 +4292,17 @@ mark {
 [data-theme="typewrite_dark"] .table-find-bar input {
   background: rgba(255, 228, 196, 0.07);
 }
+[data-theme="typewrite_dark"] .table-find-exact-pill {
+  background: rgba(255, 228, 196, 0.07);
+  border-color: rgba(216, 166, 87, 0.22);
+  color: #d9c7af;
+  box-shadow: inset 0 1px 0 rgba(255, 228, 196, 0.06), 0 1px 2px rgba(20, 16, 14, 0.3);
+}
+[data-theme="typewrite_dark"] .table-find-exact-toggle.active .table-find-exact-pill {
+  background: rgba(216, 166, 87, 0.18);
+  border-color: rgba(216, 166, 87, 0.42);
+  color: #f3c97d;
+}
 [data-theme="typewrite_dark"] .schema-table th,
 [data-theme="typewrite_dark"] .schema-table td {
   border-bottom-color: rgba(255, 228, 196, 0.10);
@@ -4267,6 +4385,17 @@ mark {
 [data-theme="typewrite_light"] .table-find-bar,
 [data-theme="typewrite_light"] .table-command-palette {
   background: rgba(255, 251, 244, 0.98);
+}
+[data-theme="typewrite_light"] .table-find-exact-pill {
+  background: rgba(255, 248, 240, 0.9);
+  border-color: rgba(192, 132, 87, 0.22);
+  color: #5f4a3a;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.66), 0 1px 2px rgba(107, 75, 49, 0.1);
+}
+[data-theme="typewrite_light"] .table-find-exact-toggle.active .table-find-exact-pill {
+  background: rgba(192, 132, 87, 0.16);
+  border-color: rgba(192, 132, 87, 0.4);
+  color: #9a5f37;
 }
 [data-theme="typewrite_light"] .modal-card {
   background: var(--glass-bg);
