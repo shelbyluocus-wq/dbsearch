@@ -147,54 +147,51 @@ export function buildPanelTabs({
   activeTableTabId = "",
 } = {}) {
   const merged = [];
-  const seen = new Map();
-
-  for (const tableName of starredTables) {
-    const normalized = normalizeTableName(tableName);
-    if (!normalized || seen.has(normalized)) continue;
-
-    const item = {
-      key: `starred:${normalized}`,
-      tableName: String(tableName).trim(),
-      tabId: "",
-      starred: true,
-      opened: false,
-      active: false,
-    };
-
-    seen.set(normalized, item);
-    merged.push(item);
-  }
+  const openedByName = new Map();
+  const closedStarred = [];
 
   for (const tab of tableTabs) {
     const normalized = normalizeTableName(tab?.tableName);
     if (!normalized) continue;
 
-    const existing = seen.get(normalized);
-    if (existing) {
-      existing.opened = true;
-      existing.tabId = existing.tabId || String(tab.id || "");
-      existing.active =
-        existing.active ||
-        existing.tabId === activeTableTabId ||
-        String(tab.id || "") === activeTableTabId;
-      continue;
-    }
-
     const item = {
       key: `opened:${tab.id || normalized}`,
       tableName: String(tab.tableName).trim(),
       tabId: String(tab.id || ""),
+      kind: "opened",
+      draggable: true,
       starred: false,
       opened: true,
       active: String(tab.id || "") === activeTableTabId,
     };
 
-    seen.set(normalized, item);
+    openedByName.set(normalized, item);
     merged.push(item);
   }
 
-  return merged;
+  for (const tableName of starredTables) {
+    const normalized = normalizeTableName(tableName);
+    if (!normalized) continue;
+
+    const existing = openedByName.get(normalized);
+    if (existing) {
+      existing.starred = true;
+      continue;
+    }
+
+    closedStarred.push({
+      key: `starred:${normalized}`,
+      tableName: String(tableName).trim(),
+      tabId: "",
+      kind: "starred-closed",
+      draggable: false,
+      starred: true,
+      opened: false,
+      active: false,
+    });
+  }
+
+  return [...merged, ...closedStarred];
 }
 
 export function describeTableFolderChip(tableName, tableFolders = []) {

@@ -54,8 +54,254 @@ import {
 } from "./tableTabsOrder.js";
 import {
   hasExceededTabDragThreshold,
-  resolveTableTabDropIndex,
+  resolveTabStripDropIndex,
 } from "./tableTabDrag.js";
+
+function createTabStripDragState() {
+  return {
+    pointerId: null,
+    tabId: "",
+    startX: 0,
+    startY: 0,
+    overTabId: "",
+    insertAfter: false,
+    dragging: false,
+    didReorder: false,
+  };
+}
+
+function measureTabStripItemWidth(
+  itemEl,
+  {
+    labelSelector,
+    closeSelector,
+    minWidth = 132,
+    maxWidth = 220,
+    chromeWidth = 36,
+    closeGap = 8,
+  } = {},
+) {
+  if (!(itemEl instanceof HTMLElement)) return 0;
+  const labelEl = itemEl.querySelector(labelSelector);
+  const closeEl = closeSelector ? itemEl.querySelector(closeSelector) : null;
+  const labelWidth = labelEl instanceof HTMLElement ? labelEl.scrollWidth : 0;
+  const closeWidth = closeEl instanceof HTMLElement ? closeEl.offsetWidth + closeGap : 0;
+  return Math.min(maxWidth, Math.max(minWidth, labelWidth + closeWidth + chromeWidth));
+}
+
+function createTabStripController({
+  isEnabled = () => true,
+  getItems = () => [],
+  getId = (item) => item?.id,
+  isItemDraggable = () => true,
+  itemIdPrefix = "",
+  draggableItemSelector = "",
+  measureItemSelector = draggableItemSelector,
+  labelSelector = "",
+  closeSelector = "",
+  addButtonSelector = "",
+  gapWidth = 8,
+  threshold = 6,
+  measureItemWidth = (itemEl) =>
+    measureTabStripItemWidth(itemEl, {
+      labelSelector,
+      closeSelector,
+    }),
+  onReorder = () => {},
+  onReorderCommitted = () => {},
+} = {}) {
+  const wrapRef = ref(null);
+  const compressed = ref(false);
+  const drag = reactive(createTabStripDragState());
+  const suppressClickUntil = ref(0);
+  let measureRaf = 0;
+
+  function detachDragListeners() {
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", onPointerUp);
+    window.removeEventListener("pointercancel", onPointerUp);
+    window.removeEventListener("blur", onPointerWindowBlur);
+  }
+
+  function clearDragState() {
+    detachDragListeners();
+    Object.assign(drag, createTabStripDragState());
+  }
+
+  function scrollItemIntoView(itemId, behavior = "smooth") {
+    if (!itemId) return;
+    nextTick(() => {
+      const wrap = wrapRef.value;
+      if (!(wrap instanceof HTMLElement)) return;
+      const itemEl = document.getElementById(`${itemIdPrefix}${itemId}`);
+      if (!(itemEl instanceof HTMLElement)) return;
+      const wrapRect = wrap.getBoundingClientRect();
+      const itemRect = itemEl.getBoundingClientRect();
+      if (itemRect.left < wrapRect.left) {
+        wrap.scrollBy({ left: itemRect.left - wrapRect.left - 8, behavior });
+      } else if (itemRect.right > wrapRect.right) {
+        wrap.scrollBy({ left: itemRect.right - wrapRect.right + 8, behavior });
+      }
+    });
+  }
+
+  function stopCompressionMeasure() {
+    if (measureRaf) {
+      cancelAnimationFrame(measureRaf);
+      measureRaf = 0;
+    }
+    if (!isEnabled()) {
+      compressed.value = false;
+    }
+  }
+
+  function scheduleCompressionMeasure() {
+    stopCompressionMeasure();
+    if (!isEnabled()) {
+      compressed.value = false;
+      return;
+    }
+    measureRaf = requestAnimationFrame(() => {
+      measureRaf = 0;
+      const wrap = wrapRef.value;
+      if (!(wrap instanceof HTMLElement)) {
+        compressed.value = false;
+        return;
+      }
+
+      const itemEls = [...wrap.querySelectorAll(measureItemSelector)].filter((item) => item instanceof HTMLElement);
+      if (itemEls.length === 0) {
+        compressed.value = false;
+        return;
+      }
+
+      const addButton = addButtonSelector ? wrap.querySelector(addButtonSelector) : null;
+      let desiredWidth = addButton instanceof HTMLElement ? addButton.offsetWidth : 0;
+
+      itemEls.forEach((itemEl) => {
+        desiredWidth += measureItemWidth(itemEl);
+      });
+
+      desiredWidth += Math.max(0, itemEls.length) * gapWidth;
+      compressed.value = desiredWidth > wrap.clientWidth;
+    });
+  }
+
+  function finalizeDrag() {
+    const draggedId = drag.tabId;
+    const shouldSuppressClick = drag.dragging;
+    const moved = drag.didReorder;
+    clearDragState();
+    if (shouldSuppressClick) {
+      suppressClickUntil.value = Date.now() + 180;
+    }
+    if (!moved) return;
+    onReorderCommitted();
+    scrollItemIntoView(draggedId, "smooth");
+  }
+
+  function onPointerWindowBlur() {
+    finalizeDrag();
+  }
+
+  function onPointerUp(event) {
+    if (
+      drag.pointerId !== null &&
+      event?.pointerId !== undefined &&
+      event.pointerId !== drag.pointerId
+    ) {
+      return;
+    }
+    finalizeDrag();
+  }
+
+  function onPointerMove(event) {
+    if (
+      drag.pointerId === null ||
+      event.pointerId !== drag.pointerId ||
+      !drag.tabId
+    ) {
+      return;
+    }
+
+    if (!drag.dragging) {
+      const thresholdExceeded = hasExceededTabDragThreshold({
+        startX: drag.startX,
+        startY: drag.startY,
+        currentX: event.clientX,
+        currentY: event.clientY,
+        threshold,
+      });
+      if (!thresholdExceeded) return;
+      drag.dragging = true;
+    }
+
+    event.preventDefault();
+    const hovered = document.elementFromPoint(event.clientX, event.clientY)?.closest?.(draggableItemSelector);
+    if (!(hovered instanceof HTMLElement)) {
+      drag.overTabId = "";
+      return;
+    }
+
+    const hoveredItemId = String(hovered.dataset.tabId || "");
+    if (!hoveredItemId || hoveredItemId === drag.tabId) {
+      drag.overTabId = "";
+      return;
+    }
+
+    const draggableItems = getItems().filter((item) => isItemDraggable(item));
+    const rect = hovered.getBoundingClientRect();
+    drag.overTabId = hoveredItemId;
+    drag.insertAfter = event.clientX >= rect.left + rect.width / 2;
+
+    const nextIndex = resolveTabStripDropIndex({
+      items: draggableItems,
+      draggedId: drag.tabId,
+      hoveredId: hoveredItemId,
+      pointerX: event.clientX,
+      hoveredRect: rect,
+      getId,
+    });
+    if (nextIndex < 0) return;
+
+    const fromIndex = draggableItems.findIndex((item) => String(getId(item) || "") === drag.tabId);
+    if (fromIndex < 0 || fromIndex === nextIndex) return;
+
+    onReorder({ fromIndex, toIndex: nextIndex });
+    drag.didReorder = true;
+    scheduleCompressionMeasure();
+  }
+
+  function onPointerDown(event, itemId) {
+    if (event.button !== 0 || !itemId || !isEnabled()) return;
+    if (closeSelector && event.target?.closest?.(closeSelector)) return;
+    clearDragState();
+    drag.pointerId = event.pointerId;
+    drag.tabId = String(itemId || "");
+    drag.startX = event.clientX;
+    drag.startY = event.clientY;
+    const currentTarget = event.currentTarget;
+    if (currentTarget instanceof HTMLElement && typeof currentTarget.setPointerCapture === "function") {
+      currentTarget.setPointerCapture(event.pointerId);
+    }
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    window.addEventListener("blur", onPointerWindowBlur, { once: true });
+  }
+
+  return {
+    wrapRef,
+    compressed,
+    drag,
+    suppressClickUntil,
+    clearDragState,
+    stopCompressionMeasure,
+    scheduleCompressionMeasure,
+    scrollItemIntoView,
+    onPointerDown,
+  };
+}
 
 const isTauriWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 const windowLabel = ref("browser");
@@ -467,18 +713,6 @@ const slashQuery = ref("");
 const slashActiveIndex = ref(0);
 const tableTabs = ref([]);
 const activeTableTabId = ref("");
-const tableTabsCompressed = ref(false);
-const tableTabDrag = reactive({
-  pointerId: null,
-  tabId: "",
-  startX: 0,
-  startY: 0,
-  overTabId: "",
-  insertAfter: false,
-  dragging: false,
-  didReorder: false,
-});
-const tableTabSuppressClickUntil = ref(0);
 const recentTables = ref([]);
 const recentTabsDropdownOpen = ref(false);
 const RECENT_TABLES_MAX = 10;
@@ -514,7 +748,6 @@ const currentIdleState = ref("float_breathe");
 const petIdlePreviewing = ref(false);
 const petFound = ref(false);
 const tableModalRef = ref(null);
-const tableTabsRef = ref(null);
 const tableGridWrapRef = ref(null);
 const tableFullscreenMode = ref("none");
 const tableFullscreenRestoreMaximized = ref(false);
@@ -531,7 +764,6 @@ let tableLayoutRaf = 0;
 let columnOverflowMeasureRaf = 0;
 let columnHeaderMeasureCanvas = null;
 let tablePageSizeAdjustToken = 0;
-let tableTabsMeasureRaf = 0;
 const IDLE_TIMEOUT_MS = 5 * 60 * 1000;
 const IDLE_STATE_CHANGE_MS = 6 * 1000;
 const UI_SCALE_MIN = 0.8;
@@ -1363,6 +1595,64 @@ const panelTabs = computed(() =>
     activeTableTabId: activeTableTabId.value,
   }),
 );
+
+const tableTabsController = createTabStripController({
+  isEnabled: () => tableOpen.value,
+  getItems: () => tableTabs.value,
+  getId: (tab) => tab?.id,
+  itemIdPrefix: "table-tab-",
+  draggableItemSelector: ".table-tab",
+  labelSelector: ".table-tab-label",
+  closeSelector: ".table-tab-close",
+  addButtonSelector: ".table-tab-add",
+  gapWidth: 8,
+  threshold: TABLE_TAB_DRAG_THRESHOLD,
+  onReorder: ({ fromIndex, toIndex }) => {
+    tableTabs.value = moveTableTab(tableTabs.value, fromIndex, toIndex);
+  },
+  onReorderCommitted: () => {
+    saveTableTabOrder();
+  },
+});
+
+const panelTabsController = createTabStripController({
+  isEnabled: () => dbConnected.value,
+  getItems: () => panelTabs.value,
+  getId: (tab) => tab?.tabId,
+  isItemDraggable: (tab) => Boolean(tab?.draggable && tab?.tabId),
+  itemIdPrefix: "panel-tab-",
+  draggableItemSelector: '.panel-tab-chip[data-tab-draggable="true"]',
+  measureItemSelector: '.panel-tab-chip[data-tab-kind="opened"]',
+  labelSelector: ".panel-tab-chip-label",
+  closeSelector: ".panel-tab-chip-close",
+  addButtonSelector: ".panel-tab-chip-add",
+  gapWidth: 8,
+  threshold: TABLE_TAB_DRAG_THRESHOLD,
+  onReorder: ({ fromIndex, toIndex }) => {
+    tableTabs.value = moveTableTab(tableTabs.value, fromIndex, toIndex);
+  },
+  onReorderCommitted: () => {
+    saveTableTabOrder();
+  },
+  measureItemWidth: (itemEl) =>
+    measureTabStripItemWidth(itemEl, {
+      labelSelector: ".panel-tab-chip-label",
+      closeSelector: ".panel-tab-chip-close",
+      minWidth: 132,
+      maxWidth: 220,
+      chromeWidth: 40,
+    }),
+});
+
+const tableTabsCompressed = tableTabsController.compressed;
+const tableTabDrag = tableTabsController.drag;
+const tableTabSuppressClickUntil = tableTabsController.suppressClickUntil;
+const tableTabsRef = tableTabsController.wrapRef;
+
+const panelTabsCompressed = panelTabsController.compressed;
+const panelTabDrag = panelTabsController.drag;
+const panelTabSuppressClickUntil = panelTabsController.suppressClickUntil;
+const panelTabsRef = panelTabsController.wrapRef;
 
 const filteredResults = computed(() => {
   if (isKeywordEmpty.value) {
@@ -2411,86 +2701,36 @@ function snapshotActiveTableTab() {
   });
 }
 
-function detachTableTabDragListeners() {
-  window.removeEventListener("pointermove", onTableTabPointerMove);
-  window.removeEventListener("pointerup", onTableTabPointerUp);
-  window.removeEventListener("pointercancel", onTableTabPointerUp);
-  window.removeEventListener("blur", onTableTabPointerWindowBlur);
-}
-
 function clearTableTabDragState() {
-  detachTableTabDragListeners();
-  tableTabDrag.pointerId = null;
-  tableTabDrag.tabId = "";
-  tableTabDrag.startX = 0;
-  tableTabDrag.startY = 0;
-  tableTabDrag.overTabId = "";
-  tableTabDrag.insertAfter = false;
-  tableTabDrag.dragging = false;
-  tableTabDrag.didReorder = false;
+  tableTabsController.clearDragState();
 }
 
 function scrollTableTabIntoView(tabId, behavior = "smooth") {
-  if (!tabId) return;
-  nextTick(() => {
-    const wrap = tableTabsRef.value;
-    if (!(wrap instanceof HTMLElement)) return;
-    const tabEl = document.getElementById(`table-tab-${tabId}`);
-    if (!(tabEl instanceof HTMLElement)) return;
-    const wrapRect = wrap.getBoundingClientRect();
-    const tabRect = tabEl.getBoundingClientRect();
-    if (tabRect.left < wrapRect.left) {
-      wrap.scrollBy({ left: tabRect.left - wrapRect.left - 8, behavior });
-    } else if (tabRect.right > wrapRect.right) {
-      wrap.scrollBy({ left: tabRect.right - wrapRect.right + 8, behavior });
-    }
-  });
+  tableTabsController.scrollItemIntoView(tabId, behavior);
 }
 
 function stopTableTabsCompressionMeasure() {
-  if (tableTabsMeasureRaf) {
-    cancelAnimationFrame(tableTabsMeasureRaf);
-    tableTabsMeasureRaf = 0;
-  }
-  if (!tableOpen.value) {
-    tableTabsCompressed.value = false;
-  }
+  tableTabsController.stopCompressionMeasure();
 }
 
 function scheduleTableTabsCompressionMeasure() {
-  stopTableTabsCompressionMeasure();
-  if (!tableOpen.value) {
-    tableTabsCompressed.value = false;
-    return;
-  }
-  tableTabsMeasureRaf = requestAnimationFrame(() => {
-    tableTabsMeasureRaf = 0;
-    const wrap = tableTabsRef.value;
-    if (!(wrap instanceof HTMLElement)) {
-      tableTabsCompressed.value = false;
-      return;
-    }
-    const tabEls = [...wrap.querySelectorAll(".table-tab")].filter((item) => item instanceof HTMLElement);
-    if (tabEls.length === 0) {
-      tableTabsCompressed.value = false;
-      return;
-    }
-    const addButton = wrap.querySelector(".table-tab-add");
-    const gapWidth = 8;
-    let desiredWidth = addButton instanceof HTMLElement ? addButton.offsetWidth : 0;
+  tableTabsController.scheduleCompressionMeasure();
+}
 
-    tabEls.forEach((tabEl) => {
-      const labelEl = tabEl.querySelector(".table-tab-label");
-      const closeEl = tabEl.querySelector(".table-tab-close");
-      const labelWidth = labelEl instanceof HTMLElement ? labelEl.scrollWidth : 0;
-      const closeWidth = closeEl instanceof HTMLElement ? closeEl.offsetWidth + 8 : 0;
-      const naturalWidth = Math.min(220, Math.max(132, labelWidth + closeWidth + 36));
-      desiredWidth += naturalWidth;
-    });
+function clearPanelTabDragState() {
+  panelTabsController.clearDragState();
+}
 
-    desiredWidth += Math.max(0, tabEls.length) * gapWidth;
-    tableTabsCompressed.value = desiredWidth > wrap.clientWidth;
-  });
+function scrollPanelTabIntoView(tabId, behavior = "smooth") {
+  panelTabsController.scrollItemIntoView(tabId, behavior);
+}
+
+function stopPanelTabsCompressionMeasure() {
+  panelTabsController.stopCompressionMeasure();
+}
+
+function schedulePanelTabsCompressionMeasure() {
+  panelTabsController.scheduleCompressionMeasure();
 }
 
 async function syncTableFullscreenForSwitch(targetFullscreen) {
@@ -2617,6 +2857,7 @@ function clearTableTabs() {
   tableTabs.value = [];
   activeTableTabId.value = "";
   clearTableTabDragState();
+  clearPanelTabDragState();
 }
 
 function handleTableTabClick(tabId) {
@@ -2630,104 +2871,7 @@ function handleTableTabClose(tabId) {
 }
 
 function onTableTabPointerDown(event, tabId) {
-  if (event.button !== 0 || !tabId) return;
-  if (event.target?.closest?.(".table-tab-close")) return;
-  clearTableTabDragState();
-  tableTabDrag.pointerId = event.pointerId;
-  tableTabDrag.tabId = tabId;
-  tableTabDrag.startX = event.clientX;
-  tableTabDrag.startY = event.clientY;
-  const currentTarget = event.currentTarget;
-  if (currentTarget instanceof HTMLElement && typeof currentTarget.setPointerCapture === "function") {
-    currentTarget.setPointerCapture(event.pointerId);
-  }
-  window.addEventListener("pointermove", onTableTabPointerMove);
-  window.addEventListener("pointerup", onTableTabPointerUp);
-  window.addEventListener("pointercancel", onTableTabPointerUp);
-  window.addEventListener("blur", onTableTabPointerWindowBlur, { once: true });
-}
-
-function finalizeTableTabDrag() {
-  const draggedId = tableTabDrag.tabId;
-  const shouldSuppressClick = tableTabDrag.dragging;
-  const moved = tableTabDrag.didReorder;
-  clearTableTabDragState();
-  if (shouldSuppressClick) {
-    tableTabSuppressClickUntil.value = Date.now() + 180;
-  }
-  if (!moved) return;
-  saveTableTabOrder();
-  scrollTableTabIntoView(draggedId, "smooth");
-}
-
-function onTableTabPointerWindowBlur() {
-  finalizeTableTabDrag();
-}
-
-function onTableTabPointerUp(event) {
-  if (
-    tableTabDrag.pointerId !== null &&
-    event?.pointerId !== undefined &&
-    event.pointerId !== tableTabDrag.pointerId
-  ) {
-    return;
-  }
-  finalizeTableTabDrag();
-}
-
-function onTableTabPointerMove(event) {
-  if (
-    tableTabDrag.pointerId === null ||
-    event.pointerId !== tableTabDrag.pointerId ||
-    !tableTabDrag.tabId
-  ) {
-    return;
-  }
-
-  if (!tableTabDrag.dragging) {
-    const thresholdExceeded = hasExceededTabDragThreshold({
-      startX: tableTabDrag.startX,
-      startY: tableTabDrag.startY,
-      currentX: event.clientX,
-      currentY: event.clientY,
-      threshold: TABLE_TAB_DRAG_THRESHOLD,
-    });
-    if (!thresholdExceeded) return;
-    tableTabDrag.dragging = true;
-  }
-
-  event.preventDefault();
-  const hovered = document.elementFromPoint(event.clientX, event.clientY)?.closest?.(".table-tab");
-  if (!(hovered instanceof HTMLElement)) {
-    tableTabDrag.overTabId = "";
-    return;
-  }
-
-  const hoveredTabId = String(hovered.dataset.tabId || "");
-  if (!hoveredTabId || hoveredTabId === tableTabDrag.tabId) {
-    tableTabDrag.overTabId = "";
-    return;
-  }
-
-  const rect = hovered.getBoundingClientRect();
-  tableTabDrag.overTabId = hoveredTabId;
-  tableTabDrag.insertAfter = event.clientX >= rect.left + rect.width / 2;
-
-  const nextIndex = resolveTableTabDropIndex({
-    tabs: tableTabs.value,
-    draggedTabId: tableTabDrag.tabId,
-    hoveredTabId,
-    pointerX: event.clientX,
-    hoveredRect: rect,
-  });
-  if (nextIndex < 0) return;
-
-  const fromIndex = tableTabs.value.findIndex((tab) => tab.id === tableTabDrag.tabId);
-  if (fromIndex < 0 || fromIndex === nextIndex) return;
-
-  tableTabs.value = moveTableTab(tableTabs.value, fromIndex, nextIndex);
-  tableTabDrag.didReorder = true;
-  scheduleTableTabsCompressionMeasure();
+  tableTabsController.onPointerDown(event, tabId);
 }
 
 function openTableCommandPalette({ slash = false } = {}) {
@@ -2767,21 +2911,30 @@ async function chooseTableCommandCandidate(item) {
 }
 
 async function activatePanelChromeTab(tab) {
+  if (Date.now() < panelTabSuppressClickUntil.value) return;
   if (!tab?.tableName) return;
   if (tab.opened && tab.tabId) {
     await activateTableTab(tab.tabId);
+    scrollPanelTabIntoView(tab.tabId);
     return;
   }
   await openOrActivateTableTab(tab.tableName);
+  scrollPanelTabIntoView(activeTableTabId.value);
 }
 
 async function closePanelChromeTab(tab) {
+  if (panelTabDrag.dragging) return;
   if (!tab?.opened || !tab.tabId) return;
   const wasTableOpen = tableOpen.value;
   await closeTableTab(tab.tabId);
   if (!wasTableOpen && tableOpen.value) {
     tableOpen.value = false;
   }
+}
+
+function onPanelTabPointerDown(event, tab) {
+  if (!tab?.draggable || !tab?.tabId) return;
+  panelTabsController.onPointerDown(event, tab.tabId);
 }
 
 function isTableOpenedInTabs(tableName) {
@@ -3218,6 +3371,7 @@ onBeforeUnmount(() => {
   clearTimeout(copyToastTimer);
   clearTimeout(uiScalePersistTimer);
   stopTableTabsCompressionMeasure();
+  stopPanelTabsCompressionMeasure();
   stopTableLayoutObserver();
   if (columnOverflowMeasureRaf) {
     cancelAnimationFrame(columnOverflowMeasureRaf);
@@ -3225,6 +3379,7 @@ onBeforeUnmount(() => {
   }
   stopColumnResize();
   clearTableTabDragState();
+  clearPanelTabDragState();
 });
 
 watch(() => settingsDraft.petSkin, (newSkin) => {
@@ -3516,6 +3671,27 @@ watch(
   },
 );
 
+watch(
+  () => [
+    dbConnected.value,
+    panelTabs.value.map((tab) => `${tab.kind}:${tab.tabId || tab.tableName}`).join("|"),
+    activeTableTabId.value,
+    config.personal.ui_scale,
+  ],
+  async ([connected]) => {
+    if (!connected) {
+      stopPanelTabsCompressionMeasure();
+      panelTabsCompressed.value = false;
+      return;
+    }
+    await nextTick();
+    schedulePanelTabsCompressionMeasure();
+    if (activeTableTabId.value) {
+      scrollPanelTabIntoView(activeTableTabId.value, "smooth");
+    }
+  },
+);
+
 watch(slashCandidates, (items) => {
   if (items.length === 0) {
     slashActiveIndex.value = 0;
@@ -3702,6 +3878,7 @@ function onWindowWheel(event) {
 function onWindowResize() {
   scheduleAdaptiveTablePageSize();
   scheduleTableTabsCompressionMeasure();
+  schedulePanelTabsCompressionMeasure();
   scheduleColumnOverflowMeasure();
 }
 
@@ -6499,20 +6676,46 @@ function escapeHtml(str) {
       </header>
 
       <div v-if="dbConnected" class="panel-tab-strip-wrap">
-        <section class="panel-tab-strip panel-tab-strip--demo" @click.self="closeAllOrgMenus" @wheel="onTableTabsWheel">
+        <section
+          ref="panelTabsRef"
+          :class="['panel-tab-strip', 'panel-tab-strip--demo', { 'is-compressed': panelTabsCompressed }]"
+          @click.self="closeAllOrgMenus"
+          @wheel="onTableTabsWheel"
+        >
           <button class="panel-tab-chip panel-tab-chip-add" title="最近打开的表" @click.stop="toggleRecentTabsDropdown">
             <span :class="['recent-tabs-arrow', { open: recentTabsDropdownOpen }]">▾</span>
           </button>
           <button
             v-for="tab in panelTabs"
             :key="tab.key"
-            :class="['panel-tab-chip', { active: tab.active, opened: tab.opened, starred: tab.starred }]"
+            :id="tab.tabId ? `panel-tab-${tab.tabId}` : undefined"
+            :data-tab-id="tab.tabId || undefined"
+            :data-tab-kind="tab.kind"
+            :data-tab-draggable="tab.draggable ? 'true' : 'false'"
+            :class="[
+              'panel-tab-chip',
+              {
+                active: tab.active,
+                opened: tab.opened,
+                starred: tab.starred,
+                dragging: tab.tabId === panelTabDrag.tabId && panelTabDrag.dragging,
+                'drag-over-before': panelTabDrag.overTabId === tab.tabId && !panelTabDrag.insertAfter,
+                'drag-over-after': panelTabDrag.overTabId === tab.tabId && panelTabDrag.insertAfter,
+              },
+            ]"
             :title="tab.tableName"
             @click="activatePanelChromeTab(tab)"
+            @pointerdown="onPanelTabPointerDown($event, tab)"
           >
             <span v-if="tab.starred" class="panel-tab-chip-star">★</span>
             <span class="panel-tab-chip-label">{{ tab.tableName }}</span>
-            <span v-if="tab.opened" class="panel-tab-chip-close" title="关闭标签" @click.stop="closePanelChromeTab(tab)">✕</span>
+            <span
+              v-if="tab.opened"
+              class="panel-tab-chip-close"
+              title="关闭标签"
+              @pointerdown.stop
+              @click.stop="closePanelChromeTab(tab)"
+            >✕</span>
           </button>
         </section>
         <Transition name="recent-dropdown">

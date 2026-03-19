@@ -10,7 +10,7 @@ import {
   resolveTableDialogKeyAction,
 } from "./panelChrome.js";
 
-test("buildPanelTabs merges starred and opened tables without duplicates", () => {
+test("buildPanelTabs de-duplicates starred tables and appends closed starred tabs after opened tabs", () => {
   const tabs = buildPanelTabs({
     starredTables: ["users", "orders"],
     tableTabs: [
@@ -23,18 +23,19 @@ test("buildPanelTabs merges starred and opened tables without duplicates", () =>
   assert.deepEqual(
     tabs.map((tab) => ({
       tableName: tab.tableName,
+      kind: tab.kind,
       starred: tab.starred,
       opened: tab.opened,
     })),
     [
-      { tableName: "users", starred: true, opened: false },
-      { tableName: "orders", starred: true, opened: true },
-      { tableName: "audit_logs", starred: false, opened: true },
+      { tableName: "orders", kind: "opened", starred: true, opened: true },
+      { tableName: "audit_logs", kind: "opened", starred: false, opened: true },
+      { tableName: "users", kind: "starred-closed", starred: true, opened: false },
     ],
   );
 });
 
-test("buildPanelTabs keeps starred tables first and marks the active opened tab", () => {
+test("buildPanelTabs marks the active opened tab from the live tab order", () => {
   const tabs = buildPanelTabs({
     starredTables: ["users"],
     tableTabs: [
@@ -45,9 +46,73 @@ test("buildPanelTabs keeps starred tables first and marks the active opened tab"
   });
 
   assert.equal(tabs[0].tableName, "users");
+  assert.equal(tabs[0].kind, "opened");
   assert.equal(tabs[0].active, false);
   assert.equal(tabs[1].tableName, "audit_logs");
+  assert.equal(tabs[1].kind, "opened");
   assert.equal(tabs[1].active, true);
+});
+
+test("buildPanelTabs keeps opened tabs in live order and appends closed starred tabs", () => {
+  const tabs = buildPanelTabs({
+    starredTables: ["users", "orders", "reports"],
+    tableTabs: [
+      { id: "tab-2", tableName: "orders" },
+      { id: "tab-3", tableName: "audit_logs" },
+      { id: "tab-1", tableName: "users" },
+    ],
+    activeTableTabId: "tab-1",
+  });
+
+  assert.deepEqual(
+    tabs.map((tab) => ({
+      tableName: tab.tableName,
+      kind: tab.kind,
+      tabId: tab.tabId,
+      draggable: tab.draggable,
+      active: tab.active,
+      starred: tab.starred,
+      opened: tab.opened,
+    })),
+    [
+      {
+        tableName: "orders",
+        kind: "opened",
+        tabId: "tab-2",
+        draggable: true,
+        active: false,
+        starred: true,
+        opened: true,
+      },
+      {
+        tableName: "audit_logs",
+        kind: "opened",
+        tabId: "tab-3",
+        draggable: true,
+        active: false,
+        starred: false,
+        opened: true,
+      },
+      {
+        tableName: "users",
+        kind: "opened",
+        tabId: "tab-1",
+        draggable: true,
+        active: true,
+        starred: true,
+        opened: true,
+      },
+      {
+        tableName: "reports",
+        kind: "starred-closed",
+        tabId: "",
+        draggable: false,
+        active: false,
+        starred: true,
+        opened: false,
+      },
+    ],
+  );
 });
 
 test("normalizeBackgroundOpacity clamps values into the supported range", () => {

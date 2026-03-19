@@ -8258,6 +8258,12 @@ mark {
   min-height: 42px;
   overflow-x: auto;
   overflow-y: hidden;
+  scrollbar-width: none;
+  scrollbar-color: transparent transparent;
+}
+
+.panel-tab-strip::-webkit-scrollbar {
+  display: none;
 }
 
 .widget--demo-shell .panel-tab-strip--demo {
@@ -8286,8 +8292,15 @@ mark {
   color: var(--demo-text-sub);
   box-shadow: 0 4px 12px rgba(15, 23, 42, 0.04);
   cursor: pointer;
-  transition: transform 180ms ease, background 180ms ease, border-color 180ms ease, color 180ms ease;
+  user-select: none;
+  transition: flex-basis 220ms ease, min-width 220ms ease, max-width 220ms ease, padding 220ms ease, transform 180ms ease, background 180ms ease, border-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
   flex: 0 0 auto;
+}
+
+.panel-tab-chip[data-tab-kind="opened"] {
+  flex: 1 1 156px;
+  min-width: 112px;
+  max-width: 220px;
 }
 
 .panel-tab-chip:hover {
@@ -8302,6 +8315,21 @@ mark {
   border-color: color-mix(in srgb, var(--accent) 34%, rgba(255, 255, 255, calc(0.40 * var(--panel-opacity))));
   color: var(--demo-text-main);
   box-shadow: 0 12px 28px rgba(15, 23, 42, 0.12);
+}
+
+.panel-tab-chip.dragging {
+  opacity: 0.78;
+  cursor: grabbing;
+  transform: translateY(-3px) scale(1.02);
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.18);
+}
+
+.panel-tab-chip.drag-over-before {
+  box-shadow: inset 3px 0 0 var(--accent-ring), 0 0 0 1px color-mix(in srgb, var(--accent-ring) 26%, transparent);
+}
+
+.panel-tab-chip.drag-over-after {
+  box-shadow: inset -3px 0 0 var(--accent-ring), 0 0 0 1px color-mix(in srgb, var(--accent-ring) 26%, transparent);
 }
 
 .panel-tab-chip-star {
@@ -8328,6 +8356,7 @@ mark {
   border-radius: 999px;
   color: var(--demo-text-dim);
   transition: background 160ms ease, color 160ms ease;
+  flex: 0 0 auto;
 }
 
 .panel-tab-chip-close:hover {
@@ -8341,6 +8370,21 @@ mark {
   padding: 0;
   font-size: 16px;
   line-height: 1;
+}
+
+.panel-tab-strip.is-compressed {
+  gap: 4px;
+}
+
+.panel-tab-strip.is-compressed .panel-tab-chip[data-tab-kind="opened"] {
+  flex-basis: 124px;
+  min-width: 84px;
+  max-width: 168px;
+  padding: 0 8px;
+}
+
+.panel-tab-strip.is-compressed .panel-tab-chip.active[data-tab-kind="opened"] {
+  flex-basis: 144px;
 }
 
 .recent-tabs-arrow {

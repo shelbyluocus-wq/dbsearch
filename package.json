@@ -8,7 +8,7 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "node scripts/run-tauri.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

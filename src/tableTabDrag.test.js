@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   hasExceededTabDragThreshold,
+  resolveTabStripDropIndex,
   resolveTableTabDropIndex,
 } from "./tableTabDrag.js";
 
@@ -112,5 +113,25 @@ test("resolveTableTabDropIndex degrades safely for invalid drag input", () => {
       hoveredRect: { left: 100, width: 80 },
     }),
     -1,
+  );
+});
+
+test("resolveTabStripDropIndex supports shared tab strip items with custom id accessors", () => {
+  const items = [
+    { tabId: "panel-1", tableName: "users", kind: "opened" },
+    { tabId: "panel-2", tableName: "orders", kind: "opened" },
+    { tabId: "panel-3", tableName: "audit_logs", kind: "opened" },
+  ];
+
+  assert.equal(
+    resolveTabStripDropIndex({
+      items,
+      draggedId: "panel-3",
+      hoveredId: "panel-1",
+      pointerX: 150,
+      hoveredRect: { left: 100, width: 80 },
+      getId: (item) => item.tabId,
+    }),
+    1,
   );
 });

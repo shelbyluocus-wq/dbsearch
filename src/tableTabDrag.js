@@ -15,22 +15,28 @@ export function hasExceededTabDragThreshold({
   return Math.hypot(deltaX, deltaY) >= Math.max(0, toNumber(threshold));
 }
 
-export function resolveTableTabDropIndex({
-  tabs = [],
-  draggedTabId = "",
-  hoveredTabId = "",
+function defaultGetItemId(item) {
+  return String(item?.id || "");
+}
+
+export function resolveTabStripDropIndex({
+  items = [],
+  draggedId = "",
+  hoveredId = "",
   pointerX = 0,
   hoveredRect = {},
+  getId = defaultGetItemId,
 } = {}) {
-  const list = Array.isArray(tabs) ? tabs : [];
+  const list = Array.isArray(items) ? items : [];
   if (list.length <= 1) return -1;
 
-  const draggedId = String(draggedTabId || "");
-  const hoveredId = String(hoveredTabId || "");
-  if (!draggedId || !hoveredId || draggedId === hoveredId) return -1;
+  const normalizedDraggedId = String(draggedId || "");
+  const normalizedHoveredId = String(hoveredId || "");
+  if (!normalizedDraggedId || !normalizedHoveredId || normalizedDraggedId === normalizedHoveredId) return -1;
 
-  const draggedIndex = list.findIndex((tab) => String(tab?.id || "") === draggedId);
-  const hoveredIndex = list.findIndex((tab) => String(tab?.id || "") === hoveredId);
+  const resolveId = typeof getId === "function" ? getId : defaultGetItemId;
+  const draggedIndex = list.findIndex((item) => String(resolveId(item) || "") === normalizedDraggedId);
+  const hoveredIndex = list.findIndex((item) => String(resolveId(item) || "") === normalizedHoveredId);
   if (draggedIndex < 0 || hoveredIndex < 0) return -1;
 
   const left = toNumber(hoveredRect?.left);
@@ -46,4 +52,21 @@ export function resolveTableTabDropIndex({
     return draggedIndex < hoveredIndex ? hoveredIndex : hoveredIndex + 1;
   }
   return draggedIndex < hoveredIndex ? hoveredIndex - 1 : hoveredIndex;
+}
+
+export function resolveTableTabDropIndex({
+  tabs = [],
+  draggedTabId = "",
+  hoveredTabId = "",
+  pointerX = 0,
+  hoveredRect = {},
+} = {}) {
+  return resolveTabStripDropIndex({
+    items: tabs,
+    draggedId: draggedTabId,
+    hoveredId: hoveredTabId,
+    pointerX,
+    hoveredRect,
+    getId: (tab) => tab?.id,
+  });
 }
