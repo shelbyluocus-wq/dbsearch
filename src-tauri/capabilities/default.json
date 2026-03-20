@@ -16,6 +16,7 @@
     "core:window:allow-set-ignore-cursor-events",
     "core:window:allow-set-size",
     "dialog:default",
-    "core:image:default"
+    "core:image:default",
+    "updater:default"
   ]
 }

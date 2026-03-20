@@ -1,7 +1,7 @@
 pub mod sync_workspace;
 
 use crate::sync_workspace::{execute_sync_pipeline, SyncProfile, SyncRunOutcome};
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use enigo::{Enigo, Keyboard, Settings};
 use mouse_position::mouse_position::Mouse;
 use regex::Regex;
@@ -86,6 +86,7 @@ const TRAY_ICON_ID: &str = "main_tray";
 const TRAY_MENU_OPEN_PANEL_ID: &str = "tray-open-panel";
 const TRAY_MENU_SHOW_PET_ID: &str = "tray-show-pet";
 const TRAY_MENU_EXIT_ID: &str = "tray-exit";
+const UPDATE_CHECK_INTERVAL_HOURS: i64 = 12;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrayMenuAction {
@@ -199,6 +200,10 @@ struct PersonalConfig {
     default_sync_profile_id: Option<String>,
     #[serde(default)]
     last_used_sync_profile_id: Option<String>,
+    #[serde(default = "default_true")]
+    auto_check_updates: bool,
+    #[serde(default)]
+    last_update_check_at: Option<String>,
 }
 fn default_true() -> bool {
     true
@@ -253,7 +258,78 @@ impl Default for PersonalConfig {
             sync_profiles: Vec::new(),
             default_sync_profile_id: None,
             last_used_sync_profile_id: None,
+            auto_check_updates: true,
+            last_update_check_at: None,
         }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateSettingsSnapshot {
+    current_version: String,
+    auto_check_updates: bool,
+    last_update_check_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateCheckPlan {
+    should_check: bool,
+    reason: String,
+    checked_at: Option<String>,
+    current_version: String,
+}
+
+fn parse_update_check_at(value: Option<&str>) -> Option<DateTime<Utc>> {
+    let text = value?.trim();
+    if text.is_empty() {
+        return None;
+    }
+
+    DateTime::parse_from_rfc3339(text)
+        .ok()
+        .map(|parsed| parsed.with_timezone(&Utc))
+}
+
+fn build_update_check_plan(
+    auto_check_updates: bool,
+    last_update_check_at: Option<&str>,
+    now: DateTime<Utc>,
+    manual: bool,
+) -> UpdateCheckPlan {
+    if manual {
+        return UpdateCheckPlan {
+            should_check: true,
+            reason: "manual".into(),
+            checked_at: Some(now.to_rfc3339()),
+            current_version: String::new(),
+        };
+    }
+
+    if !auto_check_updates {
+        return UpdateCheckPlan {
+            should_check: false,
+            reason: "startup-disabled".into(),
+            checked_at: None,
+            current_version: String::new(),
+        };
+    }
+
+    let should_check = match parse_update_check_at(last_update_check_at) {
+        None => true,
+        Some(last_checked_at) => now - last_checked_at >= Duration::hours(UPDATE_CHECK_INTERVAL_HOURS),
+    };
+
+    UpdateCheckPlan {
+        should_check,
+        reason: if should_check {
+            "startup-due".into()
+        } else {
+            "startup-throttled".into()
+        },
+        checked_at: should_check.then(|| now.to_rfc3339()),
+        current_version: String::new(),
     }
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1129,6 +1205,67 @@ async fn save_config(
 ) -> Result<(), String> {
     state.runtime.lock().await.config = config.clone();
     save_config_to_disk(&app, &config)
+}
+
+#[tauri::command]
+async fn get_update_settings(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<UpdateSettingsSnapshot, String> {
+    let config = state.runtime.lock().await.config.clone();
+    Ok(UpdateSettingsSnapshot {
+        current_version: app.package_info().version.to_string(),
+        auto_check_updates: config.personal.auto_check_updates,
+        last_update_check_at: config.personal.last_update_check_at,
+    })
+}
+
+#[tauri::command]
+async fn prepare_startup_update_check(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<UpdateCheckPlan, String> {
+    let current_version = app.package_info().version.to_string();
+    let now = Utc::now();
+    let mut rt = state.runtime.lock().await;
+    let mut plan = build_update_check_plan(
+        rt.config.personal.auto_check_updates,
+        rt.config.personal.last_update_check_at.as_deref(),
+        now,
+        false,
+    );
+    plan.current_version = current_version;
+
+    if let Some(checked_at) = plan.checked_at.clone() {
+        rt.config.personal.last_update_check_at = Some(checked_at);
+        save_config_to_disk(&app, &rt.config)?;
+    }
+
+    Ok(plan)
+}
+
+#[tauri::command]
+async fn check_for_updates_now(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<UpdateCheckPlan, String> {
+    let current_version = app.package_info().version.to_string();
+    let now = Utc::now();
+    let mut rt = state.runtime.lock().await;
+    let mut plan = build_update_check_plan(
+        rt.config.personal.auto_check_updates,
+        rt.config.personal.last_update_check_at.as_deref(),
+        now,
+        true,
+    );
+    plan.current_version = current_version;
+
+    if let Some(checked_at) = plan.checked_at.clone() {
+        rt.config.personal.last_update_check_at = Some(checked_at);
+        save_config_to_disk(&app, &rt.config)?;
+    }
+
+    Ok(plan)
 }
 
 #[tauri::command]
@@ -2639,6 +2776,7 @@ pub fn run() {
         .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(AppState::default())
         .setup(|app| {
             let st = app.state::<AppState>().clone();
@@ -2804,6 +2942,9 @@ pub fn run() {
             list_tables,
             get_config,
             save_config,
+            get_update_settings,
+            prepare_startup_update_check,
+            check_for_updates_now,
             register_hotkey,
             register_quick_date_hotkey,
             register_sync_window_hotkey,
@@ -2897,5 +3038,48 @@ mod tests {
             close_request_action_for_window(PET_MENU_WINDOW_LABEL),
             WindowCloseAction::HideWindow
         );
+    }
+
+    #[test]
+    fn update_check_plan_runs_on_first_startup() {
+        let now = DateTime::parse_from_rfc3339("2026-03-20T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let plan = build_update_check_plan(true, None, now, false);
+
+        assert!(plan.should_check);
+        assert_eq!(plan.reason, "startup-due");
+        assert_eq!(plan.checked_at.as_deref(), Some("2026-03-20T08:00:00+00:00"));
+    }
+
+    #[test]
+    fn update_check_plan_throttles_recent_startup_checks() {
+        let now = DateTime::parse_from_rfc3339("2026-03-20T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let plan = build_update_check_plan(true, Some("2026-03-20T04:00:00Z"), now, false);
+
+        assert!(!plan.should_check);
+        assert_eq!(plan.reason, "startup-throttled");
+        assert_eq!(plan.checked_at, None);
+    }
+
+    #[test]
+    fn update_check_plan_manual_mode_bypasses_auto_and_throttle() {
+        let now = DateTime::parse_from_rfc3339("2026-03-20T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let plan = build_update_check_plan(false, Some("2026-03-20T07:59:00Z"), now, true);
+
+        assert!(plan.should_check);
+        assert_eq!(plan.reason, "manual");
+        assert_eq!(plan.checked_at.as_deref(), Some("2026-03-20T08:00:00+00:00"));
+    }
+
+    #[test]
+    fn parse_update_check_at_rejects_invalid_values() {
+        assert!(parse_update_check_at(None).is_none());
+        assert!(parse_update_check_at(Some("")).is_none());
+        assert!(parse_update_check_at(Some("not-a-date")).is_none());
     }
 }

@@ -4,6 +4,7 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow, Window } from "@tauri-apps/api/window";
 import { save, open } from "@tauri-apps/plugin-dialog";
+import { check as checkForAppUpdate } from "@tauri-apps/plugin-updater";
 import "./styles.css";
 import { WeatherEngine } from "./weatherEngine.js";
 import {
@@ -33,6 +34,11 @@ import {
   resolveSyncTargetDirectoryOpenRequest,
   resolveSyncProfileSelection,
 } from "./syncWorkspace.js";
+import {
+  normalizeUpdateSettings,
+  reduceUpdateDownloadProgress,
+  summarizeReleaseNotes,
+} from "./updateManager.js";
 import { runPetMenuAction } from "./petMenu.js";
 import {
   buildCellViewerPreview,
@@ -56,6 +62,8 @@ import {
   hasExceededTabDragThreshold,
   resolveTabStripDropIndex,
 } from "./tableTabDrag.js";
+
+const APP_VERSION = __APP_VERSION__;
 
 function createTabStripDragState() {
   return {
@@ -393,6 +401,21 @@ const copyToast = reactive({
   tone: "success",
   version: 0,
 });
+const updateCurrentVersion = ref(APP_VERSION);
+const updateDialogOpen = ref(false);
+const updateChecking = ref(false);
+const updateInstalling = ref(false);
+const updateLatestVersion = ref("");
+const updateReleaseDate = ref("");
+const updateNotesSummary = ref("");
+const updateError = ref("");
+const availableUpdateRef = ref(null);
+const updateProgress = reactive({
+  status: "idle",
+  downloadedBytes: 0,
+  totalBytes: 0,
+  percent: 0,
+});
 
 const options = reactive({
   table: true,
@@ -499,6 +522,8 @@ const config = reactive({
     sync_profiles: [],
     default_sync_profile_id: null,
     last_used_sync_profile_id: null,
+    auto_check_updates: true,
+    last_update_check_at: null,
   },
 });
 
@@ -887,6 +912,7 @@ const settingsDraft = reactive({
   weatherEnabled: true,
   backgroundOpacity: 1.0,
   reduceTransparencyMode: false,
+  autoCheckUpdates: true,
 });
 const backgroundOpacityPercent = computed(() =>
   `${Math.round(normalizeBackgroundOpacity(settingsDraft.backgroundOpacity) * 100)}%`,
@@ -3134,6 +3160,7 @@ onMounted(async () => {
 
   applyTheme(themeId.value)
   await loadConfig();
+  await refreshUpdateSettings();
   applyCustomFont();
   // Load custom skins
   if (isTauriWindow) {
@@ -3193,6 +3220,12 @@ onMounted(async () => {
     skyTimeTimer = setInterval(() => {
       skyTime.value = new Date().getHours() + new Date().getMinutes() / 60
     }, 5 * 60 * 1000)
+
+    if (isTauriWindow) {
+      setTimeout(() => {
+        runAppUpdateCheck({ manual: false }).catch(() => {});
+      }, 600);
+    }
 
     return;
   }
@@ -3370,6 +3403,7 @@ onBeforeUnmount(() => {
   clearTimeout(idleStateTimer);
   clearTimeout(copyToastTimer);
   clearTimeout(uiScalePersistTimer);
+  disposeAvailableUpdate();
   stopTableTabsCompressionMeasure();
   stopPanelTabsCompressionMeasure();
   stopTableLayoutObserver();
@@ -4478,6 +4512,7 @@ function openSettings(target = null) {
   settingsDraft.weatherEnabled = config.personal.weather_enabled !== false;
   settingsDraft.backgroundOpacity = normalizeBackgroundOpacity(config.personal.background_opacity);
   settingsDraft.reduceTransparencyMode = !!config.personal.reduce_transparency_mode;
+  settingsDraft.autoCheckUpdates = config.personal.auto_check_updates !== false;
   _opacityBeforeSettings = config.personal.background_opacity;
   _reduceTransparencyBeforeSettings = !!config.personal.reduce_transparency_mode;
   _weatherBeforeSettings = weatherEnabled.value;
@@ -4622,6 +4657,7 @@ async function saveSettings() {
   config.personal.weather_enabled = !!settingsDraft.weatherEnabled;
   config.personal.background_opacity = normalizeBackgroundOpacity(settingsDraft.backgroundOpacity);
   config.personal.reduce_transparency_mode = !!settingsDraft.reduceTransparencyMode;
+  config.personal.auto_check_updates = !!settingsDraft.autoCheckUpdates;
   weatherEnabled.value = !!settingsDraft.weatherEnabled;
   if (weatherEnabled.value) {
     themeId.value = 'azure'
@@ -6325,6 +6361,11 @@ async function loadConfig() {
     "Ctrl+Alt+Right",
   );
   config.personal.reset_on_open_to_all_tables = config.personal.reset_on_open_to_all_tables !== false;
+  {
+    const updateSettings = normalizeUpdateSettings(config.personal);
+    config.personal.auto_check_updates = updateSettings.autoCheckUpdates;
+    config.personal.last_update_check_at = updateSettings.lastUpdateCheckAt;
+  }
   config.personal.background_opacity = normalizeBackgroundOpacity(config.personal.background_opacity);
   config.personal.reduce_transparency_mode = !!config.personal.reduce_transparency_mode;
   {
@@ -6570,6 +6611,155 @@ function showCopyToast(text, tone = "success") {
     copyToast.visible = false;
     copyToastTimer = null;
   }, 1400);
+}
+
+function resetUpdateProgress() {
+  Object.assign(updateProgress, {
+    status: "idle",
+    downloadedBytes: 0,
+    totalBytes: 0,
+    percent: 0,
+  });
+}
+
+function disposeAvailableUpdate() {
+  const current = availableUpdateRef.value;
+  availableUpdateRef.value = null;
+  if (current?.close) {
+    current.close().catch(() => {});
+  }
+}
+
+function applyUpdateSettingsSnapshot(snapshot = {}) {
+  const normalized = normalizeUpdateSettings({
+    auto_check_updates: snapshot?.autoCheckUpdates ?? config.personal.auto_check_updates,
+    last_update_check_at: snapshot?.lastUpdateCheckAt ?? config.personal.last_update_check_at,
+  });
+  config.personal.auto_check_updates = normalized.autoCheckUpdates;
+  config.personal.last_update_check_at = normalized.lastUpdateCheckAt;
+  if (snapshot?.currentVersion) {
+    updateCurrentVersion.value = String(snapshot.currentVersion);
+  }
+}
+
+function formatUpdateTimestamp(value) {
+  const date = new Date(value || "");
+  if (Number.isNaN(date.getTime())) return "未记录";
+  return date.toLocaleString("zh-CN", {
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function formatByteCount(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function closeUpdateDialog() {
+  if (updateInstalling.value) return;
+  updateDialogOpen.value = false;
+  updateError.value = "";
+  updateLatestVersion.value = "";
+  updateReleaseDate.value = "";
+  updateNotesSummary.value = "";
+  resetUpdateProgress();
+  disposeAvailableUpdate();
+}
+
+async function refreshUpdateSettings() {
+  if (!isTauriWindow) {
+    updateCurrentVersion.value = APP_VERSION;
+    return;
+  }
+
+  const snapshot = await invoke("get_update_settings").catch(() => null);
+  if (snapshot) {
+    applyUpdateSettingsSnapshot(snapshot);
+    return;
+  }
+
+  updateCurrentVersion.value = APP_VERSION;
+}
+
+async function runAppUpdateCheck({ manual = false } = {}) {
+  if (!isTauriWindow) {
+    if (manual) {
+      showCopyToast("仅桌面端支持自动更新", "error");
+    }
+    return;
+  }
+  if (updateChecking.value || updateInstalling.value) return;
+
+  updateChecking.value = true;
+  updateError.value = "";
+
+  try {
+    const gate = await invoke(manual ? "check_for_updates_now" : "prepare_startup_update_check");
+    if (!gate) return;
+
+    applyUpdateSettingsSnapshot({
+      currentVersion: gate.currentVersion,
+      autoCheckUpdates: config.personal.auto_check_updates,
+      lastUpdateCheckAt: gate.checkedAt ?? config.personal.last_update_check_at,
+    });
+
+    if (!gate.shouldCheck) {
+      return;
+    }
+
+    const update = await checkForAppUpdate({ timeout: 8000 });
+    if (!update) {
+      if (manual) {
+        showCopyToast("当前已是最新版本", "success");
+      }
+      return;
+    }
+
+    disposeAvailableUpdate();
+    availableUpdateRef.value = update;
+    updateLatestVersion.value = String(update.version || "");
+    updateReleaseDate.value = String(update.date || "");
+    updateNotesSummary.value = summarizeReleaseNotes(update.body || update.rawJson?.notes || "");
+    updateDialogOpen.value = true;
+    resetUpdateProgress();
+  } catch (error) {
+    if (manual) {
+      showCopyToast(`检查更新失败：${String(error)}`, "error");
+    }
+    console.error("Failed to check for updates:", error);
+  } finally {
+    updateChecking.value = false;
+  }
+}
+
+async function installAvailableUpdate() {
+  const update = availableUpdateRef.value;
+  if (!update || updateInstalling.value) return;
+
+  updateInstalling.value = true;
+  updateError.value = "";
+  resetUpdateProgress();
+
+  try {
+    await update.downloadAndInstall((event) => {
+      Object.assign(updateProgress, reduceUpdateDownloadProgress(updateProgress, event));
+    }, { timeout: 10 * 60 * 1000 });
+    updateDialogOpen.value = false;
+    showCopyToast("更新包已下载，应用将退出以继续安装", "success");
+  } catch (error) {
+    updateError.value = String(error);
+    showCopyToast(`更新失败：${String(error)}`, "error");
+  } finally {
+    updateInstalling.value = false;
+  }
 }
 
 function copyRow(row) {
@@ -7931,9 +8121,26 @@ function escapeHtml(str) {
             <div class="glass-card">
               <h4 class="glass-card-title">系统</h4>
               <div style="display:flex;flex-direction:column;gap:12px">
+                <div class="update-settings-summary">
+                  <span class="muted">当前版本</span>
+                  <strong>v{{ updateCurrentVersion }}</strong>
+                </div>
                 <label class="glass-toggle"><input v-model="settingsDraft.autoStart" type="checkbox" /><span class="glass-toggle-track"></span>开机自启</label>
                 <label class="glass-toggle"><input v-model="settingsDraft.alwaysOnTop" type="checkbox" /><span class="glass-toggle-track"></span>窗口置顶</label>
                 <label class="glass-toggle"><input v-model="settingsDraft.resetOnOpenToAllTables" type="checkbox" /><span class="glass-toggle-track"></span>打开窗口重置为全表</label>
+                <label class="glass-toggle"><input v-model="settingsDraft.autoCheckUpdates" type="checkbox" /><span class="glass-toggle-track"></span>启动时自动检查更新</label>
+                <div class="update-settings-actions">
+                  <button
+                    class="glass-btn-secondary"
+                    :disabled="!isTauriWindow || updateChecking || updateInstalling"
+                    @click="runAppUpdateCheck({ manual: true })"
+                  >
+                    {{ updateChecking ? "检查中..." : "立即检查更新" }}
+                  </button>
+                  <span class="muted">
+                    上次检查：{{ formatUpdateTimestamp(config.personal.last_update_check_at) }}
+                  </span>
+                </div>
               </div>
             </div>
           </div>
@@ -8262,6 +8469,54 @@ function escapeHtml(str) {
         <button class="small-btn" @click="exportDialogOpen = false">取消</button>
         <button class="primary-btn" :disabled="exportSelectedTables.size === 0 || exportLoading" @click="doBatchExport">
           {{ exportLoading ? '导出中...' : `导出 ${exportSelectedTables.size} 张表` }}
+        </button>
+      </footer>
+    </section>
+  </div>
+
+  <div v-if="updateDialogOpen" class="dialog-mask" @click.self="closeUpdateDialog">
+    <section class="modal-card update-dialog">
+      <header class="modal-header">
+        <h3>发现新版本</h3>
+        <button class="icon-btn" :disabled="updateInstalling" @click="closeUpdateDialog">✕</button>
+      </header>
+      <div class="update-dialog-body">
+        <div class="update-version-row">
+          <span>当前版本</span>
+          <strong>v{{ updateCurrentVersion }}</strong>
+        </div>
+        <div class="update-version-row">
+          <span>最新版本</span>
+          <strong>v{{ updateLatestVersion }}</strong>
+        </div>
+        <div v-if="updateReleaseDate" class="update-version-row">
+          <span>发布时间</span>
+          <strong>{{ formatUpdateTimestamp(updateReleaseDate) }}</strong>
+        </div>
+        <div class="update-notes-card">
+          <div class="update-notes-title">更新说明</div>
+          <p>{{ updateNotesSummary }}</p>
+        </div>
+        <div v-if="updateProgress.status !== 'idle' || updateInstalling" class="update-progress-card">
+          <div class="update-progress-header">
+            <span>{{ updateInstalling ? "正在下载安装更新..." : "更新准备中" }}</span>
+            <strong>{{ updateProgress.percent }}%</strong>
+          </div>
+          <div class="update-progress-bar">
+            <span :style="{ width: `${updateProgress.percent}%` }"></span>
+          </div>
+          <div class="muted">
+            {{ formatByteCount(updateProgress.downloadedBytes) }} / {{ formatByteCount(updateProgress.totalBytes) }}
+          </div>
+        </div>
+        <div v-if="updateError" class="update-error">
+          更新失败：{{ updateError }}
+        </div>
+      </div>
+      <footer class="modal-footer update-dialog-footer">
+        <button class="small-btn" :disabled="updateInstalling" @click="closeUpdateDialog">稍后</button>
+        <button class="primary-btn" :disabled="updateInstalling" @click="installAvailableUpdate">
+          {{ updateInstalling ? "下载安装中..." : "立即更新" }}
         </button>
       </footer>
     </section>
