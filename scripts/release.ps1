@@ -4,14 +4,27 @@ param(
   [string]$Version,
 
   [Parameter(Position = 1)]
-  [string]$PackageJsonPath = (Join-Path $PSScriptRoot "..\package.json"),
+  [string]$PackageJsonPath,
 
   [Parameter(Position = 2)]
-  [string]$CargoTomlPath = (Join-Path $PSScriptRoot "..\src-tauri\Cargo.toml")
+  [string]$CargoTomlPath
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$scriptRoot = $PSScriptRoot
+if (-not $scriptRoot) {
+  $scriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+}
+
+if (-not $PackageJsonPath) {
+  $PackageJsonPath = Join-Path $scriptRoot "..\package.json"
+}
+
+if (-not $CargoTomlPath) {
+  $CargoTomlPath = Join-Path $scriptRoot "..\src-tauri\Cargo.toml"
+}
 
 function Write-Utf8NoBom {
   param(

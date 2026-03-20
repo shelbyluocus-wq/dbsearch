@@ -116,6 +116,8 @@ npm run release:prepare -- 4.4.1
 npm run release:prepare -- v4.4.1
 ```
 
+如果你是在某些会把工作目录变成 `\\?\...` 的终端里执行，这两个 npm 命令也可以正常工作；仓库里已经用一个 Node 包装器固定了解析路径。
+
 脚本会自动同步：
 
 - `package.json`

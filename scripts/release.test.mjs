@@ -6,6 +6,7 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 
 const scriptPath = path.resolve("scripts/release.ps1");
+const wrapperPath = path.resolve("scripts/run-powershell-script.mjs");
 
 function runReleaseScript({ version, packageJsonPath, cargoTomlPath }) {
   return new Promise((resolve) => {
@@ -148,5 +149,41 @@ test("release script rejects invalid versions without changing files", async () 
     assert.equal(await readFile(fixture.cargoTomlPath, "utf8"), originalCargoToml);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("release script resolves repo default paths when launched through the wrapper from another cwd", async () => {
+  const outsideCwd = await mkdtemp(path.join(tmpdir(), "dbsearch-release-cwd-"));
+
+  try {
+    const child = spawn(
+      process.execPath,
+      [wrapperPath, "scripts/release.ps1", "4.4.0"],
+      {
+        cwd: outsideCwd,
+        windowsHide: true,
+      },
+    );
+
+    let stdout = "";
+    let stderr = "";
+
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+
+    const code = await new Promise((resolve) => {
+      child.on("close", resolve);
+    });
+
+    assert.equal(code, 0, stderr || stdout);
+    const packageJson = JSON.parse(await readFile(path.resolve("package.json"), "utf8"));
+    assert.equal(packageJson.version, "4.4.0");
+  } finally {
+    await rm(outsideCwd, { recursive: true, force: true });
   }
 });
