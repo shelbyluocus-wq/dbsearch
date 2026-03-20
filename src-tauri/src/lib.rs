@@ -14,6 +14,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{
+    menu::{Menu, MenuItemBuilder},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     Emitter, LogicalPosition, LogicalSize, Manager, Position, Size, State, WebviewUrl,
     WebviewWindow, WebviewWindowBuilder, WindowEvent,
 };
@@ -80,6 +82,43 @@ const PET_MENU_DIVIDER_BLOCK_HEIGHT: f64 = 5.0;
 const PET_MENU_VERTICAL_PADDING: f64 = 20.0;
 const SYNC_WORKSPACE_WIDTH: f64 = 760.0;
 const SYNC_WORKSPACE_HEIGHT: f64 = 640.0;
+const TRAY_ICON_ID: &str = "main_tray";
+const TRAY_MENU_OPEN_PANEL_ID: &str = "tray-open-panel";
+const TRAY_MENU_SHOW_PET_ID: &str = "tray-show-pet";
+const TRAY_MENU_EXIT_ID: &str = "tray-exit";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayMenuAction {
+    OpenPanel,
+    ShowPet,
+    ExitApp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WindowCloseAction {
+    HideToTray,
+    HideWindow,
+}
+
+fn tray_click_opens_panel(button: MouseButton, state: MouseButtonState) -> bool {
+    button == MouseButton::Left && state == MouseButtonState::Up
+}
+
+fn resolve_tray_menu_action(id: impl AsRef<str>) -> Option<TrayMenuAction> {
+    match id.as_ref() {
+        TRAY_MENU_OPEN_PANEL_ID => Some(TrayMenuAction::OpenPanel),
+        TRAY_MENU_SHOW_PET_ID => Some(TrayMenuAction::ShowPet),
+        TRAY_MENU_EXIT_ID => Some(TrayMenuAction::ExitApp),
+        _ => None,
+    }
+}
+
+fn close_request_action_for_window(label: &str) -> WindowCloseAction {
+    match label {
+        PANEL_WINDOW_LABEL | SYNC_WORKSPACE_WINDOW_LABEL => WindowCloseAction::HideToTray,
+        _ => WindowCloseAction::HideWindow,
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -1352,10 +1391,7 @@ async fn show_panel_window(
     open_settings: Option<bool>,
 ) -> Result<(), String> {
     let always_on_top = state.runtime.lock().await.config.personal.always_on_top;
-    let panel = ensure_panel_window(&app, always_on_top)?;
-    panel.show().map_err(|e| e.to_string())?;
-    let _ = panel.unminimize();
-    panel.set_focus().map_err(|e| e.to_string())?;
+    let panel = activate_panel_window(&app, always_on_top)?;
     if open_settings.unwrap_or(false) {
         state.runtime.lock().await.panel_open_settings_pending = true;
         let _ = panel.emit("panel-open-settings", ());
@@ -1543,6 +1579,17 @@ fn quit_app(app: tauri::AppHandle) {
     app.exit(0);
 }
 
+fn activate_panel_window(
+    app: &tauri::AppHandle,
+    always_on_top: bool,
+) -> Result<WebviewWindow, String> {
+    let panel = ensure_panel_window(app, always_on_top)?;
+    panel.show().map_err(|e| e.to_string())?;
+    let _ = panel.unminimize();
+    panel.set_focus().map_err(|e| e.to_string())?;
+    Ok(panel)
+}
+
 fn ensure_panel_window(
     app: &tauri::AppHandle,
     always_on_top: bool,
@@ -1575,7 +1622,11 @@ fn ensure_panel_window(
     panel.on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            let _ = panel_for_events.hide();
+            match close_request_action_for_window(PANEL_WINDOW_LABEL) {
+                WindowCloseAction::HideToTray | WindowCloseAction::HideWindow => {
+                    let _ = panel_for_events.hide();
+                }
+            }
         }
     });
 
@@ -1610,7 +1661,11 @@ fn ensure_sync_workspace_window(app: &tauri::AppHandle) -> Result<WebviewWindow,
     window.on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            let _ = window_for_events.hide();
+            match close_request_action_for_window(SYNC_WORKSPACE_WINDOW_LABEL) {
+                WindowCloseAction::HideToTray | WindowCloseAction::HideWindow => {
+                    let _ = window_for_events.hide();
+                }
+            }
         }
     });
 
@@ -1784,12 +1839,97 @@ fn open_panel_from_global_shortcut(app: tauri::AppHandle) {
             if visible {
                 let _ = panel.hide();
             } else {
-                let _ = panel.show();
-                let _ = panel.unminimize();
-                let _ = panel.set_focus();
+                let _ = activate_panel_window(&app, always_on_top);
             }
         }
     });
+}
+
+async fn show_pet_window_from_tray(
+    app: tauri::AppHandle,
+    state: AppState,
+) -> Result<(), String> {
+    {
+        let mut runtime = state.runtime.lock().await;
+        runtime.pet_hidden_this_session = false;
+    }
+
+    if let Some(menu) = app.get_webview_window(PET_MENU_WINDOW_LABEL) {
+        let _ = menu.hide();
+    }
+    if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
+        main_window.show().map_err(|e| e.to_string())?;
+        let _ = main_window.unminimize();
+        let _ = main_window.set_ignore_cursor_events(false);
+        state
+            .pet_cursor_ignored
+            .store(false, std::sync::atomic::Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+fn create_system_tray(app: &tauri::AppHandle) -> Result<(), String> {
+    let open_panel = MenuItemBuilder::with_id(TRAY_MENU_OPEN_PANEL_ID, "打开主面板")
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    let show_pet = MenuItemBuilder::with_id(TRAY_MENU_SHOW_PET_ID, "显示宠物")
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    let exit_app = MenuItemBuilder::with_id(TRAY_MENU_EXIT_ID, "退出")
+        .build(app)
+        .map_err(|e| e.to_string())?;
+    let menu = Menu::with_items(app, &[&open_panel, &show_pet, &exit_app])
+        .map_err(|e| e.to_string())?;
+    let icon = app
+        .default_window_icon()
+        .cloned()
+        .ok_or_else(|| "failed to load tray icon".to_string())?;
+
+    let _ = TrayIconBuilder::with_id(TRAY_ICON_ID)
+        .icon(icon)
+        .tooltip("DB Scout")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| match resolve_tray_menu_action(event.id()) {
+            Some(TrayMenuAction::OpenPanel) => {
+                let app_handle = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let state = app_handle.state::<AppState>().inner().clone();
+                    let always_on_top = state.runtime.lock().await.config.personal.always_on_top;
+                    let _ = activate_panel_window(&app_handle, always_on_top);
+                });
+            }
+            Some(TrayMenuAction::ShowPet) => {
+                let app_handle = app.clone();
+                let state = app.state::<AppState>().inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = show_pet_window_from_tray(app_handle, state).await;
+                });
+            }
+            Some(TrayMenuAction::ExitApp) => app.exit(0),
+            None => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button,
+                button_state,
+                ..
+            } = event
+            {
+                if tray_click_opens_panel(button, button_state) {
+                    let app_handle = tray.app_handle().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let state = app_handle.state::<AppState>().inner().clone();
+                        let always_on_top = state.runtime.lock().await.config.personal.always_on_top;
+                        let _ = activate_panel_window(&app_handle, always_on_top);
+                    });
+                }
+            }
+        })
+        .build(app)
+        .map_err(|e| e.to_string())?;
+
+    Ok(())
 }
 
 fn toggle_sync_workspace_from_global_shortcut(app: tauri::AppHandle) {
@@ -2449,6 +2589,16 @@ async fn get_weather() -> Result<WeatherInfo, String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            let app_handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                let state = app_handle.state::<AppState>().inner().clone();
+                let always_on_top = state.runtime.lock().await.config.personal.always_on_top;
+                if let Err(e) = activate_panel_window(&app_handle, always_on_top) {
+                    eprintln!("failed to activate existing panel window: {e}");
+                }
+            });
+        }))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -2570,6 +2720,10 @@ pub fn run() {
                 rt.registered_quick_date_hotkey = registered_quick_date_hotkey;
                 rt.registered_sync_window_hotkey = registered_sync_window_hotkey;
             });
+
+            if let Err(e) = create_system_tray(&app.handle()) {
+                eprintln!("failed to create system tray: {e}");
+            }
 
             if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 if let Some(pos) = pet_position {
@@ -2702,6 +2856,46 @@ mod tests {
         assert!(
             PET_MENU_HEIGHT >= min_height,
             "pet menu height {PET_MENU_HEIGHT} is smaller than required minimum {min_height}"
+        );
+    }
+
+    #[test]
+    fn tray_left_click_opens_the_panel() {
+        assert!(tray_click_opens_panel(MouseButton::Left, MouseButtonState::Up));
+        assert!(!tray_click_opens_panel(MouseButton::Right, MouseButtonState::Up));
+        assert!(!tray_click_opens_panel(MouseButton::Left, MouseButtonState::Down));
+    }
+
+    #[test]
+    fn tray_menu_action_maps_all_supported_commands() {
+        assert_eq!(
+            resolve_tray_menu_action(TRAY_MENU_OPEN_PANEL_ID),
+            Some(TrayMenuAction::OpenPanel)
+        );
+        assert_eq!(
+            resolve_tray_menu_action(TRAY_MENU_SHOW_PET_ID),
+            Some(TrayMenuAction::ShowPet)
+        );
+        assert_eq!(
+            resolve_tray_menu_action(TRAY_MENU_EXIT_ID),
+            Some(TrayMenuAction::ExitApp)
+        );
+        assert_eq!(resolve_tray_menu_action("unknown"), None);
+    }
+
+    #[test]
+    fn primary_windows_close_to_tray_instead_of_exiting() {
+        assert_eq!(
+            close_request_action_for_window(PANEL_WINDOW_LABEL),
+            WindowCloseAction::HideToTray
+        );
+        assert_eq!(
+            close_request_action_for_window(SYNC_WORKSPACE_WINDOW_LABEL),
+            WindowCloseAction::HideToTray
+        );
+        assert_eq!(
+            close_request_action_for_window(PET_MENU_WINDOW_LABEL),
+            WindowCloseAction::HideWindow
         );
     }
 }
