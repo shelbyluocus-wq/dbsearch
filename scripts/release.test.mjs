@@ -81,6 +81,12 @@ async function createReleaseFixture() {
             name: "tauri-app",
             version: "4.4.0",
           },
+          "node_modules/@tauri-apps/api": {
+            version: "2.10.1",
+          },
+          "node_modules/vite": {
+            version: "6.4.1",
+          },
         },
       },
       null,
@@ -143,6 +149,8 @@ test("release script syncs package and cargo versions", async () => {
     assert.equal(packageJson.version, "4.4.1");
     assert.equal(packageLock.version, "4.4.1");
     assert.equal(packageLock.packages[""].version, "4.4.1");
+    assert.equal(packageLock.packages["node_modules/@tauri-apps/api"].version, "2.10.1");
+    assert.equal(packageLock.packages["node_modules/vite"].version, "6.4.1");
     assert.match(cargoToml, /^version = "4\.4\.1"$/m);
     assert.match(cargoLock, /\[\[package\]\]\s+name = "tauri-app"\s+version = "4\.4\.1"/m);
     assert.match(result.stdout, /4\.4\.1/);
@@ -168,6 +176,35 @@ test("release script accepts tags with a leading v", async () => {
 
     assert.equal(packageJson.version, "4.4.7");
     assert.match(cargoToml, /^version = "4\.4\.7"$/m);
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
+test("release script is safe to rerun with the same version", async () => {
+  const fixture = await createReleaseFixture();
+
+  try {
+    const firstRun = await runReleaseScript({
+      version: "4.4.5",
+      packageJsonPath: fixture.packageJsonPath,
+      cargoTomlPath: fixture.cargoTomlPath,
+    });
+
+    assert.equal(firstRun.code, 0, firstRun.stderr || firstRun.stdout);
+
+    const secondRun = await runReleaseScript({
+      version: "4.4.5",
+      packageJsonPath: fixture.packageJsonPath,
+      cargoTomlPath: fixture.cargoTomlPath,
+    });
+
+    assert.equal(secondRun.code, 0, secondRun.stderr || secondRun.stdout);
+
+    const packageLock = JSON.parse(await readFile(fixture.packageLockPath, "utf8"));
+    assert.equal(packageLock.version, "4.4.5");
+    assert.equal(packageLock.packages[""].version, "4.4.5");
+    assert.equal(packageLock.packages["node_modules/@tauri-apps/api"].version, "2.10.1");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }

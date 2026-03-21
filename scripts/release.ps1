@@ -86,24 +86,15 @@ function Update-PackageLockVersion {
     return
   }
 
+  $rootVersionRegex = [System.Text.RegularExpressions.Regex]::new('(?m)^(\s*"version"\s*:\s*")[^"]+(")')
+  $rootPackageVersionRegex = [System.Text.RegularExpressions.Regex]::new('(?ms)("packages"\s*:\s*\{\s*""\s*:\s*\{.*?"version"\s*:\s*")[^"]+(")')
   $content = Get-Content -LiteralPath $Path -Raw
-  $updatedRootContent = [System.Text.RegularExpressions.Regex]::Replace(
-    $content,
-    '(?m)^(\s*"version"\s*:\s*")[^"]+(")',
-    "`${1}${Version}`${2}",
-    1
-  )
-
-  if ($updatedRootContent -eq $content) {
+  if (-not $rootVersionRegex.IsMatch($content)) {
     throw "Could not find the root version field inside package-lock.json."
   }
 
-  $updatedContent = [System.Text.RegularExpressions.Regex]::Replace(
-    $updatedRootContent,
-    '(?ms)("packages"\s*:\s*\{\s*""\s*:\s*\{.*?"version"\s*:\s*")[^"]+(")',
-    "`${1}${Version}`${2}",
-    1
-  )
+  $updatedRootContent = $rootVersionRegex.Replace($content, "`${1}${Version}`${2}", 1)
+  $updatedContent = $rootPackageVersionRegex.Replace($updatedRootContent, "`${1}${Version}`${2}", 1)
 
   Write-Utf8NoBom -Path $Path -Content $updatedContent
 }
@@ -164,13 +155,9 @@ function Update-CargoLockVersion {
     return
   }
 
+  $cargoLockVersionRegex = [System.Text.RegularExpressions.Regex]::new('(?ms)(\[\[package\]\]\s*name = "tauri-app"\s*version = ")[^"]+(")')
   $content = Get-Content -LiteralPath $Path -Raw
-  $updatedContent = [System.Text.RegularExpressions.Regex]::Replace(
-    $content,
-    '(?ms)(\[\[package\]\]\s*name = "tauri-app"\s*version = ")[^"]+(")',
-    "`${1}${Version}`${2}",
-    1
-  )
+  $updatedContent = $cargoLockVersionRegex.Replace($content, "`${1}${Version}`${2}", 1)
 
   if ($updatedContent -eq $content) {
     return
