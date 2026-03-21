@@ -85,7 +85,7 @@ npm run tauri dev
 项目已接入 Tauri updater，客户端会在启动后后台检查 GitHub Releases：
 
 - 连不上 GitHub 时静默跳过
-- 12 小时内最多真正检查一次
+- 每次打开应用都会检查一次，便于当前阶段测试更新链路
 - 发现新版本时提示用户手动确认下载和安装
 
 更新源配置在 [`src-tauri/tauri.conf.json`](./src-tauri/tauri.conf.json)，当前使用：
@@ -121,9 +121,11 @@ npm run release:prepare -- v4.4.1
 脚本会自动同步：
 
 - `package.json`
+- `package-lock.json`
 - `src-tauri/Cargo.toml`
+- `src-tauri/Cargo.lock`（如果当前锁文件里存在应用版本条目）
 
-2. 检查这两个文件的改动无误后，正常提交并推送代码。
+2. 检查这些文件的改动无误后，正常提交并推送代码。
 3. 在 GitHub Desktop 里创建并推送同名 tag：
 
 - 打开仓库后进入 `History`

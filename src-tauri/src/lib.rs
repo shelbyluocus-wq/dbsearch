@@ -1,7 +1,7 @@
 pub mod sync_workspace;
 
 use crate::sync_workspace::{execute_sync_pipeline, SyncProfile, SyncRunOutcome};
-use chrono::{DateTime, Duration, Local, Utc};
+use chrono::{DateTime, Local, Utc};
 use enigo::{Enigo, Keyboard, Settings};
 use mouse_position::mouse_position::Mouse;
 use regex::Regex;
@@ -86,8 +86,6 @@ const TRAY_ICON_ID: &str = "main_tray";
 const TRAY_MENU_OPEN_PANEL_ID: &str = "tray-open-panel";
 const TRAY_MENU_SHOW_PET_ID: &str = "tray-show-pet";
 const TRAY_MENU_EXIT_ID: &str = "tray-exit";
-const UPDATE_CHECK_INTERVAL_HOURS: i64 = 12;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TrayMenuAction {
     OpenPanel,
@@ -294,7 +292,7 @@ fn parse_update_check_at(value: Option<&str>) -> Option<DateTime<Utc>> {
 
 fn build_update_check_plan(
     auto_check_updates: bool,
-    last_update_check_at: Option<&str>,
+    _last_update_check_at: Option<&str>,
     now: DateTime<Utc>,
     manual: bool,
 ) -> UpdateCheckPlan {
@@ -316,19 +314,10 @@ fn build_update_check_plan(
         };
     }
 
-    let should_check = match parse_update_check_at(last_update_check_at) {
-        None => true,
-        Some(last_checked_at) => now - last_checked_at >= Duration::hours(UPDATE_CHECK_INTERVAL_HOURS),
-    };
-
     UpdateCheckPlan {
-        should_check,
-        reason: if should_check {
-            "startup-due".into()
-        } else {
-            "startup-throttled".into()
-        },
-        checked_at: should_check.then(|| now.to_rfc3339()),
+        should_check: true,
+        reason: "startup-due".into(),
+        checked_at: Some(now.to_rfc3339()),
         current_version: String::new(),
     }
 }
@@ -3053,15 +3042,15 @@ mod tests {
     }
 
     #[test]
-    fn update_check_plan_throttles_recent_startup_checks() {
+    fn update_check_plan_still_runs_on_every_startup_for_testing() {
         let now = DateTime::parse_from_rfc3339("2026-03-20T08:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
         let plan = build_update_check_plan(true, Some("2026-03-20T04:00:00Z"), now, false);
 
-        assert!(!plan.should_check);
-        assert_eq!(plan.reason, "startup-throttled");
-        assert_eq!(plan.checked_at, None);
+        assert!(plan.should_check);
+        assert_eq!(plan.reason, "startup-due");
+        assert_eq!(plan.checked_at.as_deref(), Some("2026-03-20T08:00:00+00:00"));
     }
 
     #[test]

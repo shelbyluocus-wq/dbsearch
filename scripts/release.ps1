@@ -73,6 +73,41 @@ function Update-PackageJsonVersion {
   Write-Utf8NoBom -Path $Path -Content "$content`n"
 }
 
+function Update-PackageLockVersion {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path,
+
+    [Parameter(Mandatory = $true)]
+    [string]$Version
+  )
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return
+  }
+
+  $content = Get-Content -LiteralPath $Path -Raw
+  $updatedRootContent = [System.Text.RegularExpressions.Regex]::Replace(
+    $content,
+    '(?m)^(\s*"version"\s*:\s*")[^"]+(")',
+    "`${1}${Version}`${2}",
+    1
+  )
+
+  if ($updatedRootContent -eq $content) {
+    throw "Could not find the root version field inside package-lock.json."
+  }
+
+  $updatedContent = [System.Text.RegularExpressions.Regex]::Replace(
+    $updatedRootContent,
+    '(?ms)("packages"\s*:\s*\{\s*""\s*:\s*\{.*?"version"\s*:\s*")[^"]+(")',
+    "`${1}${Version}`${2}",
+    1
+  )
+
+  Write-Utf8NoBom -Path $Path -Content $updatedContent
+}
+
 function Update-CargoTomlVersion {
   param(
     [Parameter(Mandatory = $true)]
@@ -116,12 +151,44 @@ function Update-CargoTomlVersion {
   Write-Utf8NoBom -Path $Path -Content (($lines -join [Environment]::NewLine) + [Environment]::NewLine)
 }
 
+function Update-CargoLockVersion {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path,
+
+    [Parameter(Mandatory = $true)]
+    [string]$Version
+  )
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return
+  }
+
+  $content = Get-Content -LiteralPath $Path -Raw
+  $updatedContent = [System.Text.RegularExpressions.Regex]::Replace(
+    $content,
+    '(?ms)(\[\[package\]\]\s*name = "tauri-app"\s*version = ")[^"]+(")',
+    "`${1}${Version}`${2}",
+    1
+  )
+
+  if ($updatedContent -eq $content) {
+    return
+  }
+
+  Write-Utf8NoBom -Path $Path -Content $updatedContent
+}
+
 $resolvedPackageJsonPath = (Resolve-Path -LiteralPath $PackageJsonPath).Path
 $resolvedCargoTomlPath = (Resolve-Path -LiteralPath $CargoTomlPath).Path
+$resolvedPackageLockPath = Join-Path (Split-Path -Parent $resolvedPackageJsonPath) "package-lock.json"
+$resolvedCargoLockPath = Join-Path (Split-Path -Parent $resolvedCargoTomlPath) "Cargo.lock"
 $normalizedVersion = Normalize-Version -RawVersion $Version
 
 Update-PackageJsonVersion -Path $resolvedPackageJsonPath -Version $normalizedVersion
+Update-PackageLockVersion -Path $resolvedPackageLockPath -Version $normalizedVersion
 Update-CargoTomlVersion -Path $resolvedCargoTomlPath -Version $normalizedVersion
+Update-CargoLockVersion -Path $resolvedCargoLockPath -Version $normalizedVersion
 
 Write-Output "Updated version to $normalizedVersion"
 Write-Output "package.json: $resolvedPackageJsonPath"

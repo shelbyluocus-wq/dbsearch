@@ -1,5 +1,3 @@
-export const UPDATE_CHECK_INTERVAL_MS = 12 * 60 * 60 * 1000;
-
 function normalizeIsoTimestamp(value) {
   const text = typeof value === "string" ? value.trim() : "";
   if (!text) return null;
@@ -34,11 +32,10 @@ export function resolveUpdateCheckPlan({
   settings = normalizeUpdateSettings(),
   now = Date.now(),
   manual = false,
-  intervalMs = UPDATE_CHECK_INTERVAL_MS,
+  intervalMs = 0,
 } = {}) {
   const nowDate = normalizeNow(now);
   const checkedAt = nowDate.toISOString();
-  const lastCheckedAt = normalizeIsoTimestamp(settings?.lastUpdateCheckAt);
 
   if (manual) {
     return {
@@ -53,25 +50,6 @@ export function resolveUpdateCheckPlan({
     return {
       shouldCheck: false,
       reason: "startup-disabled",
-      checkedAt: null,
-      intervalMs,
-    };
-  }
-
-  if (!lastCheckedAt) {
-    return {
-      shouldCheck: true,
-      reason: "startup-due",
-      checkedAt,
-      intervalMs,
-    };
-  }
-
-  const elapsedMs = nowDate.getTime() - Date.parse(lastCheckedAt);
-  if (elapsedMs < intervalMs) {
-    return {
-      shouldCheck: false,
-      reason: "startup-throttled",
       checkedAt: null,
       intervalMs,
     };

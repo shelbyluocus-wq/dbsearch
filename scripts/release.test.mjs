@@ -52,7 +52,9 @@ function runReleaseScript({ version, packageJsonPath, cargoTomlPath }) {
 async function createReleaseFixture() {
   const root = await mkdtemp(path.join(tmpdir(), "dbsearch-release-"));
   const packageJsonPath = path.join(root, "package.json");
+  const packageLockPath = path.join(root, "package-lock.json");
   const cargoTomlPath = path.join(root, "Cargo.toml");
+  const cargoLockPath = path.join(root, "Cargo.lock");
 
   await writeFile(
     packageJsonPath,
@@ -60,6 +62,26 @@ async function createReleaseFixture() {
       {
         name: "tauri-app",
         version: "4.4.0",
+      },
+      null,
+      2,
+    ),
+  );
+
+  await writeFile(
+    packageLockPath,
+    JSON.stringify(
+      {
+        name: "tauri-app",
+        version: "4.4.0",
+        lockfileVersion: 3,
+        requires: true,
+        packages: {
+          "": {
+            name: "tauri-app",
+            version: "4.4.0",
+          },
+        },
       },
       null,
       2,
@@ -78,10 +100,26 @@ tauri = "2"
 `,
   );
 
+  await writeFile(
+    cargoLockPath,
+    `[[package]]
+name = "tauri-app"
+version = "4.4.0"
+dependencies = []
+
+[[package]]
+name = "other-crate"
+version = "1.0.0"
+dependencies = []
+`,
+  );
+
   return {
     root,
     packageJsonPath,
+    packageLockPath,
     cargoTomlPath,
+    cargoLockPath,
   };
 }
 
@@ -98,10 +136,15 @@ test("release script syncs package and cargo versions", async () => {
     assert.equal(result.code, 0, result.stderr || result.stdout);
 
     const packageJson = JSON.parse(await readFile(fixture.packageJsonPath, "utf8"));
+    const packageLock = JSON.parse(await readFile(fixture.packageLockPath, "utf8"));
     const cargoToml = await readFile(fixture.cargoTomlPath, "utf8");
+    const cargoLock = await readFile(fixture.cargoLockPath, "utf8");
 
     assert.equal(packageJson.version, "4.4.1");
+    assert.equal(packageLock.version, "4.4.1");
+    assert.equal(packageLock.packages[""].version, "4.4.1");
     assert.match(cargoToml, /^version = "4\.4\.1"$/m);
+    assert.match(cargoLock, /\[\[package\]\]\s+name = "tauri-app"\s+version = "4\.4\.1"/m);
     assert.match(result.stdout, /4\.4\.1/);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -154,6 +197,14 @@ test("release script rejects invalid versions without changing files", async () 
 
 test("release script resolves repo default paths when launched through the wrapper from another cwd", async () => {
   const outsideCwd = await mkdtemp(path.join(tmpdir(), "dbsearch-release-cwd-"));
+  const repoPackageJsonPath = path.resolve("package.json");
+  const repoPackageLockPath = path.resolve("package-lock.json");
+  const repoCargoTomlPath = path.resolve("src-tauri/Cargo.toml");
+  const repoCargoLockPath = path.resolve("src-tauri/Cargo.lock");
+  const originalPackageJson = await readFile(repoPackageJsonPath, "utf8");
+  const originalPackageLock = await readFile(repoPackageLockPath, "utf8");
+  const originalCargoToml = await readFile(repoCargoTomlPath, "utf8");
+  const originalCargoLock = await readFile(repoCargoLockPath, "utf8");
 
   try {
     const child = spawn(
@@ -181,9 +232,13 @@ test("release script resolves repo default paths when launched through the wrapp
     });
 
     assert.equal(code, 0, stderr || stdout);
-    const packageJson = JSON.parse(await readFile(path.resolve("package.json"), "utf8"));
+    const packageJson = JSON.parse(await readFile(repoPackageJsonPath, "utf8"));
     assert.equal(packageJson.version, "4.4.0");
   } finally {
+    await writeFile(repoPackageJsonPath, originalPackageJson);
+    await writeFile(repoPackageLockPath, originalPackageLock);
+    await writeFile(repoCargoTomlPath, originalCargoToml);
+    await writeFile(repoCargoLockPath, originalCargoLock);
     await rm(outsideCwd, { recursive: true, force: true });
   }
 });

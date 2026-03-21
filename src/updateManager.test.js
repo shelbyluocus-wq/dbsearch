@@ -6,7 +6,6 @@ import {
   reduceUpdateDownloadProgress,
   resolveUpdateCheckPlan,
   summarizeReleaseNotes,
-  UPDATE_CHECK_INTERVAL_MS,
 } from "./updateManager.js";
 
 test("normalizeUpdateSettings defaults auto checks on and drops invalid timestamps", () => {
@@ -34,7 +33,7 @@ test("resolveUpdateCheckPlan performs the first startup check immediately", () =
   assert.equal(plan.checkedAt, "2026-03-20T08:00:00.000Z");
 });
 
-test("resolveUpdateCheckPlan throttles startup checks inside the cooldown window", () => {
+test("resolveUpdateCheckPlan still checks on startup even inside the former cooldown window", () => {
   const plan = resolveUpdateCheckPlan({
     settings: normalizeUpdateSettings({
       auto_check_updates: true,
@@ -44,13 +43,12 @@ test("resolveUpdateCheckPlan throttles startup checks inside the cooldown window
     manual: false,
   });
 
-  assert.equal(plan.shouldCheck, false);
-  assert.equal(plan.reason, "startup-throttled");
-  assert.equal(plan.checkedAt, null);
-  assert.equal(plan.intervalMs, UPDATE_CHECK_INTERVAL_MS);
+  assert.equal(plan.shouldCheck, true);
+  assert.equal(plan.reason, "startup-due");
+  assert.equal(plan.checkedAt, "2026-03-20T08:00:00.000Z");
 });
 
-test("resolveUpdateCheckPlan allows startup checks again once the cooldown expires", () => {
+test("resolveUpdateCheckPlan keeps startup checks due after older timestamps too", () => {
   const plan = resolveUpdateCheckPlan({
     settings: normalizeUpdateSettings({
       auto_check_updates: true,
