@@ -25,6 +25,7 @@ function Write-Utf8NoBom {
     [string]$Path,
 
     [Parameter(Mandatory = $true)]
+    [AllowEmptyString()]
     [string]$Content
   )
 
@@ -71,7 +72,52 @@ function Resolve-SigningKeyPassword {
     return (Get-Content -LiteralPath $candidatePasswordPath -Raw).TrimEnd("`r", "`n")
   }
 
-  return $null
+  return ""
+}
+
+function Invoke-NpmCommand {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string[]]$Arguments,
+
+    [string]$SigningKey,
+
+    [AllowEmptyString()]
+    [string]$SigningKeyPassword
+  )
+
+  $npmCommand = Get-Command npm.cmd -ErrorAction SilentlyContinue
+  if (-not $npmCommand) {
+    $npmCommand = Get-Command npm -ErrorAction Stop
+  }
+
+  $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+  $startInfo.FileName = $npmCommand.Source
+  $startInfo.WorkingDirectory = (Get-Location).Path
+  $startInfo.UseShellExecute = $false
+  $startInfo.Arguments = [string]::Join(" ", ($Arguments | ForEach-Object {
+    if ($_ -match '[\s"]') {
+      '"' + ($_ -replace '"', '\"') + '"'
+    } else {
+      $_
+    }
+  }))
+
+  if ($SigningKey) {
+    $startInfo.EnvironmentVariables["TAURI_SIGNING_PRIVATE_KEY"] = $SigningKey
+  }
+
+  if ($null -ne $SigningKeyPassword) {
+    $startInfo.EnvironmentVariables["TAURI_SIGNING_PRIVATE_KEY_PASSWORD"] = $SigningKeyPassword
+  }
+
+  $process = [System.Diagnostics.Process]::Start($startInfo)
+  if (-not $process) {
+    throw "Failed to start npm."
+  }
+
+  $process.WaitForExit()
+  return $process.ExitCode
 }
 
 function Test-RequiresSigningContext {
@@ -103,23 +149,20 @@ if ($unboundArgs -and $unboundArgs.Value) {
 }
 
 $requiresSigningContext = Test-RequiresSigningContext -Args $passThroughArgs -RawCommandLine ([Environment]::CommandLine)
+$resolvedSigningKey = $null
 $resolvedPassword = $null
 
 if ($requiresSigningContext) {
-  $env:TAURI_SIGNING_PRIVATE_KEY = Resolve-SigningKey -Path $KeyPath
+  $resolvedSigningKey = Resolve-SigningKey -Path $KeyPath
   $resolvedPassword = Resolve-SigningKeyPassword -KeyPath $KeyPath -ExplicitPasswordPath $PasswordPath
 }
 
-if ($resolvedPassword) {
-  $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $resolvedPassword
-}
-
 if ($OutputEnvPath) {
-  Write-Utf8NoBom -Path $OutputEnvPath -Content $env:TAURI_SIGNING_PRIVATE_KEY
+  Write-Utf8NoBom -Path $OutputEnvPath -Content $resolvedSigningKey
   Write-Output "Wrote signing key to $OutputEnvPath for verification."
 }
 
-if ($OutputPasswordPath -and $resolvedPassword) {
+if ($OutputPasswordPath -and $null -ne $resolvedPassword) {
   Write-Utf8NoBom -Path $OutputPasswordPath -Content $resolvedPassword
 }
 
@@ -128,5 +171,5 @@ if ($OutputEnvPath -or $OutputPasswordPath) {
 }
 
 $commandArgs = @("run", "tauri", "--", "build") + $passThroughArgs
-& npm @commandArgs
-exit $LASTEXITCODE
+$exitCode = Invoke-NpmCommand -Arguments $commandArgs -SigningKey $resolvedSigningKey -SigningKeyPassword $resolvedPassword
+exit $exitCode

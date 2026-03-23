@@ -64,7 +64,7 @@ npm run build:signed
 1. 当前终端里的 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
 2. 私钥同目录下的 `dbsearch.key.password`
 
-如果你使用的是无密码私钥，`npm run build:signed` 会直接打包，不会再额外询问密码。
+如果你使用的是无密码私钥，`npm run build:signed` 会自动把 updater 密码当成空字符串传给 Tauri，不会再额外询问密码。
 
 如果你使用的是带密码的私钥，可以在本机放一个：
 
@@ -100,7 +100,7 @@ GitHub Actions 发版前，需要在仓库 Secrets 中添加：
 - `TAURI_SIGNING_PRIVATE_KEY`
   值为本机生成的私钥内容（当前私钥位于 `C:\Users\Administrator\.tauri\dbsearch.key`，不要提交到仓库）
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-  如果这把私钥有密码保护，就把同一串密码也加到这个 Secret；如果你的 key 没密码，这项可以留空
+  当前仓库使用的是无密码 key，所以现有 workflow 会直接传空密码；只有你以后改成“有密码的私钥”时，才需要再把 workflow 改为读取这个 Secret
 
 ### 日常发版
 

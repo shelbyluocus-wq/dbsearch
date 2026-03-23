@@ -157,6 +157,31 @@ test("build-signed reads the signing key password from a sidecar file when env i
   }
 });
 
+test("build-signed defaults to an empty password when no password file is configured", async () => {
+  const fixture = await createFixture();
+
+  try {
+    const result = await runBuildSignedScript({
+      args: [
+        "-KeyPath",
+        fixture.keyPath,
+        "-OutputEnvPath",
+        fixture.outputPath,
+        "-OutputPasswordPath",
+        fixture.outputPasswordPath,
+      ],
+      env: {
+        TAURI_SIGNING_PRIVATE_KEY: "",
+      },
+    });
+
+    assert.equal(result.code, 0, result.stderr || result.stdout);
+    assert.equal(await readFile(fixture.outputPasswordPath, "utf8"), "");
+  } finally {
+    await rm(fixture.root, { recursive: true, force: true });
+  }
+});
+
 test("build-signed fails with a clear error when no key is available", async () => {
   const fixture = await createFixture();
   const missingPath = path.join(fixture.root, "missing.key");

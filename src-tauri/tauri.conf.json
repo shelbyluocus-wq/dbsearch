@@ -58,7 +58,7 @@
     "autostart": null,
     "dialog": null,
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDRGMzM4MjU0OUY4NUY1N0UKUldSKzlZV2ZWSUl6VDhOdFN4RmRoeVV5bnAwd01scnAzZ212Mms1UGluT2s2TE90U0dyRzlETHcK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZBQzM5OEEwQTVGOTZENgpSV1RXbGw4S2lqbXNEOUZRblZtTDhxR1plVUUvT3dvZDZ5TGJvQzUxR244Y2YyNzRVcC9QZTJrRAo=",
       "endpoints": [
         "https://github.com/shelbyluocus-wq/dbsearch/releases/latest/download/latest.json"
       ],
