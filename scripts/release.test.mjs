@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 const scriptPath = path.resolve("scripts/release.ps1");
 const wrapperPath = path.resolve("scripts/run-powershell-script.mjs");
 
-function runReleaseScript({ version, packageJsonPath, cargoTomlPath }) {
+function runReleaseScript({ version, packageJsonPath, cargoTomlPath, tauriConfigPath }) {
   return new Promise((resolve) => {
     const child = spawn(
       "powershell",
@@ -21,6 +21,7 @@ function runReleaseScript({ version, packageJsonPath, cargoTomlPath }) {
         version,
         packageJsonPath,
         cargoTomlPath,
+        tauriConfigPath,
       ],
       {
         cwd: path.resolve("."),
@@ -55,6 +56,7 @@ async function createReleaseFixture() {
   const packageLockPath = path.join(root, "package-lock.json");
   const cargoTomlPath = path.join(root, "Cargo.toml");
   const cargoLockPath = path.join(root, "Cargo.lock");
+  const tauriConfigPath = path.join(root, "tauri.conf.json");
 
   await writeFile(
     packageJsonPath,
@@ -120,12 +122,32 @@ dependencies = []
 `,
   );
 
+  await writeFile(
+    tauriConfigPath,
+    JSON.stringify(
+      {
+        productName: "鹰捷V4.4.0",
+        app: {
+          windows: [
+            {
+              label: "main",
+              title: "鹰捷V4.4.0",
+            },
+          ],
+        },
+      },
+      null,
+      2,
+    ),
+  );
+
   return {
     root,
     packageJsonPath,
     packageLockPath,
     cargoTomlPath,
     cargoLockPath,
+    tauriConfigPath,
   };
 }
 
@@ -137,6 +159,7 @@ test("release script syncs package and cargo versions", async () => {
       version: "4.4.1",
       packageJsonPath: fixture.packageJsonPath,
       cargoTomlPath: fixture.cargoTomlPath,
+      tauriConfigPath: fixture.tauriConfigPath,
     });
 
     assert.equal(result.code, 0, result.stderr || result.stdout);
@@ -145,6 +168,7 @@ test("release script syncs package and cargo versions", async () => {
     const packageLock = JSON.parse(await readFile(fixture.packageLockPath, "utf8"));
     const cargoToml = await readFile(fixture.cargoTomlPath, "utf8");
     const cargoLock = await readFile(fixture.cargoLockPath, "utf8");
+    const tauriConfig = JSON.parse(await readFile(fixture.tauriConfigPath, "utf8"));
 
     assert.equal(packageJson.version, "4.4.1");
     assert.equal(packageLock.version, "4.4.1");
@@ -153,6 +177,8 @@ test("release script syncs package and cargo versions", async () => {
     assert.equal(packageLock.packages["node_modules/vite"].version, "6.4.1");
     assert.match(cargoToml, /^version = "4\.4\.1"$/m);
     assert.match(cargoLock, /\[\[package\]\]\s+name = "tauri-app"\s+version = "4\.4\.1"/m);
+    assert.equal(tauriConfig.productName, "鹰捷V4.4.1");
+    assert.equal(tauriConfig.app.windows[0].title, "鹰捷V4.4.1");
     assert.match(result.stdout, /4\.4\.1/);
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -167,15 +193,19 @@ test("release script accepts tags with a leading v", async () => {
       version: "v4.4.7",
       packageJsonPath: fixture.packageJsonPath,
       cargoTomlPath: fixture.cargoTomlPath,
+      tauriConfigPath: fixture.tauriConfigPath,
     });
 
     assert.equal(result.code, 0, result.stderr || result.stdout);
 
     const packageJson = JSON.parse(await readFile(fixture.packageJsonPath, "utf8"));
     const cargoToml = await readFile(fixture.cargoTomlPath, "utf8");
+    const tauriConfig = JSON.parse(await readFile(fixture.tauriConfigPath, "utf8"));
 
     assert.equal(packageJson.version, "4.4.7");
     assert.match(cargoToml, /^version = "4\.4\.7"$/m);
+    assert.equal(tauriConfig.productName, "鹰捷V4.4.7");
+    assert.equal(tauriConfig.app.windows[0].title, "鹰捷V4.4.7");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -189,6 +219,7 @@ test("release script is safe to rerun with the same version", async () => {
       version: "4.4.5",
       packageJsonPath: fixture.packageJsonPath,
       cargoTomlPath: fixture.cargoTomlPath,
+      tauriConfigPath: fixture.tauriConfigPath,
     });
 
     assert.equal(firstRun.code, 0, firstRun.stderr || firstRun.stdout);
@@ -197,14 +228,17 @@ test("release script is safe to rerun with the same version", async () => {
       version: "4.4.5",
       packageJsonPath: fixture.packageJsonPath,
       cargoTomlPath: fixture.cargoTomlPath,
+      tauriConfigPath: fixture.tauriConfigPath,
     });
 
     assert.equal(secondRun.code, 0, secondRun.stderr || secondRun.stdout);
 
     const packageLock = JSON.parse(await readFile(fixture.packageLockPath, "utf8"));
+    const tauriConfig = JSON.parse(await readFile(fixture.tauriConfigPath, "utf8"));
     assert.equal(packageLock.version, "4.4.5");
     assert.equal(packageLock.packages[""].version, "4.4.5");
     assert.equal(packageLock.packages["node_modules/@tauri-apps/api"].version, "2.10.1");
+    assert.equal(tauriConfig.productName, "鹰捷V4.4.5");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -221,6 +255,7 @@ test("release script rejects invalid versions without changing files", async () 
       version: "v4..2",
       packageJsonPath: fixture.packageJsonPath,
       cargoTomlPath: fixture.cargoTomlPath,
+      tauriConfigPath: fixture.tauriConfigPath,
     });
 
     assert.notEqual(result.code, 0);
@@ -238,10 +273,12 @@ test("release script resolves repo default paths when launched through the wrapp
   const repoPackageLockPath = path.resolve("package-lock.json");
   const repoCargoTomlPath = path.resolve("src-tauri/Cargo.toml");
   const repoCargoLockPath = path.resolve("src-tauri/Cargo.lock");
+  const repoTauriConfigPath = path.resolve("src-tauri/tauri.conf.json");
   const originalPackageJson = await readFile(repoPackageJsonPath, "utf8");
   const originalPackageLock = await readFile(repoPackageLockPath, "utf8");
   const originalCargoToml = await readFile(repoCargoTomlPath, "utf8");
   const originalCargoLock = await readFile(repoCargoLockPath, "utf8");
+  const originalTauriConfig = await readFile(repoTauriConfigPath, "utf8");
 
   try {
     const child = spawn(
@@ -270,12 +307,15 @@ test("release script resolves repo default paths when launched through the wrapp
 
     assert.equal(code, 0, stderr || stdout);
     const packageJson = JSON.parse(await readFile(repoPackageJsonPath, "utf8"));
+    const tauriConfig = JSON.parse(await readFile(repoTauriConfigPath, "utf8"));
     assert.equal(packageJson.version, "4.4.0");
+    assert.equal(tauriConfig.productName, "鹰捷V4.4.0");
   } finally {
     await writeFile(repoPackageJsonPath, originalPackageJson);
     await writeFile(repoPackageLockPath, originalPackageLock);
     await writeFile(repoCargoTomlPath, originalCargoToml);
     await writeFile(repoCargoLockPath, originalCargoLock);
+    await writeFile(repoTauriConfigPath, originalTauriConfig);
     await rm(outsideCwd, { recursive: true, force: true });
   }
 });

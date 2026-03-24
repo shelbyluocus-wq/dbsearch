@@ -7,7 +7,10 @@ param(
   [string]$PackageJsonPath,
 
   [Parameter(Position = 2)]
-  [string]$CargoTomlPath
+  [string]$CargoTomlPath,
+
+  [Parameter(Position = 3)]
+  [string]$TauriConfigPath
 )
 
 Set-StrictMode -Version Latest
@@ -24,6 +27,10 @@ if (-not $PackageJsonPath) {
 
 if (-not $CargoTomlPath) {
   $CargoTomlPath = Join-Path $scriptRoot "..\src-tauri\Cargo.toml"
+}
+
+if (-not $TauriConfigPath) {
+  $TauriConfigPath = Join-Path $scriptRoot "..\src-tauri\tauri.conf.json"
 }
 
 function Write-Utf8NoBom {
@@ -56,6 +63,16 @@ function Normalize-Version {
   }
 
   return $normalized
+}
+
+function Build-AppDisplayTitle {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Version
+  )
+
+  $baseName = ([char]0x9E70).ToString() + ([char]0x6377).ToString()
+  return "$baseName" + "V" + $Version
 }
 
 function Update-PackageJsonVersion {
@@ -166,8 +183,49 @@ function Update-CargoLockVersion {
   Write-Utf8NoBom -Path $Path -Content $updatedContent
 }
 
+function Update-TauriConfigDisplayTitle {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path,
+
+    [Parameter(Mandatory = $true)]
+    [string]$Version
+  )
+
+  if (-not (Test-Path -LiteralPath $Path)) {
+    return
+  }
+
+  $displayTitle = Build-AppDisplayTitle -Version $Version
+  $tauriConfig = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
+  $tauriConfig.productName = $displayTitle
+
+  $windows = $null
+  if ($tauriConfig.PSObject.Properties.Name -contains "app" -and $tauriConfig.app) {
+    if ($tauriConfig.app.PSObject.Properties.Name -contains "windows") {
+      $windows = $tauriConfig.app.windows
+    }
+  }
+  if ($windows) {
+    foreach ($window in $windows) {
+      if ($window.PSObject.Properties.Name -contains "title") {
+        $window.title = $displayTitle
+      } else {
+        $window | Add-Member -NotePropertyName title -NotePropertyValue $displayTitle
+      }
+    }
+  }
+
+  $content = $tauriConfig | ConvertTo-Json -Depth 100
+  Write-Utf8NoBom -Path $Path -Content "$content`n"
+}
+
 $resolvedPackageJsonPath = (Resolve-Path -LiteralPath $PackageJsonPath).Path
 $resolvedCargoTomlPath = (Resolve-Path -LiteralPath $CargoTomlPath).Path
+$resolvedTauriConfigPath = $null
+if (Test-Path -LiteralPath $TauriConfigPath) {
+  $resolvedTauriConfigPath = (Resolve-Path -LiteralPath $TauriConfigPath).Path
+}
 $resolvedPackageLockPath = Join-Path (Split-Path -Parent $resolvedPackageJsonPath) "package-lock.json"
 $resolvedCargoLockPath = Join-Path (Split-Path -Parent $resolvedCargoTomlPath) "Cargo.lock"
 $normalizedVersion = Normalize-Version -RawVersion $Version
@@ -176,7 +234,13 @@ Update-PackageJsonVersion -Path $resolvedPackageJsonPath -Version $normalizedVer
 Update-PackageLockVersion -Path $resolvedPackageLockPath -Version $normalizedVersion
 Update-CargoTomlVersion -Path $resolvedCargoTomlPath -Version $normalizedVersion
 Update-CargoLockVersion -Path $resolvedCargoLockPath -Version $normalizedVersion
+if ($resolvedTauriConfigPath) {
+  Update-TauriConfigDisplayTitle -Path $resolvedTauriConfigPath -Version $normalizedVersion
+}
 
 Write-Output "Updated version to $normalizedVersion"
 Write-Output "package.json: $resolvedPackageJsonPath"
 Write-Output "Cargo.toml: $resolvedCargoTomlPath"
+if ($resolvedTauriConfigPath) {
+  Write-Output "tauri.conf.json: $resolvedTauriConfigPath"
+}

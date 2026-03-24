@@ -1,3 +1,5 @@
+import { markRaw } from "vue";
+
 function normalizeIsoTimestamp(value) {
   const text = typeof value === "string" ? value.trim() : "";
   if (!text) return null;
@@ -33,6 +35,14 @@ export function shouldAutoRunStartupUpdateCheck({
   windowLabel = "",
 } = {}) {
   return Boolean(isTauriWindow && windowLabel === "main");
+}
+
+export function preserveOpaqueInstance(value) {
+  if (value && typeof value === "object") {
+    return markRaw(value);
+  }
+
+  return value;
 }
 
 export function resolveUpdateCheckPlan({

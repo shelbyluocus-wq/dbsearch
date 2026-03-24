@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { ref } from "vue";
 
 import {
   normalizeUpdateSettings,
+  preserveOpaqueInstance,
   reduceUpdateDownloadProgress,
   resolveUpdateCheckPlan,
   shouldAutoRunStartupUpdateCheck,
@@ -110,6 +112,21 @@ test("shouldAutoRunStartupUpdateCheck only runs on the main Tauri window", () =>
     }),
     false,
   );
+});
+
+test("preserveOpaqueInstance keeps private-field class instances callable after storing in a ref", () => {
+  class DemoUpdateHandle {
+    #value = 42;
+
+    read() {
+      return this.#value;
+    }
+  }
+
+  const holder = ref(null);
+  holder.value = preserveOpaqueInstance(new DemoUpdateHandle());
+
+  assert.equal(holder.value.read(), 42);
 });
 
 test("summarizeReleaseNotes keeps the first meaningful lines and truncates long content", () => {

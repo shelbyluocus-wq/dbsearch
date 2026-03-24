@@ -34,8 +34,10 @@ import {
   resolveSyncTargetDirectoryOpenRequest,
   resolveSyncProfileSelection,
 } from "./syncWorkspace.js";
+import { formatAppDisplayTitle } from "./appIdentity.js";
 import {
   normalizeUpdateSettings,
+  preserveOpaqueInstance,
   reduceUpdateDownloadProgress,
   shouldAutoRunStartupUpdateCheck,
   summarizeReleaseNotes,
@@ -65,6 +67,7 @@ import {
 } from "./tableTabDrag.js";
 
 const APP_VERSION = __APP_VERSION__;
+const APP_WINDOW_TITLE = formatAppDisplayTitle(APP_VERSION);
 
 function createTabStripDragState() {
   return {
@@ -6728,7 +6731,7 @@ async function runAppUpdateCheck({ manual = false } = {}) {
     }
 
     disposeAvailableUpdate();
-    availableUpdateRef.value = update;
+    availableUpdateRef.value = preserveOpaqueInstance(update);
     updateLatestVersion.value = String(update.version || "");
     updateReleaseDate.value = String(update.date || "");
     updateNotesSummary.value = summarizeReleaseNotes(update.body || update.rawJson?.notes || "");
@@ -6873,7 +6876,7 @@ function escapeHtml(str) {
           <button class="traffic-btn traffic-green" title="最大化/还原" @click="panelToggleMaximize"></button>
         </div>
         <div class="title-drag"></div>
-        <span class="window-title" @pointerdown.stop @dblclick.stop style="cursor:default">鹰捷v4.2</span>
+        <span class="window-title" @pointerdown.stop @dblclick.stop style="cursor:default">{{ APP_WINDOW_TITLE }}</span>
         <button
           class="header-weather header-weather--action"
           :title="`${FIXED_WEATHER_CITY} ${weatherHeaderLabel} ${weatherTemp}°C`"
