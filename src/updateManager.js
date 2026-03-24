@@ -28,6 +28,13 @@ export function normalizeUpdateSettings(personal = {}) {
   };
 }
 
+export function shouldAutoRunStartupUpdateCheck({
+  isTauriWindow = false,
+  windowLabel = "",
+} = {}) {
+  return Boolean(isTauriWindow && windowLabel === "main");
+}
+
 export function resolveUpdateCheckPlan({
   settings = normalizeUpdateSettings(),
   now = Date.now(),

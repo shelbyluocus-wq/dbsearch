@@ -3,7 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } 
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow, Window } from "@tauri-apps/api/window";
-import { save, open } from "@tauri-apps/plugin-dialog";
+import { ask, save, open } from "@tauri-apps/plugin-dialog";
 import { check as checkForAppUpdate } from "@tauri-apps/plugin-updater";
 import "./styles.css";
 import { WeatherEngine } from "./weatherEngine.js";
@@ -37,6 +37,7 @@ import {
 import {
   normalizeUpdateSettings,
   reduceUpdateDownloadProgress,
+  shouldAutoRunStartupUpdateCheck,
   summarizeReleaseNotes,
 } from "./updateManager.js";
 import { runPetMenuAction } from "./petMenu.js";
@@ -3221,12 +3222,6 @@ onMounted(async () => {
       skyTime.value = new Date().getHours() + new Date().getMinutes() / 60
     }, 5 * 60 * 1000)
 
-    if (isTauriWindow) {
-      setTimeout(() => {
-        runAppUpdateCheck({ manual: false }).catch(() => {});
-      }, 600);
-    }
-
     return;
   }
 
@@ -3239,6 +3234,15 @@ onMounted(async () => {
       });
     }
     return;
+  }
+
+  if (shouldAutoRunStartupUpdateCheck({
+    isTauriWindow,
+    windowLabel: windowLabel.value,
+  })) {
+    setTimeout(() => {
+      runAppUpdateCheck({ manual: false }).catch(() => {});
+    }, 600);
   }
 
   if (isPetWindow.value) {
@@ -6728,8 +6732,29 @@ async function runAppUpdateCheck({ manual = false } = {}) {
     updateLatestVersion.value = String(update.version || "");
     updateReleaseDate.value = String(update.date || "");
     updateNotesSummary.value = summarizeReleaseNotes(update.body || update.rawJson?.notes || "");
-    updateDialogOpen.value = true;
-    resetUpdateProgress();
+
+    if (manual || isPanelWindow.value) {
+      updateDialogOpen.value = true;
+      resetUpdateProgress();
+      return;
+    }
+
+    const shouldInstallNow = await ask(
+      `发现新版本 v${updateLatestVersion.value}。\n是否现在下载并安装？`,
+      {
+        title: "发现新版本",
+        kind: "info",
+        okLabel: "立即更新",
+        cancelLabel: "稍后",
+      },
+    );
+
+    if (shouldInstallNow) {
+      await installAvailableUpdate();
+      return;
+    }
+
+    closeUpdateDialog();
   } catch (error) {
     if (manual) {
       showCopyToast(`检查更新失败：${String(error)}`, "error");

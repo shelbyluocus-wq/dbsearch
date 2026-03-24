@@ -5,6 +5,7 @@ import {
   normalizeUpdateSettings,
   reduceUpdateDownloadProgress,
   resolveUpdateCheckPlan,
+  shouldAutoRunStartupUpdateCheck,
   summarizeReleaseNotes,
 } from "./updateManager.js";
 
@@ -75,6 +76,40 @@ test("resolveUpdateCheckPlan lets manual checks bypass the cooldown and disabled
   assert.equal(plan.shouldCheck, true);
   assert.equal(plan.reason, "manual");
   assert.equal(plan.checkedAt, "2026-03-20T08:00:00.000Z");
+});
+
+test("shouldAutoRunStartupUpdateCheck only runs on the main Tauri window", () => {
+  assert.equal(
+    shouldAutoRunStartupUpdateCheck({
+      isTauriWindow: true,
+      windowLabel: "main",
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldAutoRunStartupUpdateCheck({
+      isTauriWindow: true,
+      windowLabel: "panel",
+    }),
+    false,
+  );
+
+  assert.equal(
+    shouldAutoRunStartupUpdateCheck({
+      isTauriWindow: true,
+      windowLabel: "sync_workspace",
+    }),
+    false,
+  );
+
+  assert.equal(
+    shouldAutoRunStartupUpdateCheck({
+      isTauriWindow: false,
+      windowLabel: "browser",
+    }),
+    false,
+  );
 });
 
 test("summarizeReleaseNotes keeps the first meaningful lines and truncates long content", () => {

@@ -32,15 +32,48 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Validate release tag matches app version
+        run: node scripts/release-version-check.mjs "${{ github.ref_name }}"
+
       - name: Build and publish Tauri release
+        id: tauri_release
         uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: v__VERSION__
           releaseName: DB Scout v__VERSION__
           releaseBody: See the release notes for this version.
           releaseDraft: false
           prerelease: false
+          uploadUpdaterJson: false
+
+      - name: Locate updater signature
+        id: updater_signature
+        shell: pwsh
+        run: |
+          $signaturePath = Get-ChildItem -Path "src-tauri/target/release/bundle" -Recurse -Filter "*.exe.sig" |
+            Sort-Object FullName |
+            Select-Object -First 1 -ExpandProperty FullName
+          if (-not $signaturePath) {
+            throw "Could not locate the generated updater signature file."
+          }
+          "path=$signaturePath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Generate updater latest.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: >
+          node scripts/updater-manifest.mjs
+          --repo "${{ github.repository }}"
+          --release-id "${{ steps.tauri_release.outputs.releaseId }}"
+          --version "${{ steps.tauri_release.outputs.appVersion }}"
+          --signature-path "${{ steps.updater_signature.outputs.path }}"
+          --output "updater/latest.json"
+
+      - name: Upload updater latest.json
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release upload "${{ github.ref_name }}" "updater/latest.json" --clobber

@@ -100,7 +100,7 @@ GitHub Actions 发版前，需要在仓库 Secrets 中添加：
 - `TAURI_SIGNING_PRIVATE_KEY`
   值为本机生成的私钥内容（当前私钥位于 `C:\Users\Administrator\.tauri\dbsearch.key`，不要提交到仓库）
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`
-  当前仓库使用的是无密码 key，所以现有 workflow 会直接传空密码；只有你以后改成“有密码的私钥”时，才需要再把 workflow 改为读取这个 Secret
+  如果你当前使用的是无密码 key，这个 Secret 可以不填；如果以后换成“有密码的私钥”，再把密码填到这里即可
 
 ### 日常发版
 
@@ -135,6 +135,7 @@ npm run release:prepare -- v4.4.1
 - 正常 Push，tag 会一起推送到远程
 
 4. GitHub Actions 会自动构建 Windows 安装包、生成 updater 产物和 `latest.json`，并发布到 GitHub Release
+   现在 workflow 还会先校验“tag 版本号是否等于代码版本号”；如果不一致，会直接失败，避免出现 Action 成功但实际没有可更新版本的情况
 
 ### 发版规则
 
@@ -142,6 +143,7 @@ npm run release:prepare -- v4.4.1
 - 新版本必须大于旧版本，否则已安装客户端通常不会把它识别成更新
 - 版本号可以跳跃，例如 `4.4.0 -> 4.4.7` 或 `4.5.0`
 - 不建议只打 tag 不改代码版本号，这会让 Release 版本和应用内部版本不一致
+- 自动更新依赖 GitHub Release 里的 `latest.json`；当前 workflow 会在构建后自己生成并上传这个文件
 
 ### 一句话流程
 
