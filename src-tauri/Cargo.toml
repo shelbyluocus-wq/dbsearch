@@ -1,6 +1,6 @@
 [package]
 name = "tauri-app"
-version = "4.4.7"
+version = "4.4.9"
 description = "DB Scout desktop widget"
 authors = ["you"]
 edition = "2021"
