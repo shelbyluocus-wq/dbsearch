@@ -1,6 +1,6 @@
 {
     "$schema":  "https://schema.tauri.app/config/2",
-    "productName":  "鹰捷V4.4.9",
+    "productName":  "鹰捷V4.5.0",
     "version":  "../package.json",
     "identifier":  "com.dbscout.widget",
     "build":  {
@@ -13,7 +13,7 @@
                 "windows":  [
                                 {
                                     "label":  "main",
-                                    "title":  "鹰捷V4.4.9",
+                                    "title":  "鹰捷V4.5.0",
                                     "width":  226,
                                     "height":  268,
                                     "decorations":  false,
