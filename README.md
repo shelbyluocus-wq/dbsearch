@@ -124,7 +124,8 @@ npm run release:prepare -- v4.4.1
 - `package-lock.json`
 - `src-tauri/Cargo.toml`
 - `src-tauri/Cargo.lock`（如果当前锁文件里存在应用版本条目）
-- `src-tauri/tauri.conf.json` 里的 `productName` 和窗口 `title`，例如自动变成 `鹰捷V4.4.9`
+- `src-tauri/tauri.conf.json` 里的窗口 `title`，例如自动变成 `鹰捷V4.4.9`
+- `src-tauri/tauri.conf.json` 里的 `productName` 会固定保持为 `鹰捷`，这样 Windows 安装目录和快捷方式名称不会跟着版本号变化
 
 2. 检查这些文件的改动无误后，正常提交并推送代码。
 3. 在 GitHub Desktop 里创建并推送同名 tag：

@@ -126,7 +126,7 @@ dependencies = []
     tauriConfigPath,
     JSON.stringify(
       {
-        productName: "鹰捷V4.4.0",
+        productName: "鹰捷",
         app: {
           windows: [
             {
@@ -151,7 +151,7 @@ dependencies = []
   };
 }
 
-test("release script syncs package and cargo versions", async () => {
+test("release script syncs versions while keeping a stable install product name", async () => {
   const fixture = await createReleaseFixture();
 
   try {
@@ -177,7 +177,7 @@ test("release script syncs package and cargo versions", async () => {
     assert.equal(packageLock.packages["node_modules/vite"].version, "6.4.1");
     assert.match(cargoToml, /^version = "4\.4\.1"$/m);
     assert.match(cargoLock, /\[\[package\]\]\s+name = "tauri-app"\s+version = "4\.4\.1"/m);
-    assert.equal(tauriConfig.productName, "鹰捷V4.4.1");
+    assert.equal(tauriConfig.productName, "鹰捷");
     assert.equal(tauriConfig.app.windows[0].title, "鹰捷V4.4.1");
     assert.match(result.stdout, /4\.4\.1/);
   } finally {
@@ -204,7 +204,7 @@ test("release script accepts tags with a leading v", async () => {
 
     assert.equal(packageJson.version, "4.4.7");
     assert.match(cargoToml, /^version = "4\.4\.7"$/m);
-    assert.equal(tauriConfig.productName, "鹰捷V4.4.7");
+    assert.equal(tauriConfig.productName, "鹰捷");
     assert.equal(tauriConfig.app.windows[0].title, "鹰捷V4.4.7");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
@@ -238,7 +238,8 @@ test("release script is safe to rerun with the same version", async () => {
     assert.equal(packageLock.version, "4.4.5");
     assert.equal(packageLock.packages[""].version, "4.4.5");
     assert.equal(packageLock.packages["node_modules/@tauri-apps/api"].version, "2.10.1");
-    assert.equal(tauriConfig.productName, "鹰捷V4.4.5");
+    assert.equal(tauriConfig.productName, "鹰捷");
+    assert.equal(tauriConfig.app.windows[0].title, "鹰捷V4.4.5");
   } finally {
     await rm(fixture.root, { recursive: true, force: true });
   }
@@ -309,7 +310,7 @@ test("release script resolves repo default paths when launched through the wrapp
     const packageJson = JSON.parse(await readFile(repoPackageJsonPath, "utf8"));
     const tauriConfig = JSON.parse(await readFile(repoTauriConfigPath, "utf8"));
     assert.equal(packageJson.version, "4.4.0");
-    assert.equal(tauriConfig.productName, "鹰捷V4.4.0");
+    assert.equal(tauriConfig.productName, "鹰捷");
   } finally {
     await writeFile(repoPackageJsonPath, originalPackageJson);
     await writeFile(repoPackageLockPath, originalPackageLock);

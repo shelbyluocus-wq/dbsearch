@@ -71,8 +71,12 @@ function Build-AppDisplayTitle {
     [string]$Version
   )
 
-  $baseName = ([char]0x9E70).ToString() + ([char]0x6377).ToString()
+  $baseName = Build-AppInstallName
   return "$baseName" + "V" + $Version
+}
+
+function Build-AppInstallName {
+  return ([char]0x9E70).ToString() + ([char]0x6377).ToString()
 }
 
 function Update-PackageJsonVersion {
@@ -197,8 +201,9 @@ function Update-TauriConfigDisplayTitle {
   }
 
   $displayTitle = Build-AppDisplayTitle -Version $Version
+  $installName = Build-AppInstallName
   $tauriConfig = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
-  $tauriConfig.productName = $displayTitle
+  $tauriConfig.productName = $installName
 
   $windows = $null
   if ($tauriConfig.PSObject.Properties.Name -contains "app" -and $tauriConfig.app) {
