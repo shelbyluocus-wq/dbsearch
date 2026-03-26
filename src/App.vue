@@ -6,6 +6,7 @@ import { getCurrentWindow, Window } from "@tauri-apps/api/window";
 import { ask, save, open } from "@tauri-apps/plugin-dialog";
 import { check as checkForAppUpdate } from "@tauri-apps/plugin-updater";
 import "./styles.css";
+import DbMigrationWorkspace from "./DbMigrationWorkspace.vue";
 import { WeatherEngine } from "./weatherEngine.js";
 import {
   buildPanelTabs,
@@ -321,6 +322,9 @@ const windowLabel = ref("browser");
 const isPetWindow = computed(() => isTauriWindow && windowLabel.value === "main");
 const isMenuWindow = computed(() => isTauriWindow && windowLabel.value === "pet_menu");
 const isSyncWorkspaceWindow = computed(() => isTauriWindow && windowLabel.value === "sync_workspace");
+const isDbMigrationWorkspaceWindow = computed(() =>
+  isTauriWindow && windowLabel.value === "db_migration_workspace",
+);
 const isPanelWindow = computed(() => !isTauriWindow || windowLabel.value === "browser" || windowLabel.value === "panel");
 const FIXED_WEATHER_CITY = "厦门市";
 
@@ -7521,6 +7525,8 @@ function escapeHtml(str) {
       </section>
     </div>
   </main>
+
+  <DbMigrationWorkspace v-else-if="isDbMigrationWorkspaceWindow" />
 
   <div v-else-if="isMenuWindow" class="pet-menu-root">
     <section :class="['pet-menu-window', { 'reduced-transparency': reducedTransparencyEnabled }]">

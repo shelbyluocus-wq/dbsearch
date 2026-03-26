@@ -1,6 +1,16 @@
+pub mod db_migration;
 pub mod sync_workspace;
 
 use crate::sync_workspace::{execute_sync_pipeline, SyncProfile, SyncRunOutcome};
+use crate::db_migration::{
+    connect_db_migration_server as connect_db_migration_server_impl,
+    emit_db_migration_reset,
+    run_db_migration as run_db_migration_impl,
+    DbMigrationLoginParams,
+    DbMigrationLoginResult,
+    DbMigrationOutcome,
+    DbMigrationRequest,
+};
 use chrono::{DateTime, Local, Utc};
 use enigo::{Enigo, Keyboard, Settings};
 use mouse_position::mouse_position::Mouse;
@@ -11,7 +21,7 @@ use sqlx::{MySqlPool, Row};
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItemBuilder},
@@ -37,8 +47,9 @@ struct AppState {
     panel_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     quick_date_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     sync_window_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
+    db_migration_running_sync: Arc<AtomicBool>,
     pet_hitbox: Arc<std::sync::RwLock<Option<PetHitbox>>>,
-    pet_cursor_ignored: Arc<std::sync::atomic::AtomicBool>,
+    pet_cursor_ignored: Arc<AtomicBool>,
 }
 impl Default for AppState {
     fn default() -> Self {
@@ -48,8 +59,9 @@ impl Default for AppState {
             panel_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             quick_date_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             sync_window_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
+            db_migration_running_sync: Arc::new(AtomicBool::new(false)),
             pet_hitbox: Arc::new(std::sync::RwLock::new(None)),
-            pet_cursor_ignored: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            pet_cursor_ignored: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -70,6 +82,7 @@ const MAIN_WINDOW_LABEL: &str = "main";
 const PANEL_WINDOW_LABEL: &str = "panel";
 const PET_MENU_WINDOW_LABEL: &str = "pet_menu";
 const SYNC_WORKSPACE_WINDOW_LABEL: &str = "sync_workspace";
+const DB_MIGRATION_WORKSPACE_WINDOW_LABEL: &str = "db_migration_workspace";
 const PANEL_WIDTH: f64 = 780.0;
 const PANEL_HEIGHT: f64 = 860.0;
 const PET_MENU_WIDTH: f64 = 212.0;
@@ -82,6 +95,9 @@ const PET_MENU_DIVIDER_BLOCK_HEIGHT: f64 = 5.0;
 const PET_MENU_VERTICAL_PADDING: f64 = 20.0;
 const SYNC_WORKSPACE_WIDTH: f64 = 760.0;
 const SYNC_WORKSPACE_HEIGHT: f64 = 640.0;
+const DB_MIGRATION_WORKSPACE_WIDTH: f64 = 880.0;
+const DB_MIGRATION_WORKSPACE_HEIGHT: f64 = 680.0;
+const DB_MIGRATION_RESERVED_HOTKEY: &str = "Shift+D";
 const TRAY_ICON_ID: &str = "main_tray";
 const TRAY_MENU_OPEN_PANEL_ID: &str = "tray-open-panel";
 const TRAY_MENU_SHOW_PET_ID: &str = "tray-show-pet";
@@ -114,7 +130,9 @@ fn resolve_tray_menu_action(id: impl AsRef<str>) -> Option<TrayMenuAction> {
 
 fn close_request_action_for_window(label: &str) -> WindowCloseAction {
     match label {
-        PANEL_WINDOW_LABEL | SYNC_WORKSPACE_WINDOW_LABEL => WindowCloseAction::HideToTray,
+        PANEL_WINDOW_LABEL | SYNC_WORKSPACE_WINDOW_LABEL | DB_MIGRATION_WORKSPACE_WINDOW_LABEL => {
+            WindowCloseAction::HideToTray
+        }
         _ => WindowCloseAction::HideWindow,
     }
 }
@@ -1264,6 +1282,9 @@ async fn register_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
+    if hotkey_conflicts_with_reserved_db_migration_shortcut(&hotkey) {
+        return Err("主快捷键不能与数据库迁移窗口 Shift+D 冲突".into());
+    }
     let (previous, quick_date) = {
         let rt = state.runtime.lock().await;
         (
@@ -1300,6 +1321,9 @@ async fn register_quick_date_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
+    if hotkey_conflicts_with_reserved_db_migration_shortcut(&hotkey) {
+        return Err("日期快捷键不能与数据库迁移窗口 Shift+D 冲突".into());
+    }
     let (previous, panel_hotkey) = {
         let rt = state.runtime.lock().await;
         (
@@ -1336,6 +1360,9 @@ async fn register_sync_window_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
+    if hotkey_conflicts_with_reserved_db_migration_shortcut(&hotkey) {
+        return Err("同步工作台快捷键不能与数据库迁移窗口 Shift+D 冲突".into());
+    }
     let (previous, panel_hotkey, quick_date_hotkey) = {
         let rt = state.runtime.lock().await;
         (
@@ -1398,6 +1425,87 @@ async fn toggle_sync_workspace_window(app: tauri::AppHandle) -> Result<(), Strin
         window.set_focus().map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+#[tauri::command]
+async fn show_db_migration_window(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let window = ensure_db_migration_workspace_window(&app)?;
+    if !state.db_migration_running_sync.load(Ordering::SeqCst) {
+        emit_db_migration_reset(&app);
+    }
+    window.show().map_err(|e| e.to_string())?;
+    let _ = window.unminimize();
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn hide_db_migration_window(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    if state.db_migration_running_sync.load(Ordering::SeqCst) {
+        return Err("数据库迁移进行中，不能隐藏窗口".into());
+    }
+    if let Some(window) = app.get_webview_window(DB_MIGRATION_WORKSPACE_WINDOW_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn toggle_db_migration_window(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let window = ensure_db_migration_workspace_window(&app)?;
+    let visible = window.is_visible().map_err(|e| e.to_string())?;
+    let running = state.db_migration_running_sync.load(Ordering::SeqCst);
+    if visible {
+        if running {
+            let _ = window.unminimize();
+            let _ = window.set_focus();
+            return Ok(());
+        }
+        window.hide().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+
+    if !running {
+        emit_db_migration_reset(&app);
+    }
+    window.show().map_err(|e| e.to_string())?;
+    let _ = window.unminimize();
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn connect_db_migration_server(
+    params: DbMigrationLoginParams,
+) -> Result<DbMigrationLoginResult, String> {
+    connect_db_migration_server_impl(params).await
+}
+
+#[tauri::command]
+async fn run_db_migration(
+    request: DbMigrationRequest,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<DbMigrationOutcome, String> {
+    state
+        .db_migration_running_sync
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .map_err(|_| "当前已有数据库迁移任务在执行中，请稍后再试".to_string())?;
+
+    let result = run_db_migration_impl(&app, request).await;
+    state
+        .db_migration_running_sync
+        .store(false, Ordering::SeqCst);
+    result
 }
 
 #[tauri::command]
@@ -1798,6 +1906,51 @@ fn ensure_sync_workspace_window(app: &tauri::AppHandle) -> Result<WebviewWindow,
     Ok(window)
 }
 
+fn ensure_db_migration_workspace_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(DB_MIGRATION_WORKSPACE_WINDOW_LABEL) {
+        return Ok(window);
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        DB_MIGRATION_WORKSPACE_WINDOW_LABEL,
+        WebviewUrl::App("index.html".into()),
+    )
+    .title("DB Scout Migration")
+    .inner_size(DB_MIGRATION_WORKSPACE_WIDTH, DB_MIGRATION_WORKSPACE_HEIGHT)
+    .min_inner_size(760.0, 560.0)
+    .resizable(true)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(false)
+    .skip_taskbar(false)
+    .visible(false)
+    .drag_and_drop(false)
+    .build()
+    .map_err(|e| format!("failed to create db migration workspace window: {e}"))?;
+
+    let window_for_events = window.clone();
+    let app_handle = app.clone();
+    window.on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            let running = app_handle
+                .state::<AppState>()
+                .db_migration_running_sync
+                .load(Ordering::SeqCst);
+            if running {
+                let _ = window_for_events.show();
+                let _ = window_for_events.set_focus();
+                return;
+            }
+            let _ = window_for_events.hide();
+        }
+    });
+
+    Ok(window)
+}
+
 fn ensure_pet_menu_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
     if let Some(menu) = app.get_webview_window(PET_MENU_WINDOW_LABEL) {
         return Ok(menu);
@@ -1833,6 +1986,20 @@ fn ensure_pet_menu_window(app: &tauri::AppHandle) -> Result<WebviewWindow, Strin
     });
 
     Ok(menu)
+}
+
+fn reserved_db_migration_hotkey() -> &'static str {
+    DB_MIGRATION_RESERVED_HOTKEY
+}
+
+fn hotkey_conflicts_with_reserved_db_migration_shortcut(raw: &str) -> bool {
+    let Ok(normalized) = normalize_hotkey_for_plugin(raw) else {
+        return false;
+    };
+    let Ok(reserved) = normalize_hotkey_for_plugin(reserved_db_migration_hotkey()) else {
+        return false;
+    };
+    normalized == reserved
 }
 
 fn normalize_hotkey_for_plugin(raw: &str) -> Result<String, String> {
@@ -2069,6 +2236,35 @@ fn toggle_sync_workspace_from_global_shortcut(app: tauri::AppHandle) {
                 let _ = window.unminimize();
                 let _ = window.set_focus();
             }
+        }
+    });
+}
+
+fn toggle_db_migration_from_global_shortcut(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        if let Ok(window) = ensure_db_migration_workspace_window(&app) {
+            let running = app
+                .state::<AppState>()
+                .db_migration_running_sync
+                .load(Ordering::SeqCst);
+            let visible = window.is_visible().unwrap_or(false);
+
+            if visible {
+                if running {
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                } else {
+                    let _ = window.hide();
+                }
+                return;
+            }
+
+            if !running {
+                emit_db_migration_reset(&app);
+            }
+            let _ = window.show();
+            let _ = window.unminimize();
+            let _ = window.set_focus();
         }
     });
 }
@@ -2743,6 +2939,13 @@ pub fn run() {
                     let panel_hotkey = state.panel_hotkey_sync.read().unwrap().clone();
                     let quick_date_hotkey = state.quick_date_hotkey_sync.read().unwrap().clone();
                     let sync_window_hotkey = state.sync_window_hotkey_sync.read().unwrap().clone();
+                    let reserved_db_migration_hotkey =
+                        normalize_hotkey_for_plugin(reserved_db_migration_hotkey()).ok();
+
+                    if reserved_db_migration_hotkey.as_deref() == Some(triggered.as_str()) {
+                        toggle_db_migration_from_global_shortcut(app.clone());
+                        return;
+                    }
 
                     if quick_date_hotkey.as_deref() == Some(triggered.as_str()) {
                         if let Err(e) = input_today_date_globally() {
@@ -2778,14 +2981,24 @@ pub fn run() {
                 loaded.personal.sync_window_hotkey = default_sync_window_hotkey();
             }
             let pet_position = loaded.personal.pet_position.clone();
+            let reserved_db_migration_hotkey =
+                normalize_hotkey_for_plugin(reserved_db_migration_hotkey())
+                    .expect("reserved db migration hotkey must be valid");
             let registered_hotkey = match normalize_hotkey_for_plugin(&loaded.personal.hotkey) {
-                Ok(shortcut) => match app.global_shortcut().register(shortcut.as_str()) {
-                    Ok(()) => Some(shortcut),
-                    Err(e) => {
-                        eprintln!("failed to register startup hotkey: {e}");
+                Ok(shortcut) => {
+                    if reserved_db_migration_hotkey == shortcut {
+                        eprintln!("main hotkey conflicts with reserved db migration hotkey, skipped");
                         None
+                    } else {
+                        match app.global_shortcut().register(shortcut.as_str()) {
+                            Ok(()) => Some(shortcut),
+                            Err(e) => {
+                                eprintln!("failed to register startup hotkey: {e}");
+                                None
+                            }
+                        }
                     }
-                },
+                }
                 Err(e) => {
                     eprintln!("invalid startup hotkey config: {e}");
                     None
@@ -2796,6 +3009,9 @@ pub fn run() {
                     Ok(shortcut) => {
                         if registered_hotkey.as_deref() == Some(shortcut.as_str()) {
                             eprintln!("quick date hotkey is same as main hotkey, skipped");
+                            None
+                        } else if reserved_db_migration_hotkey == shortcut {
+                            eprintln!("quick date hotkey conflicts with reserved db migration hotkey, skipped");
                             None
                         } else {
                             match app.global_shortcut().register(shortcut.as_str()) {
@@ -2817,6 +3033,7 @@ pub fn run() {
                     Ok(shortcut) => {
                         if registered_hotkey.as_deref() == Some(shortcut.as_str())
                             || registered_quick_date_hotkey.as_deref() == Some(shortcut.as_str())
+                            || reserved_db_migration_hotkey == shortcut
                         {
                             eprintln!("sync workspace hotkey conflicts with existing hotkeys, skipped");
                             None
@@ -2835,6 +3052,12 @@ pub fn run() {
                         None
                     }
                 };
+            if let Err(e) = app
+                .global_shortcut()
+                .register(reserved_db_migration_hotkey.as_str())
+            {
+                eprintln!("failed to register reserved db migration hotkey: {e}");
+            }
             // Sync-write hotkey values for the global shortcut handler
             *st.panel_hotkey_sync.write().unwrap() = registered_hotkey.clone();
             *st.quick_date_hotkey_sync.write().unwrap() = registered_quick_date_hotkey.clone();
@@ -2940,6 +3163,11 @@ pub fn run() {
             show_sync_workspace_window,
             hide_sync_workspace_window,
             toggle_sync_workspace_window,
+            show_db_migration_window,
+            hide_db_migration_window,
+            toggle_db_migration_window,
+            connect_db_migration_server,
+            run_db_migration,
             open_directory_in_explorer,
             run_sync_profile,
             show_panel_window,
@@ -3024,6 +3252,10 @@ mod tests {
             WindowCloseAction::HideToTray
         );
         assert_eq!(
+            close_request_action_for_window(DB_MIGRATION_WORKSPACE_WINDOW_LABEL),
+            WindowCloseAction::HideToTray
+        );
+        assert_eq!(
             close_request_action_for_window(PET_MENU_WINDOW_LABEL),
             WindowCloseAction::HideWindow
         );
@@ -3070,5 +3302,13 @@ mod tests {
         assert!(parse_update_check_at(None).is_none());
         assert!(parse_update_check_at(Some("")).is_none());
         assert!(parse_update_check_at(Some("not-a-date")).is_none());
+    }
+
+    #[test]
+    fn fixed_db_migration_hotkey_is_reserved_shift_d() {
+        assert_eq!(reserved_db_migration_hotkey(), "Shift+D");
+        assert!(hotkey_conflicts_with_reserved_db_migration_shortcut("Shift+D"));
+        assert!(hotkey_conflicts_with_reserved_db_migration_shortcut("shift+d"));
+        assert!(!hotkey_conflicts_with_reserved_db_migration_shortcut("Shift+S"));
     }
 }
