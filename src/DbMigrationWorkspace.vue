@@ -6,6 +6,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { ask } from "@tauri-apps/plugin-dialog";
 import { buildHotkeyFromEvent } from "./syncWorkspace.js";
 import {
+  applyImportedDbMigrationProfileDraft,
   appendDbMigrationTimeline,
   buildDbMigrationHeadline,
   createDbMigrationProfileDraft,
@@ -51,9 +52,27 @@ const settingsEditingProfileId = ref("");
 const workspaceHotkey = ref(DEFAULT_DB_MIGRATION_WINDOW_HOTKEY);
 const hotkeyDraft = ref(DEFAULT_DB_MIGRATION_WINDOW_HOTKEY);
 const importInput = ref(null);
+const pendingImportProfileId = ref("");
+const profileStatusById = ref({});
 
 let selectionSyncDepth = 0;
 let unlistenProgress = null;
+
+function toSidebarStatusTone(tone) {
+  if (tone === "ready" || tone === "success") return "success";
+  if (tone === "neutral") return "idle";
+  return tone;
+}
+
+function rememberProfileStatus(profileId, tone) {
+  if (!profileId) return;
+  const nextTone = toSidebarStatusTone(tone);
+  if (profileStatusById.value[profileId] === nextTone) return;
+  profileStatusById.value = {
+    ...profileStatusById.value,
+    [profileId]: nextTone,
+  };
+}
 
 const activeProfile = computed(() =>
   workspaceProfiles.value.find((profile) => profile.id === activeProfileId.value) || null,
@@ -82,9 +101,9 @@ const profilesView = computed(() =>
     summary: describeDbMigrationProfile(profile, index),
     statusTone:
       profile.id === activeProfileId.value
-        ? currentStatusTone.value
+        ? toSidebarStatusTone(currentStatusTone.value)
         : isDbMigrationProfileConnectionReady(profile)
-          ? "idle"
+          ? profileStatusById.value[profile.id] || "idle"
           : "error",
   })),
 );
@@ -124,35 +143,37 @@ const workspaceHeadline = computed(() =>
   }),
 );
 
-const bannerMessage = computed(() => executionMessage.value || loginMessage.value);
+const passiveLoginBannerMessage = computed(() => {
+  if (!loginMessage.value) return "";
+  if (!activeProfile.value) return loginMessage.value;
+  if (loginMessageTone.value === "running" || loginMessageTone.value === "error") {
+    return loginMessage.value;
+  }
+  return "";
+});
+
+const bannerMessage = computed(() => executionMessage.value || passiveLoginBannerMessage.value);
 const bannerTone = computed(() =>
-  executionMessage.value ? executionMessageTone.value : loginMessageTone.value,
+  executionMessage.value
+    ? executionMessageTone.value
+    : passiveLoginBannerMessage.value
+      ? loginMessageTone.value
+      : "neutral",
 );
 
 const headerHelperText = computed(() => {
   if (!activeProfile.value) return "左侧保存多套迁移模板，点击后会自动连接或重连。";
-  if (!activeProfileConnectionReady.value) return "模板信息不完整时不会自动连接，也不会开始迁移。";
-  if (phase.value === "login") return "选中模板后会自动连接，连接成功后再选择源库和目标库。";
-  return workspaceHeadline.value;
+  if (!activeProfileConnectionReady.value) return "补全模板后即可在中间执行区选择源库和目标库。";
+  if (phase.value === "login") return "连接成功后即可开始完整覆盖。";
+  return "源库和目标库的选择会自动记回当前模板。";
 });
 
-const connectionSectionSubtitle = computed(() => {
-  if (!activeProfile.value) return "支持导入 JSON 创建模板，也可以手动新增后在设置里补全连接信息。";
+const executionSectionSubtitle = computed(() => {
+  if (!activeProfile.value) return "源库和目标库在这里选择，选择结果会自动回写到当前模板。";
   if (!activeProfileConnectionReady.value) {
-    return "模板名称和连接信息在设置面板管理，补全后再次点选模板即可自动连接。";
+    return "先在编辑模板里补全连接信息，连接成功后这里就会成为主要操作区。";
   }
-  return "点击左侧模板会自动复用当前连接或重连，但不会自动开始完整覆盖。";
-});
-
-const connectionDetails = computed(() => {
-  if (!activeProfile.value) return [];
-  return [
-    { label: "模板", value: activeProfile.value.name || "-" },
-    { label: "主机", value: String(activeProfile.value.host || "").trim() || "-" },
-    { label: "端口", value: String(Number(activeProfile.value.port) || 3306) },
-    { label: "账号", value: String(activeProfile.value.username || "").trim() || "-" },
-    { label: "可见库", value: phase.value !== "login" ? String(availableDatabases.value.length || 0) : "待连接" },
-  ];
+  return "源库和目标库在这里选择，选择结果会自动回写到当前模板。";
 });
 
 const selectedDatabaseCards = computed(() => [
@@ -248,8 +269,13 @@ watch([sourceDatabase, targetDatabase], () => {
 });
 
 function setWorkspaceProfiles(profiles = []) {
-  workspaceProfiles.value = (Array.isArray(profiles) ? profiles : [])
+  const normalizedProfiles = (Array.isArray(profiles) ? profiles : [])
     .map((profile, index) => normalizeDbMigrationProfile(profile, index));
+  const validIds = new Set(normalizedProfiles.map((profile) => profile.id).filter(Boolean));
+  workspaceProfiles.value = normalizedProfiles;
+  profileStatusById.value = Object.fromEntries(
+    Object.entries(profileStatusById.value).filter(([profileId]) => validIds.has(profileId)),
+  );
 }
 
 function updateProfileFields(profileId, fields = {}) {
@@ -296,6 +322,9 @@ function applyEmptyWorkspaceState() {
     targetDatabase: "",
   });
   clearExecutionArtifacts();
+  if (workspaceProfiles.value.length === 0) {
+    profileStatusById.value = {};
+  }
   loginMessage.value = "请先创建一个迁移模板。";
   loginMessageTone.value = "neutral";
 }
@@ -312,6 +341,9 @@ function applyIncompleteProfileState(
   phase.value = "login";
   connecting.value = false;
   availableDatabases.value = [];
+  if (profile?.id) {
+    rememberProfileStatus(profile.id, "error");
+  }
   if (clearExecution) {
     clearExecutionArtifacts();
   }
@@ -376,6 +408,7 @@ async function connectProfile(profile, { restoring = false } = {}) {
     return false;
   }
 
+  rememberProfileStatus(profile.id, "running");
   connecting.value = true;
   phase.value = "login";
   clearExecutionArtifacts();
@@ -398,6 +431,7 @@ async function connectProfile(profile, { restoring = false } = {}) {
     currentConnection.value = normalizeDbMigrationProfile(profile);
     phase.value = "ready";
     applyProfileSelections(profile, databases);
+    rememberProfileStatus(profile.id, databases.length >= 2 ? "success" : "error");
     loginMessage.value = databases.length >= 2
       ? `已连接 ${result.host}:${result.port}`
       : `已连接 ${result.host}:${result.port}，但可见业务库少于 2 个`;
@@ -408,6 +442,7 @@ async function connectProfile(profile, { restoring = false } = {}) {
     currentConnection.value = null;
     availableDatabases.value = [];
     phase.value = "login";
+    rememberProfileStatus(profile.id, "error");
     setSelectedDatabases({
       sourceDatabase: profile.sourceDatabase || "",
       targetDatabase: profile.targetDatabase || "",
@@ -457,6 +492,7 @@ async function activateProfile(profileId, { restoring = false, persist = true } 
     phase.value = "ready";
     currentConnection.value = normalizeDbMigrationProfile(profile);
     applyProfileSelections(profile, availableDatabases.value);
+    rememberProfileStatus(profile.id, availableDatabases.value.length >= 2 ? "success" : "error");
     loginMessage.value = availableDatabases.value.length >= 2
       ? `已复用 ${profile.host}:${profile.port} 的连接`
       : `已复用 ${profile.host}:${profile.port} 的连接，但可见业务库少于 2 个`;
@@ -466,11 +502,6 @@ async function activateProfile(profileId, { restoring = false, persist = true } 
   }
 
   return connectProfile(profile, { restoring });
-}
-
-async function reconnectActiveProfile() {
-  if (!activeProfile.value || !activeProfileConnectionReady.value || running.value) return;
-  await connectProfile(activeProfile.value);
 }
 
 async function restoreWorkspaceState() {
@@ -627,6 +658,34 @@ function removeDraftProfile(profileId) {
   }
 }
 
+function buildSettingsDraftSnapshot(lastUsedProfileId = activeProfileId.value) {
+  const fallbackProfileId = settingsProfilesDraft.value.some((profile) => profile.id === lastUsedProfileId)
+    ? lastUsedProfileId
+    : settingsEditingProfileId.value || settingsProfilesDraft.value[0]?.id || "";
+  return buildWorkspaceSnapshot({
+    profiles: settingsProfilesDraft.value,
+    lastUsedProfileId: fallbackProfileId,
+  });
+}
+
+function applyWorkspaceSnapshot(snapshot) {
+  setWorkspaceProfiles(snapshot.profiles);
+  activeProfileId.value = snapshot.lastUsedProfileId;
+  return workspaceProfiles.value.find((profile) => profile.id === activeProfileId.value) || null;
+}
+
+function replaceDraftProfile(profileId, updater) {
+  settingsProfilesDraft.value = settingsProfilesDraft.value.map((profile, index) => {
+    if (profile.id !== profileId) {
+      return normalizeDbMigrationProfile(profile, index);
+    }
+    const nextProfile = typeof updater === "function"
+      ? updater(profile, index)
+      : { ...profile, ...updater };
+    return normalizeDbMigrationProfile(nextProfile, index);
+  });
+}
+
 async function saveSettings() {
   if (settingsSaving.value) return;
   settingsSaving.value = true;
@@ -640,17 +699,11 @@ async function saveSettings() {
     const previousActiveProfile = activeProfile.value
       ? normalizeDbMigrationProfile(activeProfile.value)
       : null;
-    const nextSnapshot = buildWorkspaceSnapshot({
-      profiles: settingsProfilesDraft.value,
-      lastUsedProfileId: workspaceProfiles.value.some((profile) => profile.id === activeProfileId.value)
-        ? activeProfileId.value
-        : settingsProfilesDraft.value[0]?.id || "",
-    });
+    const nextSnapshot = buildSettingsDraftSnapshot(activeProfileId.value);
 
     workspaceHotkey.value = normalizeDbMigrationWindowHotkey(normalizedHotkey);
     hotkeyDraft.value = workspaceHotkey.value;
-    setWorkspaceProfiles(nextSnapshot.profiles);
-    activeProfileId.value = nextSnapshot.lastUsedProfileId;
+    applyWorkspaceSnapshot(nextSnapshot);
     await persistWorkspaceState({
       profiles: nextSnapshot.profiles,
       lastUsedProfileId: nextSnapshot.lastUsedProfileId,
@@ -678,6 +731,10 @@ async function saveSettings() {
       await connectProfile(nextActiveProfile);
     } else {
       applyProfileSelections(nextActiveProfile, availableDatabases.value);
+      rememberProfileStatus(
+        nextActiveProfile.id,
+        availableDatabases.value.length >= 2 ? "success" : "error",
+      );
       loginMessage.value = availableDatabases.value.length >= 2
         ? `已应用模板 ${nextActiveProfile.name}`
         : `已应用模板 ${nextActiveProfile.name}，但可见业务库少于 2 个`;
@@ -699,7 +756,46 @@ function openSettingsForActiveProfile() {
   openSettings({ editingProfileId: activeProfileId.value });
 }
 
-async function importDbConfigFile(file) {
+async function connectDraftProfile(profileId) {
+  if (!profileId || running.value || connecting.value) return;
+  settingsMessage.value = "";
+  settingsMessageTone.value = "neutral";
+
+  try {
+    const nextSnapshot = buildSettingsDraftSnapshot(profileId);
+    const nextActiveProfile = applyWorkspaceSnapshot(nextSnapshot);
+    await persistWorkspaceState({
+      profiles: nextSnapshot.profiles,
+      lastUsedProfileId: nextSnapshot.lastUsedProfileId,
+      applyToState: false,
+    });
+
+    if (!nextActiveProfile || !isDbMigrationProfileConnectionReady(nextActiveProfile)) {
+      applyIncompleteProfileState(nextActiveProfile, {
+        message: "模板未完成配置，请先在编辑模板里补全连接信息。",
+        tone: "neutral",
+        clearExecution: false,
+      });
+      settingsMessage.value = "模板未完成配置，请先补全连接信息。";
+      settingsMessageTone.value = "error";
+      return;
+    }
+
+    const connected = await activateProfile(nextActiveProfile.id, { persist: false });
+    if (!connected) {
+      settingsMessage.value = loginMessage.value || "连接失败。";
+      settingsMessageTone.value = "error";
+      return;
+    }
+
+    closeSettings();
+  } catch (error) {
+    settingsMessage.value = String(error);
+    settingsMessageTone.value = "error";
+  }
+}
+
+async function importDbConfigFile(file, profileId = pendingImportProfileId.value) {
   if (!file || running.value) return;
   try {
     const text = await file.text();
@@ -709,26 +805,29 @@ async function importDbConfigFile(file) {
       throw new Error("JSON 解析失败或缺少连接字段");
     }
 
-    const profile = createDbMigrationProfileDraft(workspaceProfiles.value, imported);
-    setWorkspaceProfiles([
-      ...workspaceProfiles.value,
-      profile,
-    ]);
-    activeProfileId.value = profile.id;
-    await persistWorkspaceState().catch(handleWorkspacePersistenceError);
-    loginMessage.value = `已导入 JSON 并创建模板 ${profile.name}`;
-    loginMessageTone.value = "success";
-    await activateProfile(profile.id, {
-      persist: false,
-    });
+    if (!settingsOpen.value || !profileId) {
+      throw new Error("请先打开模板编辑，再导入 JSON 填充当前模板。");
+    }
+
+    const draftProfile = settingsProfilesDraft.value.find((profile) => profile.id === profileId);
+    if (!draftProfile) {
+      throw new Error("未找到要填充的模板。");
+    }
+
+    replaceDraftProfile(profileId, (profile, index) =>
+      applyImportedDbMigrationProfileDraft(profile, imported, index));
+    settingsEditingProfileId.value = profileId;
+    settingsMessage.value = `已将 JSON 填充到模板 ${draftProfile.name || "当前模板"}。`;
+    settingsMessageTone.value = "success";
   } catch (error) {
-    loginMessage.value = String(error);
-    loginMessageTone.value = "error";
+    settingsMessage.value = String(error);
+    settingsMessageTone.value = "error";
   }
 }
 
-function triggerImport() {
-  if (running.value) return;
+function triggerImport(profileId = "") {
+  if (running.value || connecting.value) return;
+  pendingImportProfileId.value = profileId;
   importInput.value?.click?.();
 }
 
@@ -738,14 +837,9 @@ async function onImportConfig(event) {
   try {
     await importDbConfigFile(file);
   } finally {
+    pendingImportProfileId.value = "";
     event.target.value = "";
   }
-}
-
-async function onDropConfig(event) {
-  const file = event.dataTransfer?.files?.[0];
-  if (!file) return;
-  await importDbConfigFile(file);
 }
 
 function onHotkeyInputKeydown(event) {
@@ -819,8 +913,6 @@ onBeforeUnmount(() => {
   <main
     class="sw-root dmw-root"
     @contextmenu.prevent
-    @dragover.prevent
-    @drop.prevent="onDropConfig"
   >
     <header class="sw-toolbar" @pointerdown="startDragging">
       <div class="traffic-lights" @dblclick.stop @pointerdown.stop>
@@ -882,22 +974,13 @@ onBeforeUnmount(() => {
             {{ bannerMessage }}
           </div>
 
-          <section class="dmw-section">
+          <section class="dmw-section dmw-section-primary">
             <div class="dmw-section-head">
               <div>
-                <h2 class="dmw-section-title">连接</h2>
-                <p class="dmw-section-subtitle">{{ connectionSectionSubtitle }}</p>
+                <h2 class="dmw-section-title">执行</h2>
+                <p class="dmw-section-subtitle">{{ executionSectionSubtitle }}</p>
               </div>
               <div class="dmw-section-actions">
-                <button class="sw-open-dir-btn" type="button" :disabled="running" @click="triggerImport">导入 JSON</button>
-                <button
-                  class="sw-open-dir-btn dmw-secondary-action"
-                  type="button"
-                  :disabled="!activeProfileConnectionReady || running || connecting"
-                  @click="reconnectActiveProfile"
-                >
-                  {{ connecting ? '连接中...' : phase === 'login' ? '连接模板' : '重新连接' }}
-                </button>
                 <button
                   class="sw-open-dir-btn dmw-secondary-action"
                   type="button"
@@ -911,27 +994,11 @@ onBeforeUnmount(() => {
 
             <div v-if="!activeProfileConnectionReady" class="dmw-incomplete-card">
               <div class="dmw-incomplete-title">模板还没配完整</div>
-              <p class="dmw-inline-note">请在设置里补全主机、端口、账号和密码；补全后点选模板会自动连接。</p>
+              <p class="dmw-inline-note">请在编辑模板里补全主机、端口、账号和密码；补全后点选模板会自动连接。</p>
               <div class="sw-action-row">
                 <button class="sw-open-dir-btn" type="button" :disabled="running || connecting" @click="openSettingsForActiveProfile">
                   去编辑模板
                 </button>
-              </div>
-            </div>
-
-            <div v-else class="dmw-connection-grid">
-              <div v-for="item in connectionDetails" :key="item.label" class="dmw-connection-card">
-                <span class="dmw-connection-label">{{ item.label }}</span>
-                <span class="dmw-connection-value" :title="item.value">{{ item.value }}</span>
-              </div>
-            </div>
-          </section>
-
-          <section class="dmw-section">
-            <div class="dmw-section-head">
-              <div>
-                <h2 class="dmw-section-title">执行</h2>
-                <p class="dmw-section-subtitle">源库和目标库在这里选择，选择结果会自动回写到当前模板。</p>
               </div>
             </div>
 
@@ -1061,11 +1128,10 @@ onBeforeUnmount(() => {
           <section class="dmw-empty-state">
             <h2 class="dmw-empty-title">先创建一个迁移模板</h2>
             <p class="dmw-empty-desc">
-              模板会记住连接信息和源/目标库选择，点击模板会自动连接或重连，但不会直接开始完整覆盖。
+              模板会记住连接信息和源/目标库选择。创建后可在编辑模板里导入 JSON，并在中间执行区完成迁移。
             </p>
             <div class="sw-action-row">
               <button class="sw-run-btn" :disabled="running || connecting" @click="addProfile">新建模板</button>
-              <button class="sw-open-dir-btn" :disabled="running" @click="triggerImport">导入 JSON</button>
             </div>
           </section>
         </template>
@@ -1188,15 +1254,26 @@ onBeforeUnmount(() => {
                   </div>
                 </div>
 
-                <div class="sw-settings-profile-actions">
+                <div class="dmw-settings-inline-actions">
                   <button
                     class="sw-settings-action-btn"
                     type="button"
                     :disabled="running || connecting"
-                    @click="activeProfileId = profile.id"
+                    @click="triggerImport(profile.id)"
                   >
-                    设为当前
+                    导入 JSON
                   </button>
+                  <button
+                    class="sw-settings-action-btn primary"
+                    type="button"
+                    :disabled="running || connecting"
+                    @click="connectDraftProfile(profile.id)"
+                  >
+                    {{ connecting && activeProfileId === profile.id ? '连接中...' : '连接当前模板' }}
+                  </button>
+                </div>
+
+                <div class="sw-settings-profile-actions">
                   <button
                     class="sw-settings-action-btn danger"
                     type="button"

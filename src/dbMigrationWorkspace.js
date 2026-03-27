@@ -222,6 +222,23 @@ export function createDbMigrationProfileDraft(existingProfiles = [], seed = {}) 
   );
 }
 
+export function applyImportedDbMigrationProfileDraft(profile = {}, imported = null, index = 0) {
+  const baseProfile = normalizeDbMigrationProfile(profile, index);
+  if (!imported || typeof imported !== "object") {
+    return baseProfile;
+  }
+
+  return normalizeDbMigrationProfile(
+    {
+      ...baseProfile,
+      ...imported,
+      id: baseProfile.id,
+      name: normalizeOptionalString(profile?.name),
+    },
+    index,
+  );
+}
+
 export function isDbMigrationProfileConnectionReady(profile = {}) {
   const normalized = normalizeDbMigrationProfile(profile);
   return Boolean(normalized.host && normalized.username);

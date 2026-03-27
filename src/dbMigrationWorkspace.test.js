@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  applyImportedDbMigrationProfileDraft,
   DEFAULT_DB_MIGRATION_WINDOW_HOTKEY,
   appendDbMigrationTimeline,
   buildDbMigrationHeadline,
@@ -253,6 +254,59 @@ test("createDbMigrationProfileDraft turns imported JSON config into a named temp
     ),
     {
       id: "db-migration-profile-2",
+      name: "source_a -> target_b",
+      host: "db.local",
+      port: 3307,
+      username: "root",
+      password: "pw",
+      sourceDatabase: "source_a",
+      targetDatabase: "target_b",
+    },
+  );
+});
+
+test("applyImportedDbMigrationProfileDraft keeps the current template identity while filling imported fields", () => {
+  const imported = extractDbMigrationJsonConfig({
+    db: {
+      host: "db.local",
+      port: "3307",
+      user: "root",
+      password: "pw",
+    },
+    source_database: "source_a",
+    targetDatabase: "target_b",
+  });
+
+  assert.deepEqual(
+    applyImportedDbMigrationProfileDraft({
+      id: "profile-a",
+      name: "现有模板",
+      host: "old.local",
+      port: 3306,
+      username: "old",
+      password: "oldpw",
+      sourceDatabase: "old_source",
+      targetDatabase: "old_target",
+    }, imported),
+    {
+      id: "profile-a",
+      name: "现有模板",
+      host: "db.local",
+      port: 3307,
+      username: "root",
+      password: "pw",
+      sourceDatabase: "source_a",
+      targetDatabase: "target_b",
+    },
+  );
+
+  assert.deepEqual(
+    applyImportedDbMigrationProfileDraft({
+      id: "profile-b",
+      name: " ",
+    }, imported),
+    {
+      id: "profile-b",
       name: "source_a -> target_b",
       host: "db.local",
       port: 3307,
