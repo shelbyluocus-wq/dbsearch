@@ -5,10 +5,17 @@ import {
   DEFAULT_DB_MIGRATION_WINDOW_HOTKEY,
   appendDbMigrationTimeline,
   buildDbMigrationHeadline,
+  createDbMigrationProfileDraft,
+  describeDbMigrationProfile,
   extractDbMigrationJsonConfig,
   filterMigrationDatabaseNames,
+  isDbMigrationProfileConnectionReady,
+  isSameDbMigrationConnection,
+  normalizeDbMigrationProfile,
   normalizeDbMigrationRememberedConnection,
+  normalizeDbMigrationWorkspaceState,
   normalizeDbMigrationWindowHotkey,
+  resolveDbMigrationProfileSelection,
   resolveDbMigrationSelections,
   shouldAutoExpandDbMigrationLog,
   shouldResetDbMigrationWorkspaceOnShow,
@@ -114,6 +121,64 @@ test("normalizeDbMigrationRememberedConnection trims persisted fields and drops 
   );
 });
 
+test("normalizeDbMigrationProfile trims fields and generates a readable default name", () => {
+  assert.deepEqual(
+    normalizeDbMigrationProfile({
+      host: " db.local ",
+      port: "3307",
+      username: " root ",
+      password: "pw",
+      source_database: " source_a ",
+      target_database: " target_b ",
+    }, 0),
+    {
+      id: "db-migration-profile-1",
+      name: "source_a -> target_b",
+      host: "db.local",
+      port: 3307,
+      username: "root",
+      password: "pw",
+      sourceDatabase: "source_a",
+      targetDatabase: "target_b",
+    },
+  );
+});
+
+test("normalizeDbMigrationWorkspaceState migrates a legacy remembered connection into the new profile list", () => {
+  const state = normalizeDbMigrationWorkspaceState({
+    profiles: [],
+    lastUsedProfileId: "",
+    rememberedConnection: {
+      host: "db.local",
+      port: 3306,
+      username: "root",
+      password: "pw",
+      sourceDatabase: "source_a",
+      targetDatabase: "target_b",
+    },
+  });
+
+  assert.equal(state.profiles.length, 1);
+  assert.equal(state.profiles[0].name, "source_a -> target_b");
+  assert.equal(state.lastUsedProfileId, "db-migration-profile-1");
+});
+
+test("resolveDbMigrationProfileSelection prefers last used profile and falls back to the first profile", () => {
+  const profiles = [
+    { id: "profile-a" },
+    { id: "profile-b" },
+  ];
+
+  assert.equal(
+    resolveDbMigrationProfileSelection(profiles, { lastUsedProfileId: "profile-b" }),
+    "profile-b",
+  );
+  assert.equal(
+    resolveDbMigrationProfileSelection(profiles, { lastUsedProfileId: "missing" }),
+    "profile-a",
+  );
+});
+
 test("resolveDbMigrationSelections prefers remembered databases and falls back to visible options", () => {
   assert.deepEqual(
     resolveDbMigrationSelections(["alpha", "beta", "gamma"], {
@@ -166,5 +231,103 @@ test("extractDbMigrationJsonConfig supports nested db payloads, user alias, and 
       username: "root",
     }),
     null,
+  );
+});
+
+test("createDbMigrationProfileDraft turns imported JSON config into a named template with a fresh id", () => {
+  const imported = extractDbMigrationJsonConfig({
+    db: {
+      host: "db.local",
+      port: "3307",
+      user: "root",
+      password: "pw",
+    },
+    source_database: "source_a",
+    targetDatabase: "target_b",
+  });
+
+  assert.deepEqual(
+    createDbMigrationProfileDraft(
+      [{ id: "db-migration-profile-1", name: "existing" }],
+      imported,
+    ),
+    {
+      id: "db-migration-profile-2",
+      name: "source_a -> target_b",
+      host: "db.local",
+      port: 3307,
+      username: "root",
+      password: "pw",
+      sourceDatabase: "source_a",
+      targetDatabase: "target_b",
+    },
+  );
+});
+
+test("describeDbMigrationProfile prefers source-target text and falls back to host-port or incomplete state", () => {
+  assert.equal(
+    describeDbMigrationProfile({
+      host: "db.local",
+      port: 3307,
+      username: "root",
+      sourceDatabase: "source_a",
+      targetDatabase: "target_b",
+    }),
+    "source_a -> target_b",
+  );
+  assert.equal(
+    describeDbMigrationProfile({
+      host: "db.local",
+      port: 3307,
+      username: "root",
+    }),
+    "db.local:3307",
+  );
+  assert.equal(describeDbMigrationProfile({}), "未完成配置");
+});
+
+test("connection helpers detect whether a template is connectable and whether two templates share credentials", () => {
+  assert.equal(
+    isDbMigrationProfileConnectionReady({
+      host: "db.local",
+      port: 3306,
+      username: "root",
+    }),
+    true,
+  );
+  assert.equal(isDbMigrationProfileConnectionReady({ host: "db.local" }), false);
+  assert.equal(
+    isSameDbMigrationConnection(
+      {
+        host: "db.local",
+        port: 3306,
+        username: "root",
+        password: "pw",
+      },
+      {
+        host: " db.local ",
+        port: "3306",
+        username: " root ",
+        password: "pw",
+      },
+    ),
+    true,
+  );
+  assert.equal(
+    isSameDbMigrationConnection(
+      {
+        host: "db.local",
+        port: 3306,
+        username: "root",
+        password: "pw",
+      },
+      {
+        host: "db.local",
+        port: 3307,
+        username: "root",
+        password: "pw",
+      },
+    ),
+    false,
   );
 });

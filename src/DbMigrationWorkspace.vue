@@ -1,5 +1,5 @@
-<script setup>
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
+﻿<script setup>
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -8,23 +8,22 @@ import { buildHotkeyFromEvent } from "./syncWorkspace.js";
 import {
   appendDbMigrationTimeline,
   buildDbMigrationHeadline,
+  createDbMigrationProfileDraft,
   DB_MIGRATION_PIPELINE_STEPS,
   DEFAULT_DB_MIGRATION_WINDOW_HOTKEY,
+  describeDbMigrationProfile,
   extractDbMigrationJsonConfig,
   filterMigrationDatabaseNames,
+  isDbMigrationProfileConnectionReady,
   isDbMigrationSelectionReady,
-  normalizeDbMigrationRememberedConnection,
+  isSameDbMigrationConnection,
+  normalizeDbMigrationProfile,
   normalizeDbMigrationWindowHotkey,
+  normalizeDbMigrationWorkspaceState,
+  resolveDbMigrationProfileSelection,
   resolveDbMigrationSelections,
   shouldAutoExpandDbMigrationLog,
 } from "./dbMigrationWorkspace.js";
-
-const loginForm = reactive({
-  host: "",
-  port: 3306,
-  username: "",
-  password: "",
-});
 
 const phase = ref("login");
 const connecting = ref(false);
@@ -40,28 +39,36 @@ const timeline = ref([]);
 const backupDir = ref("");
 const latestSummary = ref("");
 const logExpanded = ref(shouldAutoExpandDbMigrationLog());
+const workspaceProfiles = ref([]);
+const activeProfileId = ref("");
+const currentConnection = ref(null);
 const settingsOpen = ref(false);
 const settingsSaving = ref(false);
 const settingsMessage = ref("");
 const settingsMessageTone = ref("neutral");
+const settingsProfilesDraft = ref([]);
+const settingsEditingProfileId = ref("");
 const workspaceHotkey = ref(DEFAULT_DB_MIGRATION_WINDOW_HOTKEY);
 const hotkeyDraft = ref(DEFAULT_DB_MIGRATION_WINDOW_HOTKEY);
-const rememberedConnectionSaved = ref(false);
 const importInput = ref(null);
 
+let selectionSyncDepth = 0;
 let unlistenProgress = null;
 
-const canSubmitLogin = computed(() =>
-  [loginForm.host, loginForm.username].every((value) => String(value || "").trim().length > 0)
-  && Number(loginForm.port) > 0
-  && !connecting.value
-  && !running.value,
+const activeProfile = computed(() =>
+  workspaceProfiles.value.find((profile) => profile.id === activeProfileId.value) || null,
+);
+
+const activeProfileConnectionReady = computed(() =>
+  isDbMigrationProfileConnectionReady(activeProfile.value),
 );
 
 const hasEnoughDatabases = computed(() => availableDatabases.value.length >= 2);
 
 const canRunMigration = computed(() =>
   !running.value
+  && !connecting.value
+  && activeProfileConnectionReady.value
   && phase.value !== "login"
   && isDbMigrationSelectionReady({
     sourceDatabase: sourceDatabase.value,
@@ -69,8 +76,23 @@ const canRunMigration = computed(() =>
   }),
 );
 
+const profilesView = computed(() =>
+  workspaceProfiles.value.map((profile, index) => ({
+    ...profile,
+    summary: describeDbMigrationProfile(profile, index),
+    statusTone:
+      profile.id === activeProfileId.value
+        ? currentStatusTone.value
+        : isDbMigrationProfileConnectionReady(profile)
+          ? "idle"
+          : "error",
+  })),
+);
+
 const currentStatusTone = computed(() => {
   if (connecting.value || running.value) return "running";
+  if (!activeProfile.value) return "idle";
+  if (!activeProfileConnectionReady.value) return "error";
   if (executionMessageTone.value === "error") return "error";
   if (executionMessageTone.value === "success") return "success";
   if (phase.value !== "login") return "ready";
@@ -81,11 +103,18 @@ const currentStatusTone = computed(() => {
 const currentStatusText = computed(() => {
   if (connecting.value) return "连接中";
   if (running.value) return "迁移进行中";
+  if (!activeProfile.value) return "暂无模板";
+  if (!activeProfileConnectionReady.value) return "待补全配置";
   if (executionMessageTone.value === "error") return "最近一次失败";
   if (executionMessageTone.value === "success") return "最近一次完成";
   if (phase.value !== "login") return "已连接";
   if (loginMessageTone.value === "error") return "连接失败";
-  return "等待登录";
+  return "待连接";
+});
+
+const activeProfileSummary = computed(() => {
+  if (!activeProfile.value) return "模板会保存连接信息、源库和目标库选择。";
+  return describeDbMigrationProfile(activeProfile.value);
 });
 
 const workspaceHeadline = computed(() =>
@@ -100,30 +129,35 @@ const bannerTone = computed(() =>
   executionMessage.value ? executionMessageTone.value : loginMessageTone.value,
 );
 
-const sidebarServerText = computed(() => {
-  const host = String(loginForm.host || "").trim();
-  if (!host) return "未连接服务器";
-  return `${host}:${Number(loginForm.port) || 3306}`;
+const headerHelperText = computed(() => {
+  if (!activeProfile.value) return "左侧保存多套迁移模板，点击后会自动连接或重连。";
+  if (!activeProfileConnectionReady.value) return "模板信息不完整时不会自动连接，也不会开始迁移。";
+  if (phase.value === "login") return "选中模板后会自动连接，连接成功后再选择源库和目标库。";
+  return workspaceHeadline.value;
 });
 
-const sidebarCredentialText = computed(() => {
-  const username = String(loginForm.username || "").trim();
-  if (!username) return "拖入 JSON 或手动输入连接信息";
-  return username;
+const connectionSectionSubtitle = computed(() => {
+  if (!activeProfile.value) return "支持导入 JSON 创建模板，也可以手动新增后在设置里补全连接信息。";
+  if (!activeProfileConnectionReady.value) {
+    return "模板名称和连接信息在设置面板管理，补全后再次点选模板即可自动连接。";
+  }
+  return "点击左侧模板会自动复用当前连接或重连，但不会自动开始完整覆盖。";
 });
 
-const sidebarStatusNote = computed(() => {
-  if (latestSummary.value) return latestSummary.value;
-  if (phase.value === "login") return "连接后选择源库和目标库。";
-  if (!hasEnoughDatabases.value) return "当前账号可见业务库少于 2 个。";
-  return "完整覆盖前会先备份源库和目标库。";
+const connectionDetails = computed(() => {
+  if (!activeProfile.value) return [];
+  return [
+    { label: "模板", value: activeProfile.value.name || "-" },
+    { label: "主机", value: String(activeProfile.value.host || "").trim() || "-" },
+    { label: "端口", value: String(Number(activeProfile.value.port) || 3306) },
+    { label: "账号", value: String(activeProfile.value.username || "").trim() || "-" },
+    { label: "可见库", value: phase.value !== "login" ? String(availableDatabases.value.length || 0) : "待连接" },
+  ];
 });
 
-const connectionDetails = computed(() => [
-  { label: "主机", value: String(loginForm.host || "").trim() || "-" },
-  { label: "端口", value: String(Number(loginForm.port) || 3306) },
-  { label: "账号", value: String(loginForm.username || "").trim() || "-" },
-  { label: "可见库", value: String(availableDatabases.value.length || 0) },
+const selectedDatabaseCards = computed(() => [
+  { label: "当前源库", value: sourceDatabase.value || "未选择" },
+  { label: "当前目标库", value: targetDatabase.value || "未选择" },
 ]);
 
 const pipelineView = computed(() => {
@@ -194,6 +228,8 @@ const logSummaryText = computed(() =>
 );
 
 watch([sourceDatabase, targetDatabase], () => {
+  if (selectionSyncDepth > 0 || !activeProfile.value) return;
+
   if (!running.value && phase.value === "finished") {
     phase.value = "ready";
     executionMessage.value = "";
@@ -204,10 +240,40 @@ watch([sourceDatabase, targetDatabase], () => {
     logExpanded.value = shouldAutoExpandDbMigrationLog();
   }
 
-  if (phase.value !== "login" && !connecting.value) {
-    persistRememberedConnection().catch(() => {});
-  }
+  updateProfileFields(activeProfile.value.id, {
+    sourceDatabase: sourceDatabase.value,
+    targetDatabase: targetDatabase.value,
+  });
+  persistWorkspaceState().catch(handleWorkspacePersistenceError);
 });
+
+function setWorkspaceProfiles(profiles = []) {
+  workspaceProfiles.value = (Array.isArray(profiles) ? profiles : [])
+    .map((profile, index) => normalizeDbMigrationProfile(profile, index));
+}
+
+function updateProfileFields(profileId, fields = {}) {
+  setWorkspaceProfiles(
+    workspaceProfiles.value.map((profile) =>
+      profile.id === profileId ? { ...profile, ...fields } : profile),
+  );
+}
+
+function withSelectionSyncPaused(callback) {
+  selectionSyncDepth += 1;
+  try {
+    callback();
+  } finally {
+    selectionSyncDepth = Math.max(0, selectionSyncDepth - 1);
+  }
+}
+
+function setSelectedDatabases(selection = {}) {
+  withSelectionSyncPaused(() => {
+    sourceDatabase.value = String(selection.sourceDatabase || "");
+    targetDatabase.value = String(selection.targetDatabase || "");
+  });
+}
 
 function clearExecutionArtifacts() {
   executionMessage.value = "";
@@ -218,124 +284,228 @@ function clearExecutionArtifacts() {
   logExpanded.value = shouldAutoExpandDbMigrationLog();
 }
 
-function resetWorkspaceState({ clearForm = true } = {}) {
+function applyEmptyWorkspaceState() {
+  activeProfileId.value = "";
+  currentConnection.value = null;
   phase.value = "login";
   connecting.value = false;
   running.value = false;
   availableDatabases.value = [];
-  sourceDatabase.value = "";
-  targetDatabase.value = "";
-  clearExecutionArtifacts();
-  loginMessage.value = "";
-  loginMessageTone.value = "neutral";
-
-  if (clearForm) {
-    loginForm.host = "";
-    loginForm.port = 3306;
-    loginForm.username = "";
-    loginForm.password = "";
-  }
-}
-
-function applyConnectionToForm(connection = null) {
-  const remembered = normalizeDbMigrationRememberedConnection(connection);
-  if (!remembered) return;
-  loginForm.host = remembered.host;
-  loginForm.port = remembered.port;
-  loginForm.username = remembered.username;
-  loginForm.password = remembered.password;
-  sourceDatabase.value = remembered.sourceDatabase;
-  targetDatabase.value = remembered.targetDatabase;
-}
-
-function buildRememberedConnectionPayload() {
-  return normalizeDbMigrationRememberedConnection({
-    host: loginForm.host,
-    port: loginForm.port,
-    username: loginForm.username,
-    password: loginForm.password,
-    sourceDatabase: sourceDatabase.value,
-    targetDatabase: targetDatabase.value,
+  setSelectedDatabases({
+    sourceDatabase: "",
+    targetDatabase: "",
   });
+  clearExecutionArtifacts();
+  loginMessage.value = "请先创建一个迁移模板。";
+  loginMessageTone.value = "neutral";
 }
 
-async function persistRememberedConnection() {
-  const connection = buildRememberedConnectionPayload();
-  await invoke("save_db_migration_workspace_connection", { connection });
-  rememberedConnectionSaved.value = Boolean(connection);
-}
-
-async function clearRememberedConnection() {
-  await invoke("save_db_migration_workspace_connection", { connection: null });
-  rememberedConnectionSaved.value = false;
-}
-
-async function restoreWorkspaceState() {
-  try {
-    const state = await invoke("get_db_migration_workspace_state");
-    workspaceHotkey.value = normalizeDbMigrationWindowHotkey(state.hotkey);
-    hotkeyDraft.value = workspaceHotkey.value;
-    rememberedConnectionSaved.value = Boolean(state.rememberedConnection);
-
-    const rememberedConnection = normalizeDbMigrationRememberedConnection(state.rememberedConnection);
-    if (!rememberedConnection) return;
-
-    applyConnectionToForm(rememberedConnection);
-    await connectServer({ restoring: true });
-  } catch {
-    workspaceHotkey.value = DEFAULT_DB_MIGRATION_WINDOW_HOTKEY;
-    hotkeyDraft.value = DEFAULT_DB_MIGRATION_WINDOW_HOTKEY;
+function applyIncompleteProfileState(
+  profile,
+  {
+    message = "模板未完成配置，请先在设置里补全连接信息。",
+    tone = "neutral",
+    clearExecution = true,
+  } = {},
+) {
+  currentConnection.value = null;
+  phase.value = "login";
+  connecting.value = false;
+  availableDatabases.value = [];
+  if (clearExecution) {
+    clearExecutionArtifacts();
   }
+  setSelectedDatabases({
+    sourceDatabase: profile?.sourceDatabase || "",
+    targetDatabase: profile?.targetDatabase || "",
+  });
+  loginMessage.value = message;
+  loginMessageTone.value = tone;
 }
 
-async function connectServer({ restoring = false } = {}) {
-  if (!canSubmitLogin.value && !restoring) return;
-  connecting.value = true;
-  loginMessage.value = restoring ? "正在恢复连接..." : "正在连接...";
-  loginMessageTone.value = "running";
+function buildWorkspaceSnapshot({
+  profiles = workspaceProfiles.value,
+  lastUsedProfileId = activeProfileId.value,
+} = {}) {
+  const normalizedProfiles = (Array.isArray(profiles) ? profiles : [])
+    .map((profile, index) => normalizeDbMigrationProfile(profile, index));
+  const resolvedLastUsedProfileId = resolveDbMigrationProfileSelection(normalizedProfiles, {
+    lastUsedProfileId,
+  });
 
-  const requestedSelection = {
-    sourceDatabase: sourceDatabase.value,
-    targetDatabase: targetDatabase.value,
+  return {
+    profiles: normalizedProfiles,
+    lastUsedProfileId: resolvedLastUsedProfileId,
   };
+}
+
+async function persistWorkspaceState(options = {}) {
+  const snapshot = buildWorkspaceSnapshot(options);
+  if (options.applyToState !== false) {
+    setWorkspaceProfiles(snapshot.profiles);
+    activeProfileId.value = snapshot.lastUsedProfileId;
+  }
+  await invoke("save_db_migration_workspace_state", {
+    workspaceState: {
+      profiles: snapshot.profiles,
+      lastUsedProfileId: snapshot.lastUsedProfileId,
+    },
+  });
+  return snapshot;
+}
+
+function handleWorkspacePersistenceError(error) {
+  loginMessage.value = `保存模板状态失败：${String(error)}`;
+  loginMessageTone.value = "error";
+}
+
+function applyProfileSelections(profile, databases = availableDatabases.value) {
+  const resolvedSelection = resolveDbMigrationSelections(databases, {
+    sourceDatabase: profile?.sourceDatabase,
+    targetDatabase: profile?.targetDatabase,
+  });
+  setSelectedDatabases(resolvedSelection);
+  if (profile?.id) {
+    updateProfileFields(profile.id, resolvedSelection);
+  }
+  return resolvedSelection;
+}
+
+async function connectProfile(profile, { restoring = false } = {}) {
+  if (!profile || !isDbMigrationProfileConnectionReady(profile) || running.value) {
+    return false;
+  }
+
+  connecting.value = true;
+  phase.value = "login";
+  clearExecutionArtifacts();
+  loginMessage.value = restoring
+    ? `正在恢复 ${profile.name} 的连接...`
+    : `正在连接 ${profile.name}...`;
+  loginMessageTone.value = "running";
 
   try {
     const result = await invoke("connect_db_migration_server", {
       params: {
-        host: loginForm.host.trim(),
-        port: Number(loginForm.port) || 3306,
-        username: loginForm.username.trim(),
-        password: loginForm.password,
+        host: profile.host.trim(),
+        port: Number(profile.port) || 3306,
+        username: profile.username.trim(),
+        password: profile.password,
       },
     });
     const databases = filterMigrationDatabaseNames(result.databases || []);
-    const resolvedSelection = resolveDbMigrationSelections(databases, requestedSelection);
-
     availableDatabases.value = databases;
-    sourceDatabase.value = resolvedSelection.sourceDatabase;
-    targetDatabase.value = resolvedSelection.targetDatabase;
+    currentConnection.value = normalizeDbMigrationProfile(profile);
     phase.value = "ready";
-    clearExecutionArtifacts();
+    applyProfileSelections(profile, databases);
     loginMessage.value = databases.length >= 2
       ? `已连接 ${result.host}:${result.port}`
       : `已连接 ${result.host}:${result.port}，但可见业务库少于 2 个`;
     loginMessageTone.value = databases.length >= 2 ? "success" : "error";
-    await persistRememberedConnection();
+    await persistWorkspaceState().catch(handleWorkspacePersistenceError);
+    return true;
   } catch (error) {
-    phase.value = "login";
+    currentConnection.value = null;
     availableDatabases.value = [];
-    clearExecutionArtifacts();
+    phase.value = "login";
+    setSelectedDatabases({
+      sourceDatabase: profile.sourceDatabase || "",
+      targetDatabase: profile.targetDatabase || "",
+    });
     loginMessage.value = restoring
       ? `恢复连接失败：${String(error)}`
       : `连接失败：${String(error)}`;
     loginMessageTone.value = "error";
+    return false;
   } finally {
     connecting.value = false;
   }
 }
 
+async function activateProfile(profileId, { restoring = false, persist = true } = {}) {
+  if ((running.value || connecting.value) && !restoring) return false;
+
+  const profile = workspaceProfiles.value.find((item) => item.id === profileId) || null;
+  if (!profile) {
+    if (workspaceProfiles.value.length === 0) {
+      applyEmptyWorkspaceState();
+    }
+    return false;
+  }
+
+  const previousProfileId = activeProfileId.value;
+  activeProfileId.value = profile.id;
+  if (persist) {
+    await persistWorkspaceState().catch(handleWorkspacePersistenceError);
+  }
+
+  if (!isDbMigrationProfileConnectionReady(profile)) {
+    applyIncompleteProfileState(profile, {
+      clearExecution: profile.id !== previousProfileId,
+    });
+    return true;
+  }
+
+  const canReuseCurrentConnection = phase.value !== "login"
+    && currentConnection.value
+    && isSameDbMigrationConnection(currentConnection.value, profile);
+
+  if (canReuseCurrentConnection) {
+    if (profile.id !== previousProfileId) {
+      clearExecutionArtifacts();
+    }
+    phase.value = "ready";
+    currentConnection.value = normalizeDbMigrationProfile(profile);
+    applyProfileSelections(profile, availableDatabases.value);
+    loginMessage.value = availableDatabases.value.length >= 2
+      ? `已复用 ${profile.host}:${profile.port} 的连接`
+      : `已复用 ${profile.host}:${profile.port} 的连接，但可见业务库少于 2 个`;
+    loginMessageTone.value = availableDatabases.value.length >= 2 ? "success" : "error";
+    await persistWorkspaceState().catch(handleWorkspacePersistenceError);
+    return true;
+  }
+
+  return connectProfile(profile, { restoring });
+}
+
+async function reconnectActiveProfile() {
+  if (!activeProfile.value || !activeProfileConnectionReady.value || running.value) return;
+  await connectProfile(activeProfile.value);
+}
+
+async function restoreWorkspaceState() {
+  try {
+    const state = normalizeDbMigrationWorkspaceState(
+      await invoke("get_db_migration_workspace_state"),
+    );
+    workspaceHotkey.value = normalizeDbMigrationWindowHotkey(state.hotkey);
+    hotkeyDraft.value = workspaceHotkey.value;
+    setWorkspaceProfiles(state.profiles);
+    activeProfileId.value = state.lastUsedProfileId;
+
+    if (!workspaceProfiles.value.length) {
+      applyEmptyWorkspaceState();
+      return;
+    }
+
+    const restoredProfileId = state.lastUsedProfileId || workspaceProfiles.value[0]?.id || "";
+    if (!restoredProfileId) {
+      applyEmptyWorkspaceState();
+      return;
+    }
+    await activateProfile(restoredProfileId, {
+      restoring: true,
+      persist: false,
+    });
+  } catch {
+    workspaceHotkey.value = DEFAULT_DB_MIGRATION_WINDOW_HOTKEY;
+    hotkeyDraft.value = DEFAULT_DB_MIGRATION_WINDOW_HOTKEY;
+    applyEmptyWorkspaceState();
+  }
+}
+
 async function confirmAndRunMigration() {
-  if (!canRunMigration.value) return;
+  if (!canRunMigration.value || !activeProfile.value) return;
   phase.value = "confirming";
 
   const confirmed = await ask(
@@ -357,6 +527,8 @@ async function confirmAndRunMigration() {
 }
 
 async function runMigration() {
+  if (!activeProfile.value) return;
+
   running.value = true;
   phase.value = "running";
   clearExecutionArtifacts();
@@ -366,10 +538,10 @@ async function runMigration() {
   try {
     const result = await invoke("run_db_migration", {
       request: {
-        host: loginForm.host.trim(),
-        port: Number(loginForm.port) || 3306,
-        username: loginForm.username.trim(),
-        password: loginForm.password,
+        host: activeProfile.value.host.trim(),
+        port: Number(activeProfile.value.port) || 3306,
+        username: activeProfile.value.username.trim(),
+        password: activeProfile.value.password,
         sourceDatabase: sourceDatabase.value,
         targetDatabase: targetDatabase.value,
       },
@@ -379,7 +551,7 @@ async function runMigration() {
     executionMessage.value = result.summary || "迁移完成";
     executionMessageTone.value = "success";
     phase.value = "finished";
-    await persistRememberedConnection();
+    await persistWorkspaceState().catch(handleWorkspacePersistenceError);
   } catch (error) {
     executionMessage.value = String(error);
     executionMessageTone.value = "error";
@@ -387,14 +559,6 @@ async function runMigration() {
   } finally {
     running.value = false;
   }
-}
-
-async function switchConnection() {
-  if (running.value) return;
-  await clearRememberedConnection().catch(() => {});
-  resetWorkspaceState({ clearForm: true });
-  loginMessage.value = "已清除当前连接，请重新输入。";
-  loginMessageTone.value = "neutral";
 }
 
 async function openBackupDirectory() {
@@ -407,8 +571,136 @@ async function openBackupDirectory() {
   }
 }
 
+function syncSettingsDraftFromWorkspace({ editingProfileId = "" } = {}) {
+  settingsProfilesDraft.value = workspaceProfiles.value
+    .map((profile, index) => normalizeDbMigrationProfile(profile, index));
+  settingsEditingProfileId.value = editingProfileId
+    || settingsProfilesDraft.value[0]?.id
+    || "";
+}
+
+function openSettings({ editingProfileId = "", preserveDraft = false } = {}) {
+  hotkeyDraft.value = workspaceHotkey.value;
+  settingsMessage.value = "";
+  settingsMessageTone.value = "neutral";
+  if (!preserveDraft) {
+    syncSettingsDraftFromWorkspace({ editingProfileId });
+  } else if (editingProfileId) {
+    settingsEditingProfileId.value = editingProfileId;
+  }
+  settingsOpen.value = true;
+}
+
+function closeSettings() {
+  settingsOpen.value = false;
+  settingsProfilesDraft.value = [];
+  settingsEditingProfileId.value = "";
+  hotkeyDraft.value = workspaceHotkey.value;
+}
+
+function addDraftProfile() {
+  const profile = createDbMigrationProfileDraft(settingsProfilesDraft.value);
+  settingsProfilesDraft.value = [
+    ...settingsProfilesDraft.value,
+    profile,
+  ];
+  settingsEditingProfileId.value = profile.id;
+  return profile;
+}
+
+function addProfile() {
+  if (running.value || connecting.value) return;
+  openSettings({ preserveDraft: settingsOpen.value });
+  const profile = addDraftProfile();
+  settingsMessage.value = `已新增模板 ${profile.name}，保存后即可出现在左侧列表。`;
+  settingsMessageTone.value = "neutral";
+}
+
+function toggleSettingsProfileEdit(profileId) {
+  settingsEditingProfileId.value = settingsEditingProfileId.value === profileId ? "" : profileId;
+}
+
+function removeDraftProfile(profileId) {
+  settingsProfilesDraft.value = settingsProfilesDraft.value.filter((profile) => profile.id !== profileId);
+  if (settingsEditingProfileId.value === profileId) {
+    settingsEditingProfileId.value = settingsProfilesDraft.value[0]?.id || "";
+  }
+}
+
+async function saveSettings() {
+  if (settingsSaving.value) return;
+  settingsSaving.value = true;
+  settingsMessage.value = "";
+  settingsMessageTone.value = "neutral";
+
+  try {
+    const normalizedHotkey = await invoke("register_db_migration_window_hotkey", {
+      hotkey: hotkeyDraft.value,
+    });
+    const previousActiveProfile = activeProfile.value
+      ? normalizeDbMigrationProfile(activeProfile.value)
+      : null;
+    const nextSnapshot = buildWorkspaceSnapshot({
+      profiles: settingsProfilesDraft.value,
+      lastUsedProfileId: workspaceProfiles.value.some((profile) => profile.id === activeProfileId.value)
+        ? activeProfileId.value
+        : settingsProfilesDraft.value[0]?.id || "",
+    });
+
+    workspaceHotkey.value = normalizeDbMigrationWindowHotkey(normalizedHotkey);
+    hotkeyDraft.value = workspaceHotkey.value;
+    setWorkspaceProfiles(nextSnapshot.profiles);
+    activeProfileId.value = nextSnapshot.lastUsedProfileId;
+    await persistWorkspaceState({
+      profiles: nextSnapshot.profiles,
+      lastUsedProfileId: nextSnapshot.lastUsedProfileId,
+      applyToState: false,
+    });
+
+    const nextActiveProfile = workspaceProfiles.value.find(
+      (profile) => profile.id === activeProfileId.value,
+    ) || null;
+
+    if (!nextActiveProfile) {
+      applyEmptyWorkspaceState();
+    } else if (!isDbMigrationProfileConnectionReady(nextActiveProfile)) {
+      applyIncompleteProfileState(nextActiveProfile, {
+        message: "模板已保存，请先在设置里补全连接信息。",
+        tone: "neutral",
+        clearExecution: false,
+      });
+    } else if (
+      !currentConnection.value
+      || !previousActiveProfile
+      || previousActiveProfile.id !== nextActiveProfile.id
+      || !isSameDbMigrationConnection(currentConnection.value, nextActiveProfile)
+    ) {
+      await connectProfile(nextActiveProfile);
+    } else {
+      applyProfileSelections(nextActiveProfile, availableDatabases.value);
+      loginMessage.value = availableDatabases.value.length >= 2
+        ? `已应用模板 ${nextActiveProfile.name}`
+        : `已应用模板 ${nextActiveProfile.name}，但可见业务库少于 2 个`;
+      loginMessageTone.value = availableDatabases.value.length >= 2 ? "success" : "error";
+    }
+
+    settingsMessage.value = "设置已保存。";
+    settingsMessageTone.value = "success";
+    closeSettings();
+  } catch (error) {
+    settingsMessage.value = String(error);
+    settingsMessageTone.value = "error";
+  } finally {
+    settingsSaving.value = false;
+  }
+}
+
+function openSettingsForActiveProfile() {
+  openSettings({ editingProfileId: activeProfileId.value });
+}
+
 async function importDbConfigFile(file) {
-  if (!file) return;
+  if (!file || running.value) return;
   try {
     const text = await file.text();
     const parsed = JSON.parse(text);
@@ -417,15 +709,18 @@ async function importDbConfigFile(file) {
       throw new Error("JSON 解析失败或缺少连接字段");
     }
 
-    resetWorkspaceState({ clearForm: false });
-    loginForm.host = imported.host;
-    loginForm.port = imported.port;
-    loginForm.username = imported.username;
-    loginForm.password = imported.password;
-    sourceDatabase.value = imported.sourceDatabase;
-    targetDatabase.value = imported.targetDatabase;
-    loginMessage.value = "已导入 JSON，请连接。";
+    const profile = createDbMigrationProfileDraft(workspaceProfiles.value, imported);
+    setWorkspaceProfiles([
+      ...workspaceProfiles.value,
+      profile,
+    ]);
+    activeProfileId.value = profile.id;
+    await persistWorkspaceState().catch(handleWorkspacePersistenceError);
+    loginMessage.value = `已导入 JSON 并创建模板 ${profile.name}`;
     loginMessageTone.value = "success";
+    await activateProfile(profile.id, {
+      persist: false,
+    });
   } catch (error) {
     loginMessage.value = String(error);
     loginMessageTone.value = "error";
@@ -433,6 +728,7 @@ async function importDbConfigFile(file) {
 }
 
 function triggerImport() {
+  if (running.value) return;
   importInput.value?.click?.();
 }
 
@@ -452,18 +748,6 @@ async function onDropConfig(event) {
   await importDbConfigFile(file);
 }
 
-function openSettings() {
-  hotkeyDraft.value = workspaceHotkey.value;
-  settingsMessage.value = "";
-  settingsMessageTone.value = "neutral";
-  settingsOpen.value = true;
-}
-
-function closeSettings() {
-  settingsOpen.value = false;
-  hotkeyDraft.value = workspaceHotkey.value;
-}
-
 function onHotkeyInputKeydown(event) {
   event.preventDefault();
   event.stopPropagation();
@@ -478,41 +762,6 @@ function onHotkeyInputKeydown(event) {
   }
 
   hotkeyDraft.value = buildHotkeyFromEvent(event);
-}
-
-async function saveSettings() {
-  if (settingsSaving.value) return;
-  settingsSaving.value = true;
-  settingsMessage.value = "";
-  settingsMessageTone.value = "neutral";
-
-  try {
-    const normalized = await invoke("register_db_migration_window_hotkey", {
-      hotkey: hotkeyDraft.value,
-    });
-    workspaceHotkey.value = normalizeDbMigrationWindowHotkey(normalized);
-    hotkeyDraft.value = workspaceHotkey.value;
-    settingsMessage.value = "设置已保存。";
-    settingsMessageTone.value = "success";
-    settingsOpen.value = false;
-  } catch (error) {
-    settingsMessage.value = String(error);
-    settingsMessageTone.value = "error";
-  } finally {
-    settingsSaving.value = false;
-  }
-}
-
-async function clearRememberedConnectionFromSettings() {
-  if (running.value) return;
-  try {
-    await clearRememberedConnection();
-    settingsMessage.value = "已清除已记住的连接。";
-    settingsMessageTone.value = "success";
-  } catch (error) {
-    settingsMessage.value = String(error);
-    settingsMessageTone.value = "error";
-  }
 }
 
 async function closeWindow() {
@@ -581,204 +830,245 @@ onBeforeUnmount(() => {
       </div>
       <span class="sw-toolbar-title">数据库迁移工作台</span>
       <div class="sw-toolbar-actions">
-        <button class="sw-toolbar-btn" title="设置" @click="openSettings">⚙</button>
+        <button class="sw-toolbar-btn" title="新增模板" :disabled="running || connecting" @click="addProfile">+</button>
+        <button class="sw-toolbar-btn" title="设置" @click="openSettings()">⚙</button>
       </div>
     </header>
 
     <div class="sw-body">
       <aside class="sw-sidebar dmw-sidebar">
-        <section class="dmw-sidebar-card">
-          <div class="dmw-sidebar-kicker">当前服务器</div>
-          <div class="dmw-sidebar-value">{{ sidebarServerText }}</div>
-          <div class="dmw-sidebar-meta">{{ sidebarCredentialText }}</div>
-        </section>
-
-        <section class="dmw-sidebar-card">
-          <div class="dmw-sidebar-kicker">当前迁移</div>
-          <div class="dmw-sidebar-value">{{ workspaceHeadline }}</div>
-          <div class="dmw-sidebar-meta">
-            {{ phase === 'login' ? '连接后选择源库和目标库。' : '源库将完整覆盖目标库。' }}
-          </div>
-        </section>
-
-        <section class="dmw-sidebar-card">
-          <div class="dmw-sidebar-kicker">状态</div>
-          <div class="sw-status-line">
-            <span :class="['sw-status-badge', `is-${currentStatusTone}`]">{{ currentStatusText }}</span>
-          </div>
-          <div class="dmw-sidebar-meta">{{ sidebarStatusNote }}</div>
-        </section>
-
-        <div class="dmw-sidebar-footer">
-          <span class="dmw-hotkey-pill">{{ workspaceHotkey }}</span>
-          <span class="dmw-drop-hint">支持拖入 JSON 自动填充</span>
+        <div class="dmw-sidebar-header">
+          <span class="dmw-sidebar-caption">模板列表</span>
+          <span class="dmw-sidebar-count">{{ workspaceProfiles.length }} 个</span>
         </div>
+
+        <template v-if="workspaceProfiles.length > 0">
+          <button
+            v-for="profile in profilesView"
+            :key="profile.id"
+            :class="['sw-sidebar-item', 'dmw-sidebar-item', { selected: profile.id === activeProfileId }]"
+            :disabled="running || connecting"
+            @click="activateProfile(profile.id)"
+          >
+            <span :class="['sw-sidebar-status-dot', `is-${profile.statusTone}`]"></span>
+            <span class="dmw-sidebar-copy">
+              <span class="dmw-sidebar-name">{{ profile.name }}</span>
+              <span class="dmw-sidebar-summary" :title="profile.summary">{{ profile.summary }}</span>
+            </span>
+          </button>
+        </template>
+
+        <div v-else class="dmw-sidebar-empty">
+          <div class="dmw-sidebar-empty-title">还没有模板</div>
+          <div class="dmw-sidebar-empty-desc">点击右上角 +，或直接导入 JSON 创建第一套迁移模板。</div>
+        </div>
+
       </aside>
 
       <section class="sw-content dmw-content">
-        <div class="sw-content-header">
-          <h1 class="sw-profile-name">{{ workspaceHeadline }}</h1>
-          <div class="sw-status-line">
-            <span :class="['sw-status-badge', `is-${currentStatusTone}`]">{{ currentStatusText }}</span>
-            <span>{{ phase === 'login' ? '配置连接后即可开始。' : '界面会记住上次连接和窗口大小。' }}</span>
-          </div>
-        </div>
-
-        <div v-if="bannerMessage" :class="['sw-banner', `tone-${bannerTone}`]">
-          {{ bannerMessage }}
-        </div>
-
-        <section class="dmw-section">
-          <div class="dmw-section-head">
-            <div>
-              <h2 class="dmw-section-title">连接</h2>
-              <p class="dmw-section-subtitle">支持拖入 JSON 自动填充，不自动连接。</p>
+        <template v-if="activeProfile">
+          <div class="sw-content-header">
+            <div class="dmw-header-copy">
+              <h1 class="sw-profile-name">{{ activeProfile.name }}</h1>
+              <div class="dmw-header-subtitle">{{ activeProfileSummary }}</div>
             </div>
-            <div class="dmw-section-actions">
-              <button class="sw-open-dir-btn" type="button" @click="triggerImport">导入 JSON</button>
-              <button
-                v-if="phase !== 'login'"
-                class="sw-open-dir-btn dmw-secondary-action"
-                type="button"
-                :disabled="running"
-                @click="switchConnection"
-              >
-                切换连接
-              </button>
+            <div class="sw-status-line">
+              <span :class="['sw-status-badge', `is-${currentStatusTone}`]">{{ currentStatusText }}</span>
+              <span>{{ headerHelperText }}</span>
             </div>
           </div>
 
-          <div v-if="phase === 'login'" class="sw-config-form dmw-form">
-            <div class="dmw-form-grid">
-              <div class="sw-config-field">
-                <label>主机</label>
-                <input v-model="loginForm.host" type="text" placeholder="127.0.0.1" />
+          <div v-if="bannerMessage" :class="['sw-banner', `tone-${bannerTone}`]">
+            {{ bannerMessage }}
+          </div>
+
+          <section class="dmw-section">
+            <div class="dmw-section-head">
+              <div>
+                <h2 class="dmw-section-title">连接</h2>
+                <p class="dmw-section-subtitle">{{ connectionSectionSubtitle }}</p>
               </div>
-              <div class="sw-config-field">
-                <label>端口</label>
-                <input v-model.number="loginForm.port" type="number" min="1" placeholder="3306" />
+              <div class="dmw-section-actions">
+                <button class="sw-open-dir-btn" type="button" :disabled="running" @click="triggerImport">导入 JSON</button>
+                <button
+                  class="sw-open-dir-btn dmw-secondary-action"
+                  type="button"
+                  :disabled="!activeProfileConnectionReady || running || connecting"
+                  @click="reconnectActiveProfile"
+                >
+                  {{ connecting ? '连接中...' : phase === 'login' ? '连接模板' : '重新连接' }}
+                </button>
+                <button
+                  class="sw-open-dir-btn dmw-secondary-action"
+                  type="button"
+                  :disabled="running || connecting"
+                  @click="openSettingsForActiveProfile"
+                >
+                  编辑模板
+                </button>
               </div>
-              <div class="sw-config-field">
-                <label>用户名</label>
-                <input v-model="loginForm.username" type="text" placeholder="请输入用户名" />
+            </div>
+
+            <div v-if="!activeProfileConnectionReady" class="dmw-incomplete-card">
+              <div class="dmw-incomplete-title">模板还没配完整</div>
+              <p class="dmw-inline-note">请在设置里补全主机、端口、账号和密码；补全后点选模板会自动连接。</p>
+              <div class="sw-action-row">
+                <button class="sw-open-dir-btn" type="button" :disabled="running || connecting" @click="openSettingsForActiveProfile">
+                  去编辑模板
+                </button>
               </div>
+            </div>
+
+            <div v-else class="dmw-connection-grid">
+              <div v-for="item in connectionDetails" :key="item.label" class="dmw-connection-card">
+                <span class="dmw-connection-label">{{ item.label }}</span>
+                <span class="dmw-connection-value" :title="item.value">{{ item.value }}</span>
+              </div>
+            </div>
+          </section>
+
+          <section class="dmw-section">
+            <div class="dmw-section-head">
+              <div>
+                <h2 class="dmw-section-title">执行</h2>
+                <p class="dmw-section-subtitle">源库和目标库在这里选择，选择结果会自动回写到当前模板。</p>
+              </div>
+            </div>
+
+            <div class="dmw-selection-preview-grid">
+              <div v-for="item in selectedDatabaseCards" :key="item.label" class="dmw-selection-preview">
+                <span class="dmw-selection-preview-label">{{ item.label }}</span>
+                <strong class="dmw-selection-preview-value" :title="item.value">{{ item.value }}</strong>
+              </div>
+            </div>
+
+            <div class="dmw-select-grid">
               <div class="sw-config-field">
-                <label>密码</label>
-                <input v-model="loginForm.password" type="password" placeholder="请输入密码" />
+                <label>源库</label>
+                <select
+                  v-model="sourceDatabase"
+                  class="dmw-select"
+                  :title="sourceDatabase || '请选择源库'"
+                  :disabled="phase === 'login' || running || connecting || !activeProfileConnectionReady"
+                >
+                  <option value="">请选择源库</option>
+                  <option v-for="db in availableDatabases" :key="`source-${db}`" :value="db">
+                    {{ db }}
+                  </option>
+                </select>
+              </div>
+
+              <div class="sw-config-field">
+                <label>目标库</label>
+                <select
+                  v-model="targetDatabase"
+                  class="dmw-select"
+                  :title="targetDatabase || '请选择目标库'"
+                  :disabled="phase === 'login' || running || connecting || !activeProfileConnectionReady"
+                >
+                  <option value="">请选择目标库</option>
+                  <option v-for="db in availableDatabases" :key="`target-${db}`" :value="db">
+                    {{ db }}
+                  </option>
+                </select>
               </div>
             </div>
 
             <div class="sw-action-row">
-              <button class="sw-run-btn" :disabled="!canSubmitLogin" @click="connectServer()">
-                {{ connecting ? '连接中...' : '连接 MySQL' }}
+              <button
+                class="sw-run-btn"
+                :disabled="!canRunMigration || !hasEnoughDatabases"
+                @click="confirmAndRunMigration"
+              >
+                {{ running ? '迁移中...' : '开始完整覆盖' }}
+              </button>
+              <button class="sw-open-dir-btn" :disabled="!backupDir" @click="openBackupDirectory">
+                打开备份目录
               </button>
             </div>
-          </div>
 
-          <div v-else class="dmw-connection-grid">
-            <div v-for="item in connectionDetails" :key="item.label" class="dmw-connection-card">
-              <span class="dmw-connection-label">{{ item.label }}</span>
-              <span class="dmw-connection-value">{{ item.value }}</span>
+            <p v-if="phase === 'login' && activeProfileConnectionReady" class="dmw-inline-note">
+              当前模板尚未连接成功，连接后才能选择源库和目标库。
+            </p>
+
+            <p v-if="!hasEnoughDatabases && phase !== 'login'" class="dmw-inline-note">
+              当前账号可见业务库少于 2 个，暂时无法执行完整覆盖。
+            </p>
+
+            <div v-if="backupDir" class="dmw-path-card">
+              <span class="dmw-path-label">备份目录</span>
+              <code class="dmw-path-value">{{ backupDir }}</code>
             </div>
-          </div>
-        </section>
+          </section>
 
-        <section class="dmw-section">
-          <div class="dmw-section-head">
-            <div>
-              <h2 class="dmw-section-title">执行</h2>
-              <p class="dmw-section-subtitle">先备份，再完整覆盖目标库。</p>
-            </div>
-          </div>
-
-          <div class="dmw-select-grid">
-            <div class="sw-config-field">
-              <label>源库</label>
-              <select v-model="sourceDatabase" class="dmw-select" :disabled="phase === 'login' || running">
-                <option value="">请选择源库</option>
-                <option v-for="db in availableDatabases" :key="`source-${db}`" :value="db">
-                  {{ db }}
-                </option>
-              </select>
+          <section class="dmw-section">
+            <div class="dmw-section-head">
+              <div>
+                <h2 class="dmw-section-title">记录</h2>
+                <p class="dmw-section-subtitle">执行步骤和详细日志。</p>
+              </div>
             </div>
 
-            <div class="sw-config-field">
-              <label>目标库</label>
-              <select v-model="targetDatabase" class="dmw-select" :disabled="phase === 'login' || running">
-                <option value="">请选择目标库</option>
-                <option v-for="db in availableDatabases" :key="`target-${db}`" :value="db">
-                  {{ db }}
-                </option>
-              </select>
+            <div class="sw-pipeline">
+              <div class="sw-pipeline-title">执行步骤</div>
+              <ul class="sw-step-list">
+                <li v-for="step in pipelineView" :key="step.key" class="sw-step-item">
+                  <span :class="['sw-step-icon', `is-${step.status}`]">{{ step.icon }}</span>
+                  <span :class="['sw-step-label', { 'is-pending': step.status === 'pending' }]">
+                    {{ step.label }}
+                  </span>
+                  <span v-if="step.message" class="sw-step-msg" :title="step.message">{{ step.message }}</span>
+                  <span v-if="step.timeLabel" class="sw-step-time">{{ step.timeLabel }}</span>
+                </li>
+              </ul>
             </div>
-          </div>
 
-          <div class="sw-action-row">
-            <button
-              class="sw-run-btn"
-              :disabled="!canRunMigration || !hasEnoughDatabases"
-              @click="confirmAndRunMigration"
+            <details
+              v-if="timelineView.length > 0"
+              class="sw-log-details"
+              :open="logExpanded"
+              @toggle="handleLogToggle"
             >
-              {{ running ? '迁移中...' : '开始完整覆盖' }}
-            </button>
-            <button class="sw-open-dir-btn" :disabled="!backupDir" @click="openBackupDirectory">
-              打开备份目录
-            </button>
-          </div>
+              <summary>{{ logSummaryText }}</summary>
+              <ol class="sw-log-list-inner">
+                <li v-for="entry in timelineView" :key="entry.key" class="sw-log-entry">
+                  <div class="sw-log-entry-top">
+                    <span class="sw-log-entry-step">{{ entry.stepLabel }}</span>
+                    <span class="sw-log-entry-time">{{ entry.timeLabel }}</span>
+                    <span :class="['sw-log-entry-status', `is-${entry.statusTone}`]">{{ entry.statusText }}</span>
+                  </div>
+                  <div v-if="entry.message" class="sw-log-entry-msg">{{ entry.message }}</div>
+                  <div v-if="entry.command" class="sw-log-entry-cmd">{{ entry.command }}</div>
+                  <pre v-if="entry.detail" class="sw-log-entry-detail">{{ entry.detail }}</pre>
+                </li>
+              </ol>
+            </details>
+          </section>
+        </template>
 
-          <p v-if="!hasEnoughDatabases && phase !== 'login'" class="dmw-inline-note">
-            当前账号可见业务库少于 2 个，暂时无法执行完整覆盖。
-          </p>
-
-          <div v-if="backupDir" class="dmw-path-card">
-            <span class="dmw-path-label">备份目录</span>
-            <code class="dmw-path-value">{{ backupDir }}</code>
-          </div>
-        </section>
-
-        <section class="dmw-section">
-          <div class="dmw-section-head">
-            <div>
-              <h2 class="dmw-section-title">记录</h2>
-              <p class="dmw-section-subtitle">执行步骤和详细日志。</p>
+        <template v-else>
+          <div class="sw-content-header">
+            <div class="dmw-header-copy">
+              <h1 class="sw-profile-name">数据库迁移工作台</h1>
+              <div class="dmw-header-subtitle">左侧模板列表会保存多套连接配置和源/目标库选择。</div>
+            </div>
+            <div class="sw-status-line">
+              <span :class="['sw-status-badge', `is-${currentStatusTone}`]">{{ currentStatusText }}</span>
+              <span>{{ headerHelperText }}</span>
             </div>
           </div>
 
-          <div class="sw-pipeline">
-            <div class="sw-pipeline-title">执行步骤</div>
-            <ul class="sw-step-list">
-              <li v-for="step in pipelineView" :key="step.key" class="sw-step-item">
-                <span :class="['sw-step-icon', `is-${step.status}`]">{{ step.icon }}</span>
-                <span :class="['sw-step-label', { 'is-pending': step.status === 'pending' }]">
-                  {{ step.label }}
-                </span>
-                <span v-if="step.message" class="sw-step-msg" :title="step.message">{{ step.message }}</span>
-                <span v-if="step.timeLabel" class="sw-step-time">{{ step.timeLabel }}</span>
-              </li>
-            </ul>
-          </div>
-
-          <details
-            v-if="timelineView.length > 0"
-            class="sw-log-details"
-            :open="logExpanded"
-            @toggle="handleLogToggle"
-          >
-            <summary>{{ logSummaryText }}</summary>
-            <ol class="sw-log-list-inner">
-              <li v-for="entry in timelineView" :key="entry.key" class="sw-log-entry">
-                <div class="sw-log-entry-top">
-                  <span class="sw-log-entry-step">{{ entry.stepLabel }}</span>
-                  <span class="sw-log-entry-time">{{ entry.timeLabel }}</span>
-                  <span :class="['sw-log-entry-status', `is-${entry.statusTone}`]">{{ entry.statusText }}</span>
-                </div>
-                <div v-if="entry.message" class="sw-log-entry-msg">{{ entry.message }}</div>
-                <div v-if="entry.command" class="sw-log-entry-cmd">{{ entry.command }}</div>
-                <pre v-if="entry.detail" class="sw-log-entry-detail">{{ entry.detail }}</pre>
-              </li>
-            </ol>
-          </details>
-        </section>
+          <section class="dmw-empty-state">
+            <h2 class="dmw-empty-title">先创建一个迁移模板</h2>
+            <p class="dmw-empty-desc">
+              模板会记住连接信息和源/目标库选择，点击模板会自动连接或重连，但不会直接开始完整覆盖。
+            </p>
+            <div class="sw-action-row">
+              <button class="sw-run-btn" :disabled="running || connecting" @click="addProfile">新建模板</button>
+              <button class="sw-open-dir-btn" :disabled="running" @click="triggerImport">导入 JSON</button>
+            </div>
+          </section>
+        </template>
 
         <input
           ref="importInput"
@@ -791,7 +1081,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div v-if="settingsOpen" class="sw-settings-overlay" @click.self="closeSettings">
-      <section class="sw-settings-sheet">
+      <section class="sw-settings-sheet dmw-settings-sheet">
         <header class="sw-settings-header">
           <h2>迁移工作台设置</h2>
           <button class="sw-toolbar-btn" @click="closeSettings">✕</button>
@@ -814,18 +1104,109 @@ onBeforeUnmount(() => {
           </div>
 
           <div class="sw-settings-section">
-            <div class="sw-settings-section-title">连接记忆</div>
-            <p class="dmw-settings-note">
-              {{ rememberedConnectionSaved ? '下次打开会自动恢复已记住的连接。' : '当前没有已记住的连接。' }}
-            </p>
-            <div class="sw-settings-profile-actions">
-              <button
-                class="sw-settings-action-btn danger"
-                :disabled="running || !rememberedConnectionSaved"
-                @click="clearRememberedConnectionFromSettings"
-              >
-                清除已记住的连接
+            <div class="dmw-settings-section-head">
+              <div>
+                <div class="sw-settings-section-title">模板管理</div>
+                <p class="dmw-settings-note">模板名称和连接信息在这里维护，源库/目标库仍在主区选择并自动回写。</p>
+              </div>
+              <button class="sw-settings-action-btn primary" type="button" :disabled="running || connecting" @click="addDraftProfile">
+                新增模板
               </button>
+            </div>
+
+            <div v-if="settingsProfilesDraft.length === 0" class="dmw-settings-empty">
+              暂无模板，点击“新增模板”或关闭后导入 JSON 创建。
+            </div>
+
+            <div
+              v-for="(profile, index) in settingsProfilesDraft"
+              :key="profile.id"
+              class="sw-settings-profile-item dmw-settings-profile-item"
+            >
+              <button class="sw-settings-profile-row" @click="toggleSettingsProfileEdit(profile.id)">
+                <span class="dmw-settings-profile-main">
+                  <span class="sw-settings-profile-name">
+                    {{ profile.name }}
+                    <span v-if="profile.id === activeProfileId" class="dmw-settings-profile-current">当前</span>
+                  </span>
+                  <span class="dmw-settings-profile-summary">{{ describeDbMigrationProfile(profile, index) }}</span>
+                </span>
+                <span :class="['sw-settings-profile-chevron', { open: settingsEditingProfileId === profile.id }]">▶</span>
+              </button>
+
+              <div v-if="settingsEditingProfileId === profile.id" class="sw-settings-profile-edit">
+                <div class="sw-settings-field">
+                  <span class="sw-settings-field-label">模板名称</span>
+                  <input
+                    v-model="profile.name"
+                    class="sw-settings-input"
+                    type="text"
+                    placeholder="例如：17服覆盖到15服"
+                  />
+                </div>
+
+                <div class="sw-settings-path-row">
+                  <div class="sw-settings-field">
+                    <span class="sw-settings-field-label">主机</span>
+                    <input
+                      v-model="profile.host"
+                      class="sw-settings-input"
+                      type="text"
+                      placeholder="127.0.0.1"
+                    />
+                  </div>
+                  <div class="sw-settings-field">
+                    <span class="sw-settings-field-label">端口</span>
+                    <input
+                      v-model.number="profile.port"
+                      class="sw-settings-input"
+                      type="number"
+                      min="1"
+                      placeholder="3306"
+                    />
+                  </div>
+                </div>
+
+                <div class="sw-settings-path-row">
+                  <div class="sw-settings-field">
+                    <span class="sw-settings-field-label">账号</span>
+                    <input
+                      v-model="profile.username"
+                      class="sw-settings-input"
+                      type="text"
+                      placeholder="请输入账号"
+                    />
+                  </div>
+                  <div class="sw-settings-field">
+                    <span class="sw-settings-field-label">密码</span>
+                    <input
+                      v-model="profile.password"
+                      class="sw-settings-input"
+                      type="password"
+                      placeholder="请输入密码"
+                    />
+                  </div>
+                </div>
+
+                <div class="sw-settings-profile-actions">
+                  <button
+                    class="sw-settings-action-btn"
+                    type="button"
+                    :disabled="running || connecting"
+                    @click="activeProfileId = profile.id"
+                  >
+                    设为当前
+                  </button>
+                  <button
+                    class="sw-settings-action-btn danger"
+                    type="button"
+                    :disabled="running || connecting"
+                    @click="removeDraftProfile(profile.id)"
+                  >
+                    删除
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
 

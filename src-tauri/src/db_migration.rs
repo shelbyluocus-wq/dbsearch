@@ -273,6 +273,10 @@ pub async fn run_db_migration(
     );
 
     let source_tables = list_base_tables(&mut connection, &source_database).await?;
+    let target_options = build_scoped_database_connect_options(&options, &target_database);
+    let mut target_connection = MySqlConnection::connect_with(&target_options)
+        .await
+        .map_err(|e| format!("杩炴帴鐩爣搴?{} 澶辫触: {e}", target_database))?;
     let mut foreign_key_checks_disabled = false;
 
     let migration_result = async {
@@ -285,9 +289,9 @@ pub async fn run_db_migration(
             None,
             None,
         );
-        set_foreign_key_checks(&mut connection, false).await?;
+        set_foreign_key_checks(&mut target_connection, false).await?;
         foreign_key_checks_disabled = true;
-        drop_all_tables(&mut connection, &target_database).await?;
+        drop_all_tables(&mut target_connection, &target_database).await?;
         emit_progress(
             app,
             "drop_target_tables",
@@ -307,11 +311,10 @@ pub async fn run_db_migration(
             None,
             None,
         );
-        use_database(&mut connection, &target_database).await?;
         for table_name in &source_tables {
             let create_table_sql = show_create_table(&mut connection, &source_database, table_name).await?;
             sqlx::query(&create_table_sql)
-                .execute(&mut connection)
+                .execute(&mut target_connection)
                 .await
                 .map_err(|e| format!("重建表 {} 失败: {e}", table_name))?;
         }
@@ -351,7 +354,7 @@ pub async fn run_db_migration(
                 &insertable_columns,
             );
             sqlx::query(&copy_sql)
-                .execute(&mut connection)
+                .execute(&mut target_connection)
                 .await
                 .map_err(|e| format!("复制表 {} 数据失败: {e}", table_name))?;
         }
@@ -381,7 +384,7 @@ pub async fn run_db_migration(
     .await;
 
     if foreign_key_checks_disabled {
-        let _ = set_foreign_key_checks(&mut connection, true).await;
+        let _ = set_foreign_key_checks(&mut target_connection, true).await;
     }
 
     match migration_result {
@@ -437,6 +440,13 @@ fn build_server_connect_options(
         .port(port)
         .username(username.trim())
         .password(password))
+}
+
+fn build_scoped_database_connect_options(
+    base_options: &MySqlConnectOptions,
+    database: &str,
+) -> MySqlConnectOptions {
+    base_options.clone().database(database.trim())
 }
 
 async fn list_user_databases(connection: &mut MySqlConnection) -> Result<Vec<String>, String> {
@@ -677,6 +687,7 @@ async fn drop_all_tables(connection: &mut MySqlConnection, database: &str) -> Re
     Ok(())
 }
 
+#[allow(dead_code)]
 async fn use_database(connection: &mut MySqlConnection, database: &str) -> Result<(), String> {
     let sql = format!("USE `{}`", escape_ident(database));
     sqlx::query(&sql)
@@ -774,4 +785,20 @@ fn emit_failure<T>(
 
 fn io_error(error: std::io::Error) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlx::ConnectOptions;
+
+    #[test]
+    fn scoped_target_connect_options_embed_selected_database() {
+        let base_options = build_server_connect_options("127.0.0.1", 3306, "tester", "secret")
+            .expect("base options should build");
+
+        let scoped_options = build_scoped_database_connect_options(&base_options, "edota_15cfg");
+
+        assert_eq!(scoped_options.to_url_lossy().path(), "/edota_15cfg");
+    }
 }

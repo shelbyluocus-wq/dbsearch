@@ -229,6 +229,10 @@ struct PersonalConfig {
     #[serde(default)]
     db_migration_window_size: Option<DbMigrationWindowSize>,
     #[serde(default)]
+    db_migration_profiles: Vec<DbMigrationProfile>,
+    #[serde(default)]
+    last_used_db_migration_profile_id: Option<String>,
+    #[serde(default)]
     db_migration_last_connection: Option<DbMigrationRememberedConnection>,
     #[serde(default = "default_true")]
     auto_check_updates: bool,
@@ -295,34 +299,140 @@ fn sanitize_db_migration_remembered_connection(
     })
 }
 
-fn payload_to_db_migration_remembered_connection(
-    payload: Option<DbMigrationRememberedConnectionPayload>,
+fn default_db_migration_profile_id(index: usize) -> String {
+    format!("db-migration-profile-{}", index + 1)
+}
+
+fn build_db_migration_profile_default_name(profile: &DbMigrationProfile, index: usize) -> String {
+    let source_database = profile.source_database.trim();
+    let target_database = profile.target_database.trim();
+    if !source_database.is_empty() && !target_database.is_empty() {
+        return format!("{source_database} -> {target_database}");
+    }
+
+    let host = profile.host.trim();
+    if !host.is_empty() {
+        return format!("{host}:{}", if profile.port == 0 { 3306 } else { profile.port });
+    }
+
+    format!("迁移模板 {}", index + 1)
+}
+
+fn sanitize_db_migration_profile(profile: DbMigrationProfile, index: usize) -> DbMigrationProfile {
+    let mut sanitized = DbMigrationProfile {
+        id: profile.id.trim().to_string(),
+        name: profile.name.trim().to_string(),
+        host: profile.host.trim().to_string(),
+        port: if profile.port == 0 { 3306 } else { profile.port },
+        username: profile.username.trim().to_string(),
+        password: profile.password,
+        source_database: profile.source_database.trim().to_string(),
+        target_database: profile.target_database.trim().to_string(),
+    };
+
+    if sanitized.id.is_empty() {
+        sanitized.id = default_db_migration_profile_id(index);
+    }
+    if sanitized.name.is_empty() {
+        sanitized.name = build_db_migration_profile_default_name(&sanitized, index);
+    }
+
+    sanitized
+}
+
+fn sanitize_db_migration_profiles(profiles: Vec<DbMigrationProfile>) -> Vec<DbMigrationProfile> {
+    profiles
+        .into_iter()
+        .enumerate()
+        .map(|(index, profile)| sanitize_db_migration_profile(profile, index))
+        .collect()
+}
+
+fn db_migration_profile_to_payload(profile: DbMigrationProfile) -> DbMigrationProfilePayload {
+    DbMigrationProfilePayload {
+        id: profile.id,
+        name: profile.name,
+        host: profile.host,
+        port: profile.port,
+        username: profile.username,
+        password: profile.password,
+        source_database: profile.source_database,
+        target_database: profile.target_database,
+    }
+}
+
+fn payload_to_db_migration_profile(payload: DbMigrationProfilePayload) -> DbMigrationProfile {
+    DbMigrationProfile {
+        id: payload.id,
+        name: payload.name,
+        host: payload.host,
+        port: payload.port,
+        username: payload.username,
+        password: payload.password,
+        source_database: payload.source_database,
+        target_database: payload.target_database,
+    }
+}
+
+fn db_migration_profile_to_remembered_connection(
+    profile: Option<&DbMigrationProfile>,
 ) -> Option<DbMigrationRememberedConnection> {
-    sanitize_db_migration_remembered_connection(payload.map(|value| {
-        DbMigrationRememberedConnection {
-            host: value.host,
-            port: value.port,
-            username: value.username,
-            password: value.password,
-            source_database: value.source_database,
-            target_database: value.target_database,
-        }
+    let value = profile?;
+    sanitize_db_migration_remembered_connection(Some(DbMigrationRememberedConnection {
+        host: value.host.clone(),
+        port: value.port,
+        username: value.username.clone(),
+        password: value.password.clone(),
+        source_database: value.source_database.clone(),
+        target_database: value.target_database.clone(),
     }))
 }
 
-fn db_migration_remembered_connection_to_payload(
-    connection: Option<DbMigrationRememberedConnection>,
-) -> Option<DbMigrationRememberedConnectionPayload> {
-    sanitize_db_migration_remembered_connection(connection).map(|value| {
-        DbMigrationRememberedConnectionPayload {
-            host: value.host,
-            port: value.port,
-            username: value.username,
-            password: value.password,
-            source_database: value.source_database,
-            target_database: value.target_database,
+fn legacy_db_migration_connection_to_profile(
+    connection: DbMigrationRememberedConnection,
+) -> DbMigrationProfile {
+    sanitize_db_migration_profile(
+        DbMigrationProfile {
+            id: String::new(),
+            name: String::new(),
+            host: connection.host,
+            port: connection.port,
+            username: connection.username,
+            password: connection.password,
+            source_database: connection.source_database,
+            target_database: connection.target_database,
+        },
+        0,
+    )
+}
+
+fn resolve_last_used_db_migration_profile_id(
+    profiles: &[DbMigrationProfile],
+    requested: Option<String>,
+) -> Option<String> {
+    let requested = requested.unwrap_or_default().trim().to_string();
+    if !requested.is_empty() && profiles.iter().any(|profile| profile.id == requested) {
+        return Some(requested);
+    }
+    profiles.first().map(|profile| profile.id.clone())
+}
+
+fn normalize_db_migration_profile_state(
+    profiles: Vec<DbMigrationProfile>,
+    last_used_profile_id: Option<String>,
+    legacy_connection: Option<DbMigrationRememberedConnection>,
+) -> (Vec<DbMigrationProfile>, Option<String>) {
+    let mut normalized_profiles = sanitize_db_migration_profiles(profiles);
+    if normalized_profiles.is_empty() {
+        if let Some(connection) = sanitize_db_migration_remembered_connection(legacy_connection) {
+            normalized_profiles.push(legacy_db_migration_connection_to_profile(connection));
         }
-    })
+    }
+
+    let resolved_last_used_profile_id =
+        resolve_last_used_db_migration_profile_id(&normalized_profiles, last_used_profile_id);
+
+    (normalized_profiles, resolved_last_used_profile_id)
 }
 
 fn clamp_db_migration_window_size_to_monitor(
@@ -410,6 +520,8 @@ impl Default for PersonalConfig {
             default_sync_profile_id: None,
             last_used_sync_profile_id: None,
             db_migration_window_size: None,
+            db_migration_profiles: Vec::new(),
+            last_used_db_migration_profile_id: None,
             db_migration_last_connection: None,
             auto_check_updates: true,
             last_update_check_at: None,
@@ -495,9 +607,10 @@ struct DbMigrationRememberedConnection {
     source_database: String,
     target_database: String,
 }
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct DbMigrationRememberedConnectionPayload {
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+struct DbMigrationProfile {
+    id: String,
+    name: String,
     host: String,
     port: u16,
     username: String,
@@ -505,11 +618,30 @@ struct DbMigrationRememberedConnectionPayload {
     source_database: String,
     target_database: String,
 }
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct DbMigrationProfilePayload {
+    id: String,
+    name: String,
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    source_database: String,
+    target_database: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DbMigrationWorkspaceStatePayload {
+    profiles: Vec<DbMigrationProfilePayload>,
+    last_used_profile_id: Option<String>,
+}
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct DbMigrationWorkspaceState {
     hotkey: String,
-    remembered_connection: Option<DbMigrationRememberedConnectionPayload>,
+    profiles: Vec<DbMigrationProfilePayload>,
+    last_used_profile_id: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DbConfig {
@@ -1703,23 +1835,47 @@ async fn get_db_migration_workspace_state(
     state: State<'_, AppState>,
 ) -> Result<DbMigrationWorkspaceState, String> {
     let rt = state.runtime.lock().await;
+    let (profiles, last_used_profile_id) = normalize_db_migration_profile_state(
+        rt.config.personal.db_migration_profiles.clone(),
+        rt.config.personal.last_used_db_migration_profile_id.clone(),
+        rt.config.personal.db_migration_last_connection.clone(),
+    );
     Ok(DbMigrationWorkspaceState {
         hotkey: rt.config.personal.db_migration_window_hotkey.clone(),
-        remembered_connection: db_migration_remembered_connection_to_payload(
-            rt.config.personal.db_migration_last_connection.clone(),
-        ),
+        profiles: profiles
+            .into_iter()
+            .map(db_migration_profile_to_payload)
+            .collect(),
+        last_used_profile_id,
     })
 }
 
 #[tauri::command]
-async fn save_db_migration_workspace_connection(
-    connection: Option<DbMigrationRememberedConnectionPayload>,
+async fn save_db_migration_workspace_state(
+    workspace_state: DbMigrationWorkspaceStatePayload,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let mut rt = state.runtime.lock().await;
-    rt.config.personal.db_migration_last_connection =
-        payload_to_db_migration_remembered_connection(connection);
+    let (profiles, last_used_profile_id) = normalize_db_migration_profile_state(
+        workspace_state
+            .profiles
+            .into_iter()
+            .map(payload_to_db_migration_profile)
+            .collect(),
+        workspace_state.last_used_profile_id,
+        None,
+    );
+    let remembered_connection = db_migration_profile_to_remembered_connection(
+        last_used_profile_id
+        .as_ref()
+        .and_then(|profile_id| profiles.iter().find(|profile| &profile.id == profile_id))
+        .or_else(|| profiles.first()),
+    );
+
+    rt.config.personal.db_migration_profiles = profiles;
+    rt.config.personal.last_used_db_migration_profile_id = last_used_profile_id;
+    rt.config.personal.db_migration_last_connection = remembered_connection;
     save_config_to_disk(&app, &rt.config)?;
     Ok(())
 }
@@ -3268,6 +3424,15 @@ pub fn run() {
             loaded.personal.db_migration_last_connection = sanitize_db_migration_remembered_connection(
                 loaded.personal.db_migration_last_connection.take(),
             );
+            let (db_migration_profiles, last_used_db_migration_profile_id) =
+                normalize_db_migration_profile_state(
+                    std::mem::take(&mut loaded.personal.db_migration_profiles),
+                    loaded.personal.last_used_db_migration_profile_id.take(),
+                    loaded.personal.db_migration_last_connection.clone(),
+                );
+            loaded.personal.db_migration_profiles = db_migration_profiles;
+            loaded.personal.last_used_db_migration_profile_id =
+                last_used_db_migration_profile_id;
             let pet_position = loaded.personal.pet_position.clone();
             let registered_hotkey = match normalize_hotkey_for_plugin(&loaded.personal.hotkey) {
                 Ok(shortcut) => {
@@ -3471,7 +3636,7 @@ pub fn run() {
             hide_db_migration_window,
             toggle_db_migration_window,
             get_db_migration_workspace_state,
-            save_db_migration_workspace_connection,
+            save_db_migration_workspace_state,
             connect_db_migration_server,
             run_db_migration,
             open_directory_in_explorer,
@@ -3639,5 +3804,89 @@ mod tests {
 
         assert_eq!(size.width, 1240.0);
         assert_eq!(size.height, 820.0);
+    }
+
+    #[test]
+    fn legacy_db_migration_connection_is_migrated_into_profile_list() {
+        let (profiles, last_used_profile_id) = normalize_db_migration_profile_state(
+            Vec::new(),
+            None,
+            Some(DbMigrationRememberedConnection {
+                host: "db.local".into(),
+                port: 3306,
+                username: "root".into(),
+                password: "pw".into(),
+                source_database: "source_a".into(),
+                target_database: "target_b".into(),
+            }),
+        );
+
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "db-migration-profile-1");
+        assert_eq!(profiles[0].name, "source_a -> target_b");
+        assert_eq!(last_used_profile_id.as_deref(), Some("db-migration-profile-1"));
+    }
+
+    #[test]
+    fn new_db_migration_profiles_take_priority_over_legacy_connection() {
+        let (profiles, last_used_profile_id) = normalize_db_migration_profile_state(
+            vec![DbMigrationProfile {
+                id: "profile-b".into(),
+                name: "已保存模板".into(),
+                host: "db.remote".into(),
+                port: 3307,
+                username: "admin".into(),
+                password: "pw".into(),
+                source_database: "src".into(),
+                target_database: "dst".into(),
+            }],
+            Some("profile-b".into()),
+            Some(DbMigrationRememberedConnection {
+                host: "legacy.local".into(),
+                port: 3306,
+                username: "root".into(),
+                password: "pw".into(),
+                source_database: "old_src".into(),
+                target_database: "old_dst".into(),
+            }),
+        );
+
+        assert_eq!(profiles.len(), 1);
+        assert_eq!(profiles[0].id, "profile-b");
+        assert_eq!(profiles[0].host, "db.remote");
+        assert_eq!(last_used_profile_id.as_deref(), Some("profile-b"));
+    }
+
+    #[test]
+    fn invalid_last_used_db_migration_profile_falls_back_to_first_profile() {
+        let (profiles, last_used_profile_id) = normalize_db_migration_profile_state(
+            vec![
+                DbMigrationProfile {
+                    id: "profile-a".into(),
+                    name: "模板 A".into(),
+                    host: "a.local".into(),
+                    port: 3306,
+                    username: "root".into(),
+                    password: String::new(),
+                    source_database: "source_a".into(),
+                    target_database: "target_a".into(),
+                },
+                DbMigrationProfile {
+                    id: "profile-b".into(),
+                    name: "模板 B".into(),
+                    host: "b.local".into(),
+                    port: 3307,
+                    username: "root".into(),
+                    password: String::new(),
+                    source_database: "source_b".into(),
+                    target_database: "target_b".into(),
+                },
+            ],
+            Some("missing".into()),
+            None,
+        );
+
+        assert_eq!(profiles.len(), 2);
+        assert_eq!(last_used_profile_id.as_deref(), Some("profile-a"));
     }
 }
