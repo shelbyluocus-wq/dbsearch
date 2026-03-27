@@ -2,10 +2,14 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
-  FIXED_DB_MIGRATION_HOTKEY,
+  DEFAULT_DB_MIGRATION_WINDOW_HOTKEY,
   appendDbMigrationTimeline,
   buildDbMigrationHeadline,
+  extractDbMigrationJsonConfig,
   filterMigrationDatabaseNames,
+  normalizeDbMigrationRememberedConnection,
+  normalizeDbMigrationWindowHotkey,
+  resolveDbMigrationSelections,
   shouldAutoExpandDbMigrationLog,
   shouldResetDbMigrationWorkspaceOnShow,
 } from "./dbMigrationWorkspace.js";
@@ -57,8 +61,11 @@ test("shouldResetDbMigrationWorkspaceOnShow resets idle states but not running w
   assert.equal(shouldResetDbMigrationWorkspaceOnShow({ phase: "running", running: true }), false);
 });
 
-test("FIXED_DB_MIGRATION_HOTKEY is reserved as Shift+D", () => {
-  assert.equal(FIXED_DB_MIGRATION_HOTKEY, "Shift+D");
+test("DEFAULT_DB_MIGRATION_WINDOW_HOTKEY falls back to Shift+D", () => {
+  assert.equal(DEFAULT_DB_MIGRATION_WINDOW_HOTKEY, "Shift+D");
+  assert.equal(normalizeDbMigrationWindowHotkey(""), "Shift+D");
+  assert.equal(normalizeDbMigrationWindowHotkey("Shift"), "Shift+D");
+  assert.equal(normalizeDbMigrationWindowHotkey("shift+d"), "Shift+D");
 });
 
 test("buildDbMigrationHeadline stays compact and focuses on source-target selection", () => {
@@ -76,4 +83,88 @@ test("shouldAutoExpandDbMigrationLog keeps detailed logs collapsed by default", 
   assert.equal(shouldAutoExpandDbMigrationLog({ running: false, phase: "ready" }), false);
   assert.equal(shouldAutoExpandDbMigrationLog({ running: true, phase: "running" }), false);
   assert.equal(shouldAutoExpandDbMigrationLog({ running: false, phase: "finished" }), false);
+});
+
+test("normalizeDbMigrationRememberedConnection trims persisted fields and drops incomplete values", () => {
+  assert.deepEqual(
+    normalizeDbMigrationRememberedConnection({
+      host: " db.local ",
+      port: "3308",
+      username: " root ",
+      password: "pw",
+      source_database: " source_a ",
+      target_database: " target_b ",
+    }),
+    {
+      host: "db.local",
+      port: 3308,
+      username: "root",
+      password: "pw",
+      sourceDatabase: "source_a",
+      targetDatabase: "target_b",
+    },
+  );
+
+  assert.equal(
+    normalizeDbMigrationRememberedConnection({
+      host: "",
+      username: "root",
+    }),
+    null,
+  );
+});
+
+test("resolveDbMigrationSelections prefers remembered databases and falls back to visible options", () => {
+  assert.deepEqual(
+    resolveDbMigrationSelections(["alpha", "beta", "gamma"], {
+      sourceDatabase: "gamma",
+      targetDatabase: "missing",
+    }),
+    {
+      sourceDatabase: "gamma",
+      targetDatabase: "alpha",
+    },
+  );
+
+  assert.deepEqual(
+    resolveDbMigrationSelections(["alpha", "beta", "gamma"], {
+      sourceDatabase: "missing",
+      targetDatabase: "missing",
+    }),
+    {
+      sourceDatabase: "alpha",
+      targetDatabase: "beta",
+    },
+  );
+});
+
+test("extractDbMigrationJsonConfig supports nested db payloads, user alias, and source-target hints", () => {
+  assert.deepEqual(
+    extractDbMigrationJsonConfig({
+      db: {
+        host: "db.local",
+        port: "3307",
+        user: "root",
+        password: "pw",
+      },
+      source_database: "source_a",
+      targetDatabase: "target_b",
+    }),
+    {
+      host: "db.local",
+      port: 3307,
+      username: "root",
+      password: "pw",
+      sourceDatabase: "source_a",
+      targetDatabase: "target_b",
+    },
+  );
+
+  assert.equal(
+    extractDbMigrationJsonConfig({
+      database: "app_main",
+      username: "root",
+    }),
+    null,
+  );
 });

@@ -1,4 +1,7 @@
-export const FIXED_DB_MIGRATION_HOTKEY = "Shift+D";
+import { normalizeHotkeyDisplay } from "./syncWorkspace.js";
+
+export const DEFAULT_DB_MIGRATION_WINDOW_HOTKEY = "Shift+D";
+export const FIXED_DB_MIGRATION_HOTKEY = DEFAULT_DB_MIGRATION_WINDOW_HOTKEY;
 
 export const DB_MIGRATION_SYSTEM_DATABASES = new Set([
   "information_schema",
@@ -16,6 +19,32 @@ export const DB_MIGRATION_PIPELINE_STEPS = [
   { key: "copy_data", label: "复制数据" },
   { key: "finish", label: "完成迁移" },
 ];
+
+function isModifierOnlyHotkey(value) {
+  const parts = String(value || "")
+    .split("+")
+    .map((part) => part.trim().toLowerCase())
+    .filter(Boolean);
+  if (parts.length === 0) return true;
+  return parts.every((part) => ["ctrl", "shift", "alt", "meta"].includes(part));
+}
+
+function normalizePort(value, fallback = 3306) {
+  const port = Number(value);
+  return Number.isFinite(port) && port > 0 ? port : fallback;
+}
+
+function normalizeOptionalString(value) {
+  return String(value ?? "").trim();
+}
+
+export function normalizeDbMigrationWindowHotkey(value) {
+  const normalized = normalizeHotkeyDisplay(value);
+  if (!normalized || isModifierOnlyHotkey(normalized)) {
+    return DEFAULT_DB_MIGRATION_WINDOW_HOTKEY;
+  }
+  return normalized;
+}
 
 export function filterMigrationDatabaseNames(databases = []) {
   const names = Array.isArray(databases) ? databases : [];
@@ -64,4 +93,81 @@ export function buildDbMigrationHeadline({ sourceDatabase = "", targetDatabase =
 
 export function shouldAutoExpandDbMigrationLog() {
   return false;
+}
+
+export function normalizeDbMigrationRememberedConnection(connection = null) {
+  if (!connection || typeof connection !== "object") return null;
+
+  const host = normalizeOptionalString(connection.host);
+  const username = normalizeOptionalString(connection.username ?? connection.user);
+  if (!host || !username) return null;
+
+  return {
+    host,
+    port: normalizePort(connection.port),
+    username,
+    password: String(connection.password ?? ""),
+    sourceDatabase: normalizeOptionalString(
+      connection.sourceDatabase ?? connection.source_database,
+    ),
+    targetDatabase: normalizeOptionalString(
+      connection.targetDatabase ?? connection.target_database,
+    ),
+  };
+}
+
+export function resolveDbMigrationSelections(databases = [], rememberedConnection = null) {
+  const visibleDatabases = filterMigrationDatabaseNames(databases);
+  if (visibleDatabases.length === 0) {
+    return {
+      sourceDatabase: "",
+      targetDatabase: "",
+    };
+  }
+
+  const requestedSource = normalizeOptionalString(
+    rememberedConnection?.sourceDatabase ?? rememberedConnection?.source_database,
+  );
+  const requestedTarget = normalizeOptionalString(
+    rememberedConnection?.targetDatabase ?? rememberedConnection?.target_database,
+  );
+
+  let sourceDatabase = visibleDatabases.includes(requestedSource)
+    ? requestedSource
+    : visibleDatabases[0] || "";
+
+  let targetDatabase = visibleDatabases.includes(requestedTarget) && requestedTarget !== sourceDatabase
+    ? requestedTarget
+    : visibleDatabases.find((item) => item !== sourceDatabase) || "";
+
+  if (!sourceDatabase && targetDatabase) {
+    sourceDatabase = visibleDatabases.find((item) => item !== targetDatabase) || targetDatabase;
+  }
+
+  return {
+    sourceDatabase,
+    targetDatabase,
+  };
+}
+
+export function extractDbMigrationJsonConfig(parsed) {
+  const dbConfig = parsed?.db && typeof parsed.db === "object" ? parsed.db : parsed;
+  if (!dbConfig || typeof dbConfig !== "object") return null;
+
+  const host = normalizeOptionalString(dbConfig.host);
+  const username = normalizeOptionalString(dbConfig.username ?? dbConfig.user);
+  if (!host || !username) return null;
+
+  return {
+    host,
+    port: normalizePort(dbConfig.port),
+    username,
+    password: String(dbConfig.password ?? ""),
+    sourceDatabase: normalizeOptionalString(
+      parsed?.sourceDatabase ?? parsed?.source_database ?? dbConfig.sourceDatabase ?? dbConfig.source_database,
+    ),
+    targetDatabase: normalizeOptionalString(
+      parsed?.targetDatabase ?? parsed?.target_database ?? dbConfig.targetDatabase ?? dbConfig.target_database,
+    ),
+  };
 }

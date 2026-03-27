@@ -4,7 +4,6 @@ pub mod sync_workspace;
 use crate::sync_workspace::{execute_sync_pipeline, SyncProfile, SyncRunOutcome};
 use crate::db_migration::{
     connect_db_migration_server as connect_db_migration_server_impl,
-    emit_db_migration_reset,
     run_db_migration as run_db_migration_impl,
     DbMigrationLoginParams,
     DbMigrationLoginResult,
@@ -47,7 +46,10 @@ struct AppState {
     panel_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     quick_date_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     sync_window_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
+    db_migration_window_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
+    db_migration_window_size_sync: Arc<std::sync::RwLock<Option<DbMigrationWindowSize>>>,
     db_migration_running_sync: Arc<AtomicBool>,
+    db_migration_resize_seq: Arc<AtomicU64>,
     pet_hitbox: Arc<std::sync::RwLock<Option<PetHitbox>>>,
     pet_cursor_ignored: Arc<AtomicBool>,
 }
@@ -59,7 +61,10 @@ impl Default for AppState {
             panel_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             quick_date_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             sync_window_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
+            db_migration_window_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
+            db_migration_window_size_sync: Arc::new(std::sync::RwLock::new(None)),
             db_migration_running_sync: Arc::new(AtomicBool::new(false)),
+            db_migration_resize_seq: Arc::new(AtomicU64::new(0)),
             pet_hitbox: Arc::new(std::sync::RwLock::new(None)),
             pet_cursor_ignored: Arc::new(AtomicBool::new(false)),
         }
@@ -74,6 +79,7 @@ struct RuntimeState {
     registered_hotkey: Option<String>,
     registered_quick_date_hotkey: Option<String>,
     registered_sync_window_hotkey: Option<String>,
+    registered_db_migration_window_hotkey: Option<String>,
     sync_running: bool,
     pet_hidden_this_session: bool,
 }
@@ -95,9 +101,11 @@ const PET_MENU_DIVIDER_BLOCK_HEIGHT: f64 = 5.0;
 const PET_MENU_VERTICAL_PADDING: f64 = 20.0;
 const SYNC_WORKSPACE_WIDTH: f64 = 760.0;
 const SYNC_WORKSPACE_HEIGHT: f64 = 640.0;
-const DB_MIGRATION_WORKSPACE_WIDTH: f64 = 880.0;
-const DB_MIGRATION_WORKSPACE_HEIGHT: f64 = 680.0;
-const DB_MIGRATION_RESERVED_HOTKEY: &str = "Shift+D";
+const DB_MIGRATION_WORKSPACE_WIDTH: f64 = 1120.0;
+const DB_MIGRATION_WORKSPACE_HEIGHT: f64 = 760.0;
+const DB_MIGRATION_WORKSPACE_MIN_WIDTH: f64 = 980.0;
+const DB_MIGRATION_WORKSPACE_MIN_HEIGHT: f64 = 660.0;
+const DEFAULT_DB_MIGRATION_WINDOW_HOTKEY: &str = "Shift+D";
 const TRAY_ICON_ID: &str = "main_tray";
 const TRAY_MENU_OPEN_PANEL_ID: &str = "tray-open-panel";
 const TRAY_MENU_SHOW_PET_ID: &str = "tray-show-pet";
@@ -184,6 +192,8 @@ struct PersonalConfig {
     quick_date_hotkey: String,
     #[serde(default = "default_sync_window_hotkey")]
     sync_window_hotkey: String,
+    #[serde(default = "default_db_migration_window_hotkey")]
+    db_migration_window_hotkey: String,
     always_on_top: bool,
     auto_start: bool,
     ui_scale: f32,
@@ -216,6 +226,10 @@ struct PersonalConfig {
     default_sync_profile_id: Option<String>,
     #[serde(default)]
     last_used_sync_profile_id: Option<String>,
+    #[serde(default)]
+    db_migration_window_size: Option<DbMigrationWindowSize>,
+    #[serde(default)]
+    db_migration_last_connection: Option<DbMigrationRememberedConnection>,
     #[serde(default = "default_true")]
     auto_check_updates: bool,
     #[serde(default)]
@@ -233,8 +247,128 @@ fn default_always_on_top_hotkey() -> String {
 fn default_sync_window_hotkey() -> String {
     "Shift+S".into()
 }
+fn default_db_migration_window_hotkey() -> String {
+    DEFAULT_DB_MIGRATION_WINDOW_HOTKEY.into()
+}
 fn default_pet_skin() -> String {
     "eagle".into()
+}
+
+fn sanitize_db_migration_window_size(
+    size: Option<DbMigrationWindowSize>,
+) -> Option<DbMigrationWindowSize> {
+    size.and_then(|value| {
+        if !value.width.is_finite() || !value.height.is_finite() {
+            return None;
+        }
+        Some(DbMigrationWindowSize {
+            width: value.width.max(DB_MIGRATION_WORKSPACE_MIN_WIDTH).round(),
+            height: value.height.max(DB_MIGRATION_WORKSPACE_MIN_HEIGHT).round(),
+        })
+    })
+}
+
+fn default_db_migration_window_size() -> DbMigrationWindowSize {
+    DbMigrationWindowSize {
+        width: DB_MIGRATION_WORKSPACE_WIDTH,
+        height: DB_MIGRATION_WORKSPACE_HEIGHT,
+    }
+}
+
+fn sanitize_db_migration_remembered_connection(
+    connection: Option<DbMigrationRememberedConnection>,
+) -> Option<DbMigrationRememberedConnection> {
+    connection.and_then(|value| {
+        let host = value.host.trim().to_string();
+        let username = value.username.trim().to_string();
+        if host.is_empty() || username.is_empty() {
+            return None;
+        }
+        Some(DbMigrationRememberedConnection {
+            host,
+            port: if value.port == 0 { 3306 } else { value.port },
+            username,
+            password: value.password,
+            source_database: value.source_database.trim().to_string(),
+            target_database: value.target_database.trim().to_string(),
+        })
+    })
+}
+
+fn payload_to_db_migration_remembered_connection(
+    payload: Option<DbMigrationRememberedConnectionPayload>,
+) -> Option<DbMigrationRememberedConnection> {
+    sanitize_db_migration_remembered_connection(payload.map(|value| {
+        DbMigrationRememberedConnection {
+            host: value.host,
+            port: value.port,
+            username: value.username,
+            password: value.password,
+            source_database: value.source_database,
+            target_database: value.target_database,
+        }
+    }))
+}
+
+fn db_migration_remembered_connection_to_payload(
+    connection: Option<DbMigrationRememberedConnection>,
+) -> Option<DbMigrationRememberedConnectionPayload> {
+    sanitize_db_migration_remembered_connection(connection).map(|value| {
+        DbMigrationRememberedConnectionPayload {
+            host: value.host,
+            port: value.port,
+            username: value.username,
+            password: value.password,
+            source_database: value.source_database,
+            target_database: value.target_database,
+        }
+    })
+}
+
+fn clamp_db_migration_window_size_to_monitor(
+    app: &tauri::AppHandle,
+    size: DbMigrationWindowSize,
+) -> DbMigrationWindowSize {
+    let mut next = sanitize_db_migration_window_size(Some(size))
+        .unwrap_or_else(default_db_migration_window_size);
+
+    let monitor = if let Some(window) = app
+        .get_webview_window(PANEL_WINDOW_LABEL)
+        .or_else(|| app.get_webview_window(MAIN_WINDOW_LABEL))
+    {
+        window.current_monitor().ok().flatten()
+    } else {
+        app.primary_monitor().ok().flatten()
+    };
+
+    if let Some(monitor) = monitor {
+        let scale = monitor.scale_factor();
+        let width_limit = (monitor.size().width as f64 / scale - 40.0).floor();
+        let height_limit = (monitor.size().height as f64 / scale - 40.0).floor();
+
+        if width_limit.is_finite() && width_limit > 0.0 {
+            next.width = next
+                .width
+                .min(width_limit.max(DB_MIGRATION_WORKSPACE_MIN_WIDTH));
+        }
+        if height_limit.is_finite() && height_limit > 0.0 {
+            next.height = next
+                .height
+                .min(height_limit.max(DB_MIGRATION_WORKSPACE_MIN_HEIGHT));
+        }
+    }
+
+    next
+}
+
+fn resolve_db_migration_window_size_from_cache(state: &AppState) -> DbMigrationWindowSize {
+    sanitize_db_migration_window_size(state.db_migration_window_size_sync.read().unwrap().clone())
+        .unwrap_or_else(default_db_migration_window_size)
+}
+
+fn resolve_db_migration_window_size(app: &tauri::AppHandle) -> DbMigrationWindowSize {
+    let state = app.state::<AppState>();
+    clamp_db_migration_window_size_to_monitor(app, resolve_db_migration_window_size_from_cache(&state))
 }
 impl Default for PersonalConfig {
     fn default() -> Self {
@@ -243,6 +377,7 @@ impl Default for PersonalConfig {
             hotkey: "Ctrl+Shift+F".into(),
             quick_date_hotkey: "F9".into(),
             sync_window_hotkey: "Shift+S".into(),
+            db_migration_window_hotkey: default_db_migration_window_hotkey(),
             always_on_top: true,
             auto_start: false,
             ui_scale: 1.0,
@@ -274,6 +409,8 @@ impl Default for PersonalConfig {
             sync_profiles: Vec::new(),
             default_sync_profile_id: None,
             last_used_sync_profile_id: None,
+            db_migration_window_size: None,
+            db_migration_last_connection: None,
             auto_check_updates: true,
             last_update_check_at: None,
         }
@@ -343,6 +480,36 @@ fn build_update_check_plan(
 struct WindowPosition {
     x: i32,
     y: i32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DbMigrationWindowSize {
+    width: f64,
+    height: f64,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct DbMigrationRememberedConnection {
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    source_database: String,
+    target_database: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct DbMigrationRememberedConnectionPayload {
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    source_database: String,
+    target_database: String,
+}
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DbMigrationWorkspaceState {
+    hotkey: String,
+    remembered_connection: Option<DbMigrationRememberedConnectionPayload>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DbConfig {
@@ -1282,18 +1449,20 @@ async fn register_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
-    if hotkey_conflicts_with_reserved_db_migration_shortcut(&hotkey) {
-        return Err("主快捷键不能与数据库迁移窗口 Shift+D 冲突".into());
-    }
-    let (previous, quick_date) = {
+    let (previous, quick_date, sync_window_hotkey, db_migration_window_hotkey) = {
         let rt = state.runtime.lock().await;
         (
             rt.registered_hotkey.clone(),
             rt.registered_quick_date_hotkey.clone(),
+            rt.registered_sync_window_hotkey.clone(),
+            rt.registered_db_migration_window_hotkey.clone(),
         )
     };
-    if quick_date.as_deref() == Some(normalized.as_str()) {
-        return Err("主快捷键不能与日期快捷键重复".into());
+    if quick_date.as_deref() == Some(normalized.as_str())
+        || sync_window_hotkey.as_deref() == Some(normalized.as_str())
+        || db_migration_window_hotkey.as_deref() == Some(normalized.as_str())
+    {
+        return Err("主快捷键不能与其他全局快捷键重复".into());
     }
     let manager = app.global_shortcut();
 
@@ -1321,18 +1490,20 @@ async fn register_quick_date_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
-    if hotkey_conflicts_with_reserved_db_migration_shortcut(&hotkey) {
-        return Err("日期快捷键不能与数据库迁移窗口 Shift+D 冲突".into());
-    }
-    let (previous, panel_hotkey) = {
+    let (previous, panel_hotkey, sync_window_hotkey, db_migration_window_hotkey) = {
         let rt = state.runtime.lock().await;
         (
             rt.registered_quick_date_hotkey.clone(),
             rt.registered_hotkey.clone(),
+            rt.registered_sync_window_hotkey.clone(),
+            rt.registered_db_migration_window_hotkey.clone(),
         )
     };
-    if panel_hotkey.as_deref() == Some(normalized.as_str()) {
-        return Err("日期快捷键不能与主快捷键重复".into());
+    if panel_hotkey.as_deref() == Some(normalized.as_str())
+        || sync_window_hotkey.as_deref() == Some(normalized.as_str())
+        || db_migration_window_hotkey.as_deref() == Some(normalized.as_str())
+    {
+        return Err("日期快捷键不能与其他全局快捷键重复".into());
     }
     let manager = app.global_shortcut();
 
@@ -1360,21 +1531,20 @@ async fn register_sync_window_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
-    if hotkey_conflicts_with_reserved_db_migration_shortcut(&hotkey) {
-        return Err("同步工作台快捷键不能与数据库迁移窗口 Shift+D 冲突".into());
-    }
-    let (previous, panel_hotkey, quick_date_hotkey) = {
+    let (previous, panel_hotkey, quick_date_hotkey, db_migration_window_hotkey) = {
         let rt = state.runtime.lock().await;
         (
             rt.registered_sync_window_hotkey.clone(),
             rt.registered_hotkey.clone(),
             rt.registered_quick_date_hotkey.clone(),
+            rt.registered_db_migration_window_hotkey.clone(),
         )
     };
     if panel_hotkey.as_deref() == Some(normalized.as_str())
         || quick_date_hotkey.as_deref() == Some(normalized.as_str())
+        || db_migration_window_hotkey.as_deref() == Some(normalized.as_str())
     {
-        return Err("同步窗口快捷键不能与其他快捷键重复".into());
+        return Err("同步工作台快捷键不能与其他全局快捷键重复".into());
     }
     let manager = app.global_shortcut();
 
@@ -1393,6 +1563,57 @@ async fn register_sync_window_hotkey(
 
     *state.sync_window_hotkey_sync.write().unwrap() = Some(normalized.clone());
     state.runtime.lock().await.registered_sync_window_hotkey = Some(normalized.clone());
+    Ok(normalized)
+}
+
+#[tauri::command]
+async fn register_db_migration_window_hotkey(
+    hotkey: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let normalized = if hotkey.trim().is_empty() {
+        normalize_hotkey_for_plugin(default_db_migration_window_hotkey().as_str())?
+    } else {
+        normalize_hotkey_for_plugin(&hotkey)?
+    };
+
+    let (previous, panel_hotkey, quick_date_hotkey, sync_window_hotkey) = {
+        let rt = state.runtime.lock().await;
+        (
+            rt.registered_db_migration_window_hotkey.clone(),
+            rt.registered_hotkey.clone(),
+            rt.registered_quick_date_hotkey.clone(),
+            rt.registered_sync_window_hotkey.clone(),
+        )
+    };
+
+    if panel_hotkey.as_deref() == Some(normalized.as_str())
+        || quick_date_hotkey.as_deref() == Some(normalized.as_str())
+        || sync_window_hotkey.as_deref() == Some(normalized.as_str())
+    {
+        return Err("数据库迁移工作台快捷键不能与其他全局快捷键重复".into());
+    }
+
+    let manager = app.global_shortcut();
+
+    if previous.as_deref() != Some(normalized.as_str()) {
+        if let Some(ref prev) = previous {
+            let _ = manager.unregister(prev.as_str());
+        }
+
+        manager
+            .register(normalized.as_str())
+            .map_err(|e| format!("数据库迁移工作台快捷键注册失败: {e}"))?;
+    }
+
+    *state.db_migration_window_hotkey_sync.write().unwrap() = Some(normalized.clone());
+
+    let mut rt = state.runtime.lock().await;
+    rt.registered_db_migration_window_hotkey = Some(normalized.clone());
+    rt.config.personal.db_migration_window_hotkey = normalized.clone();
+    save_config_to_disk(&app, &rt.config)?;
+
     Ok(normalized)
 }
 
@@ -1430,12 +1651,9 @@ async fn toggle_sync_workspace_window(app: tauri::AppHandle) -> Result<(), Strin
 #[tauri::command]
 async fn show_db_migration_window(
     app: tauri::AppHandle,
-    state: State<'_, AppState>,
+    _state: State<'_, AppState>,
 ) -> Result<(), String> {
     let window = ensure_db_migration_workspace_window(&app)?;
-    if !state.db_migration_running_sync.load(Ordering::SeqCst) {
-        emit_db_migration_reset(&app);
-    }
     window.show().map_err(|e| e.to_string())?;
     let _ = window.unminimize();
     window.set_focus().map_err(|e| e.to_string())?;
@@ -1474,12 +1692,35 @@ async fn toggle_db_migration_window(
         return Ok(());
     }
 
-    if !running {
-        emit_db_migration_reset(&app);
-    }
     window.show().map_err(|e| e.to_string())?;
     let _ = window.unminimize();
     window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn get_db_migration_workspace_state(
+    state: State<'_, AppState>,
+) -> Result<DbMigrationWorkspaceState, String> {
+    let rt = state.runtime.lock().await;
+    Ok(DbMigrationWorkspaceState {
+        hotkey: rt.config.personal.db_migration_window_hotkey.clone(),
+        remembered_connection: db_migration_remembered_connection_to_payload(
+            rt.config.personal.db_migration_last_connection.clone(),
+        ),
+    })
+}
+
+#[tauri::command]
+async fn save_db_migration_workspace_connection(
+    connection: Option<DbMigrationRememberedConnectionPayload>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut rt = state.runtime.lock().await;
+    rt.config.personal.db_migration_last_connection =
+        payload_to_db_migration_remembered_connection(connection);
+    save_config_to_disk(&app, &rt.config)?;
     Ok(())
 }
 
@@ -1906,10 +2147,58 @@ fn ensure_sync_workspace_window(app: &tauri::AppHandle) -> Result<WebviewWindow,
     Ok(window)
 }
 
+async fn persist_db_migration_window_size(
+    app: tauri::AppHandle,
+    state: AppState,
+) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(DB_MIGRATION_WORKSPACE_WINDOW_LABEL) else {
+        return Ok(());
+    };
+
+    if window.is_maximized().map_err(|e| e.to_string())? {
+        return Ok(());
+    }
+
+    let physical_size = window.inner_size().map_err(|e| e.to_string())?;
+    let scale_factor = window.scale_factor().map_err(|e| e.to_string())?;
+    let logical_size = DbMigrationWindowSize {
+        width: physical_size.width as f64 / scale_factor,
+        height: physical_size.height as f64 / scale_factor,
+    };
+
+    let mut rt = state.runtime.lock().await;
+    rt.config.personal.db_migration_window_size =
+        sanitize_db_migration_window_size(Some(logical_size));
+    *state.db_migration_window_size_sync.write().unwrap() =
+        rt.config.personal.db_migration_window_size.clone();
+    save_config_to_disk(&app, &rt.config)?;
+    Ok(())
+}
+
+fn schedule_db_migration_window_size_save(app: tauri::AppHandle) {
+    let state = app.state::<AppState>().inner().clone();
+    let seq = state
+        .db_migration_resize_seq
+        .fetch_add(1, Ordering::SeqCst)
+        + 1;
+
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+        if state.db_migration_resize_seq.load(Ordering::SeqCst) != seq {
+            return;
+        }
+        if let Err(e) = persist_db_migration_window_size(app.clone(), state.clone()).await {
+            eprintln!("failed to persist db migration workspace size: {e}");
+        }
+    });
+}
+
 fn ensure_db_migration_workspace_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
     if let Some(window) = app.get_webview_window(DB_MIGRATION_WORKSPACE_WINDOW_LABEL) {
         return Ok(window);
     }
+
+    let remembered_size = resolve_db_migration_window_size(app);
 
     let window = WebviewWindowBuilder::new(
         app,
@@ -1917,8 +2206,11 @@ fn ensure_db_migration_workspace_window(app: &tauri::AppHandle) -> Result<Webvie
         WebviewUrl::App("index.html".into()),
     )
     .title("DB Scout Migration")
-    .inner_size(DB_MIGRATION_WORKSPACE_WIDTH, DB_MIGRATION_WORKSPACE_HEIGHT)
-    .min_inner_size(760.0, 560.0)
+    .inner_size(remembered_size.width, remembered_size.height)
+    .min_inner_size(
+        DB_MIGRATION_WORKSPACE_MIN_WIDTH,
+        DB_MIGRATION_WORKSPACE_MIN_HEIGHT,
+    )
     .resizable(true)
     .decorations(false)
     .transparent(true)
@@ -1932,8 +2224,8 @@ fn ensure_db_migration_workspace_window(app: &tauri::AppHandle) -> Result<Webvie
 
     let window_for_events = window.clone();
     let app_handle = app.clone();
-    window.on_window_event(move |event| {
-        if let WindowEvent::CloseRequested { api, .. } = event {
+    window.on_window_event(move |event| match event {
+        WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
             let running = app_handle
                 .state::<AppState>()
@@ -1946,6 +2238,10 @@ fn ensure_db_migration_workspace_window(app: &tauri::AppHandle) -> Result<Webvie
             }
             let _ = window_for_events.hide();
         }
+        WindowEvent::Resized(_) => {
+            schedule_db_migration_window_size_save(app_handle.clone());
+        }
+        _ => {}
     });
 
     Ok(window)
@@ -1986,20 +2282,6 @@ fn ensure_pet_menu_window(app: &tauri::AppHandle) -> Result<WebviewWindow, Strin
     });
 
     Ok(menu)
-}
-
-fn reserved_db_migration_hotkey() -> &'static str {
-    DB_MIGRATION_RESERVED_HOTKEY
-}
-
-fn hotkey_conflicts_with_reserved_db_migration_shortcut(raw: &str) -> bool {
-    let Ok(normalized) = normalize_hotkey_for_plugin(raw) else {
-        return false;
-    };
-    let Ok(reserved) = normalize_hotkey_for_plugin(reserved_db_migration_hotkey()) else {
-        return false;
-    };
-    normalized == reserved
 }
 
 fn normalize_hotkey_for_plugin(raw: &str) -> Result<String, String> {
@@ -2259,9 +2541,6 @@ fn toggle_db_migration_from_global_shortcut(app: tauri::AppHandle) {
                 return;
             }
 
-            if !running {
-                emit_db_migration_reset(&app);
-            }
             let _ = window.show();
             let _ = window.unminimize();
             let _ = window.set_focus();
@@ -2939,10 +3218,10 @@ pub fn run() {
                     let panel_hotkey = state.panel_hotkey_sync.read().unwrap().clone();
                     let quick_date_hotkey = state.quick_date_hotkey_sync.read().unwrap().clone();
                     let sync_window_hotkey = state.sync_window_hotkey_sync.read().unwrap().clone();
-                    let reserved_db_migration_hotkey =
-                        normalize_hotkey_for_plugin(reserved_db_migration_hotkey()).ok();
+                    let db_migration_window_hotkey =
+                        state.db_migration_window_hotkey_sync.read().unwrap().clone();
 
-                    if reserved_db_migration_hotkey.as_deref() == Some(triggered.as_str()) {
+                    if db_migration_window_hotkey.as_deref() == Some(triggered.as_str()) {
                         toggle_db_migration_from_global_shortcut(app.clone());
                         return;
                     }
@@ -2980,22 +3259,23 @@ pub fn run() {
             if loaded.personal.sync_window_hotkey.trim().is_empty() {
                 loaded.personal.sync_window_hotkey = default_sync_window_hotkey();
             }
+            if loaded.personal.db_migration_window_hotkey.trim().is_empty() {
+                loaded.personal.db_migration_window_hotkey =
+                    default_db_migration_window_hotkey();
+            }
+            loaded.personal.db_migration_window_size =
+                sanitize_db_migration_window_size(loaded.personal.db_migration_window_size.take());
+            loaded.personal.db_migration_last_connection = sanitize_db_migration_remembered_connection(
+                loaded.personal.db_migration_last_connection.take(),
+            );
             let pet_position = loaded.personal.pet_position.clone();
-            let reserved_db_migration_hotkey =
-                normalize_hotkey_for_plugin(reserved_db_migration_hotkey())
-                    .expect("reserved db migration hotkey must be valid");
             let registered_hotkey = match normalize_hotkey_for_plugin(&loaded.personal.hotkey) {
                 Ok(shortcut) => {
-                    if reserved_db_migration_hotkey == shortcut {
-                        eprintln!("main hotkey conflicts with reserved db migration hotkey, skipped");
-                        None
-                    } else {
-                        match app.global_shortcut().register(shortcut.as_str()) {
-                            Ok(()) => Some(shortcut),
-                            Err(e) => {
-                                eprintln!("failed to register startup hotkey: {e}");
-                                None
-                            }
+                    match app.global_shortcut().register(shortcut.as_str()) {
+                        Ok(()) => Some(shortcut),
+                        Err(e) => {
+                            eprintln!("failed to register startup hotkey: {e}");
+                            None
                         }
                     }
                 }
@@ -3009,9 +3289,6 @@ pub fn run() {
                     Ok(shortcut) => {
                         if registered_hotkey.as_deref() == Some(shortcut.as_str()) {
                             eprintln!("quick date hotkey is same as main hotkey, skipped");
-                            None
-                        } else if reserved_db_migration_hotkey == shortcut {
-                            eprintln!("quick date hotkey conflicts with reserved db migration hotkey, skipped");
                             None
                         } else {
                             match app.global_shortcut().register(shortcut.as_str()) {
@@ -3033,7 +3310,6 @@ pub fn run() {
                     Ok(shortcut) => {
                         if registered_hotkey.as_deref() == Some(shortcut.as_str())
                             || registered_quick_date_hotkey.as_deref() == Some(shortcut.as_str())
-                            || reserved_db_migration_hotkey == shortcut
                         {
                             eprintln!("sync workspace hotkey conflicts with existing hotkeys, skipped");
                             None
@@ -3052,16 +3328,42 @@ pub fn run() {
                         None
                     }
                 };
-            if let Err(e) = app
-                .global_shortcut()
-                .register(reserved_db_migration_hotkey.as_str())
-            {
-                eprintln!("failed to register reserved db migration hotkey: {e}");
-            }
+            let registered_db_migration_window_hotkey =
+                match normalize_hotkey_for_plugin(&loaded.personal.db_migration_window_hotkey) {
+                    Ok(shortcut) => {
+                        if registered_hotkey.as_deref() == Some(shortcut.as_str())
+                            || registered_quick_date_hotkey.as_deref() == Some(shortcut.as_str())
+                            || registered_sync_window_hotkey.as_deref() == Some(shortcut.as_str())
+                        {
+                            eprintln!(
+                                "db migration workspace hotkey conflicts with existing hotkeys, skipped"
+                            );
+                            None
+                        } else {
+                            match app.global_shortcut().register(shortcut.as_str()) {
+                                Ok(()) => Some(shortcut),
+                                Err(e) => {
+                                    eprintln!(
+                                        "failed to register db migration workspace hotkey: {e}"
+                                    );
+                                    None
+                                }
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("invalid db migration workspace hotkey config: {e}");
+                        None
+                    }
+                };
             // Sync-write hotkey values for the global shortcut handler
             *st.panel_hotkey_sync.write().unwrap() = registered_hotkey.clone();
             *st.quick_date_hotkey_sync.write().unwrap() = registered_quick_date_hotkey.clone();
             *st.sync_window_hotkey_sync.write().unwrap() = registered_sync_window_hotkey.clone();
+            *st.db_migration_window_hotkey_sync.write().unwrap() =
+                registered_db_migration_window_hotkey.clone();
+            *st.db_migration_window_size_sync.write().unwrap() =
+                loaded.personal.db_migration_window_size.clone();
             tauri::async_runtime::block_on(async move {
                 let mut rt = st.runtime.lock().await;
                 rt.config = loaded;
@@ -3069,6 +3371,7 @@ pub fn run() {
                 rt.registered_hotkey = registered_hotkey;
                 rt.registered_quick_date_hotkey = registered_quick_date_hotkey;
                 rt.registered_sync_window_hotkey = registered_sync_window_hotkey;
+                rt.registered_db_migration_window_hotkey = registered_db_migration_window_hotkey;
             });
 
             if let Err(e) = create_system_tray(&app.handle()) {
@@ -3160,12 +3463,15 @@ pub fn run() {
             register_hotkey,
             register_quick_date_hotkey,
             register_sync_window_hotkey,
+            register_db_migration_window_hotkey,
             show_sync_workspace_window,
             hide_sync_workspace_window,
             toggle_sync_workspace_window,
             show_db_migration_window,
             hide_db_migration_window,
             toggle_db_migration_window,
+            get_db_migration_workspace_state,
+            save_db_migration_workspace_connection,
             connect_db_migration_server,
             run_db_migration,
             open_directory_in_explorer,
@@ -3305,10 +3611,33 @@ mod tests {
     }
 
     #[test]
-    fn fixed_db_migration_hotkey_is_reserved_shift_d() {
-        assert_eq!(reserved_db_migration_hotkey(), "Shift+D");
-        assert!(hotkey_conflicts_with_reserved_db_migration_shortcut("Shift+D"));
-        assert!(hotkey_conflicts_with_reserved_db_migration_shortcut("shift+d"));
-        assert!(!hotkey_conflicts_with_reserved_db_migration_shortcut("Shift+S"));
+    fn db_migration_hotkey_defaults_to_shift_d() {
+        assert_eq!(default_db_migration_window_hotkey(), "Shift+D");
+    }
+
+    #[test]
+    fn db_migration_window_size_is_clamped_to_minimum_dimensions() {
+        let size = sanitize_db_migration_window_size(Some(DbMigrationWindowSize {
+            width: 720.0,
+            height: 480.0,
+        }))
+        .expect("size should stay available");
+
+        assert_eq!(size.width, 980.0);
+        assert_eq!(size.height, 660.0);
+    }
+
+    #[test]
+    fn db_migration_window_size_can_be_resolved_from_sync_cache() {
+        let state = AppState::default();
+        *state.db_migration_window_size_sync.write().unwrap() = Some(DbMigrationWindowSize {
+            width: 1240.0,
+            height: 820.0,
+        });
+
+        let size = resolve_db_migration_window_size_from_cache(&state);
+
+        assert_eq!(size.width, 1240.0);
+        assert_eq!(size.height, 820.0);
     }
 }
