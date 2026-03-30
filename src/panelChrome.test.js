@@ -6,8 +6,11 @@ import {
   buildPanelTabs,
   describeTableFolderChip,
   findHighlightRanges,
+  getDefaultTableDialogState,
   normalizeBackgroundOpacity,
   resolveTableDialogKeyAction,
+  shouldShowOrgToolbar,
+  shouldShowPanelTabStrip,
 } from "./panelChrome.js";
 
 test("buildPanelTabs de-duplicates starred tables and appends closed starred tabs after opened tabs", () => {
@@ -113,6 +116,71 @@ test("buildPanelTabs keeps opened tabs in live order and appends closed starred 
       },
     ],
   );
+});
+
+test("shouldShowPanelTabStrip keeps recent/opened shelves visible without a live connection when there is content", () => {
+  assert.equal(
+    shouldShowPanelTabStrip({
+      dbConnected: false,
+      panelTabsCount: 1,
+      recentTablesCount: 0,
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldShowPanelTabStrip({
+      dbConnected: false,
+      panelTabsCount: 0,
+      recentTablesCount: 2,
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldShowPanelTabStrip({
+      dbConnected: false,
+      panelTabsCount: 0,
+      recentTablesCount: 0,
+    }),
+    false,
+  );
+});
+
+test("shouldShowOrgToolbar keeps starred and folder chips visible without a live connection when there is saved content", () => {
+  assert.equal(
+    shouldShowOrgToolbar({
+      dbConnected: false,
+      starredCount: 1,
+      folderCount: 0,
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldShowOrgToolbar({
+      dbConnected: false,
+      starredCount: 0,
+      folderCount: 1,
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldShowOrgToolbar({
+      dbConnected: false,
+      starredCount: 0,
+      folderCount: 0,
+    }),
+    false,
+  );
+});
+
+test("getDefaultTableDialogState keeps backdrop close disabled and leaves fullscreen opt-in", () => {
+  assert.deepEqual(getDefaultTableDialogState(), {
+    fullscreen: false,
+    backdropClosable: false,
+  });
 });
 
 test("normalizeBackgroundOpacity clamps values into the supported range", () => {

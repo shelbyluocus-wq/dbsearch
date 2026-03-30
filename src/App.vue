@@ -12,10 +12,13 @@ import {
   buildPanelTabs,
   describeTableFolderChip,
   findHighlightRanges,
+  getDefaultTableDialogState,
   normalizeBackgroundOpacity,
   panelChromeConstants,
   rankTableSearchCandidates,
   resolveTableDialogKeyAction,
+  shouldShowOrgToolbar,
+  shouldShowPanelTabStrip,
   shouldUseReducedTransparencyMode,
 } from "./panelChrome.js";
 import {
@@ -335,9 +338,10 @@ const SETTINGS_TABS = [
   { id: 'shortcuts',  label: '快捷键', icon: '\u2328' },
   { id: 'appearance', label: '外观', icon: '\u{1F3A8}' },
 ];
+const TABLE_DIALOG_DEFAULTS = getDefaultTableDialogState();
 const tableOpen = ref(false);
 const tableDetailView = ref("hits");
-const tableFullscreen = ref(false);
+const tableFullscreen = ref(TABLE_DIALOG_DEFAULTS.fullscreen);
 const schemaCollapsed = ref(true);
 const dataCollapsed = ref(false);
 
@@ -498,7 +502,7 @@ const config = reactive({
     widget_mode: "tray",
     hotkey: "Ctrl+Shift+F",
     quick_date_hotkey: "F9",
-    sync_window_hotkey: "Shift+S",
+    sync_window_hotkey: "Shift+D",
     always_on_top: true,
     auto_start: false,
     ui_scale: 1.0,
@@ -535,7 +539,7 @@ const config = reactive({
   },
 });
 
-const syncWorkspaceHotkey = ref("Shift+S");
+const syncWorkspaceHotkey = ref("Shift+D");
 const syncWorkspaceProfiles = ref([]);
 const syncWorkspaceDefaultProfileId = ref("");
 const syncWorkspaceLastUsedProfileId = ref("");
@@ -1627,6 +1631,20 @@ const panelTabs = computed(() =>
     starredTables: [...starredTables],
     tableTabs: tableTabs.value,
     activeTableTabId: activeTableTabId.value,
+  }),
+);
+const showPanelTabStrip = computed(() =>
+  shouldShowPanelTabStrip({
+    dbConnected: dbConnected.value,
+    panelTabsCount: panelTabs.value.length,
+    recentTablesCount: recentTables.value.length,
+  }),
+);
+const showOrgToolbar = computed(() =>
+  shouldShowOrgToolbar({
+    dbConnected: dbConnected.value,
+    starredCount: starredTables.size,
+    folderCount: tableFolders.value.length,
   }),
 );
 
@@ -2767,6 +2785,10 @@ function schedulePanelTabsCompressionMeasure() {
   panelTabsController.scheduleCompressionMeasure();
 }
 
+function applyDefaultTableDialogState() {
+  tableFullscreen.value = TABLE_DIALOG_DEFAULTS.fullscreen;
+}
+
 async function syncTableFullscreenForSwitch(targetFullscreen) {
   if (targetFullscreen) {
     if (!tableFullscreen.value) {
@@ -2787,6 +2809,7 @@ async function activateTableTab(tabId, { skipSnapshot = false } = {}) {
   hitCollectToken += 1;
   activeTableTabId.value = next.id;
   restoreLiveStateFromTableSnapshot(next);
+  applyDefaultTableDialogState();
   tableOpen.value = true;
   if (tableDetailView.value === "hits" && allHitRows.value.length === 0 && tableView.totalRows > 0) {
     collectAllHitRows().catch(() => {});
@@ -2832,6 +2855,7 @@ async function openOrActivateTableTab(tableName, rowIndex = null, columnName = n
 
   resultZoomOpen.value = false;
   restoreLiveStateFromTableSnapshot(nextTab);
+  applyDefaultTableDialogState();
   tableOpen.value = true;
   await loadTablePage({ resetFocus: true, clearHitCache: true });
   if (tableDetailView.value === "hits") {
@@ -6897,7 +6921,7 @@ function escapeHtml(str) {
         </div>
       </header>
 
-      <div v-if="dbConnected" class="panel-tab-strip-wrap">
+      <div v-if="showPanelTabStrip" class="panel-tab-strip-wrap">
         <section
           ref="panelTabsRef"
           :class="['panel-tab-strip', 'panel-tab-strip--demo', { 'is-compressed': panelTabsCompressed }]"
@@ -7018,7 +7042,7 @@ function escapeHtml(str) {
       </section>
 
       <!-- 表整理工具栏 -->
-      <div v-if="dbConnected" class="org-toolbar org-toolbar--demo" @click.self="closeAllOrgMenus">
+      <div v-if="showOrgToolbar" class="org-toolbar org-toolbar--demo" @click.self="closeAllOrgMenus">
         <div class="org-folder-chips">
           <button :class="['org-chip', { active: activeFolder === 'all' }]" @click="activeFolder = 'all'; syncSummaryForDefaultTableBrowse()">全部</button>
           <button :class="['org-chip org-chip-star', { active: activeFolder === 'starred' }]" @click="activeFolder = 'starred'; syncSummaryForDefaultTableBrowse()">
@@ -7536,7 +7560,7 @@ function escapeHtml(str) {
       </button>
       <button class="pet-menu-btn" @click="contextAction('sync')">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l3.5 3.5-1.414 1.414L13 7.828V15h-2V7.828L9.914 8.914 8.5 7.5 12 4Zm0 16l-3.5-3.5 1.414-1.414L11 16.172V9h2v7.172l1.086-1.086 1.414 1.414L12 20Zm7-10h2v8a2 2 0 0 1-2 2h-4v-2h4v-8ZM3 6a2 2 0 0 1 2-2h4v2H5v8H3V6Z" fill="currentColor"/></svg>
-        <span>文件同步</span>
+        <span>数据库同步</span>
       </button>
       <button class="pet-menu-btn" @click="contextAction('settings')">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.036-.31.06-.62.06-.94s-.024-.63-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.12 7.12 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 14.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54c-.58.23-1.12.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L3.7 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.046.31-.07.62-.07.94s.024.63.07.94L3.82 14.16a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.05.72 1.63.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54c.58-.23 1.12-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" fill="currentColor"/></svg>
@@ -7604,7 +7628,7 @@ function escapeHtml(str) {
     </section>
   </div>
 
-  <div v-if="tableOpen" class="dialog-mask" @mousedown.self="closeTableDialog">
+  <div v-if="tableOpen" class="dialog-mask">
     <section ref="tableModalRef" :class="[
       'modal-card', 'wide', 'table-modal',
       { fullscreen: tableFullscreen },

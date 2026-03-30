@@ -1,4 +1,4 @@
-const DEFAULT_SYNC_WINDOW_HOTKEY = "Shift+S";
+const DEFAULT_SYNC_WINDOW_HOTKEY = "Shift+D";
 const STATUS_LABELS = {
   idle: "未执行",
   running: "进行中",

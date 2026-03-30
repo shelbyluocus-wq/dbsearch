@@ -194,6 +194,31 @@ export function buildPanelTabs({
   return [...merged, ...closedStarred];
 }
 
+export function shouldShowPanelTabStrip({
+  dbConnected = false,
+  panelTabsCount = 0,
+  recentTablesCount = 0,
+} = {}) {
+  if (dbConnected) return true;
+  return Number(panelTabsCount) > 0 || Number(recentTablesCount) > 0;
+}
+
+export function shouldShowOrgToolbar({
+  dbConnected = false,
+  starredCount = 0,
+  folderCount = 0,
+} = {}) {
+  if (dbConnected) return true;
+  return Number(starredCount) > 0 || Number(folderCount) > 0;
+}
+
+export function getDefaultTableDialogState() {
+  return {
+    fullscreen: false,
+    backdropClosable: false,
+  };
+}
+
 export function describeTableFolderChip(tableName, tableFolders = []) {
   const normalizedTable = normalizeTableName(tableName);
   if (!normalizedTable) {

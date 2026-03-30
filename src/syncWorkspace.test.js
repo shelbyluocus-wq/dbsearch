@@ -10,7 +10,7 @@ import {
   resolveSyncProfileSelection,
 } from "./syncWorkspace.js";
 
-test("normalizeSyncWorkspaceSettings falls back to Shift+S and preserves stored profiles", () => {
+test("normalizeSyncWorkspaceSettings falls back to Shift+D and preserves stored profiles", () => {
   const settings = normalizeSyncWorkspaceSettings({
     sync_window_hotkey: "",
     sync_profiles: [
@@ -24,7 +24,7 @@ test("normalizeSyncWorkspaceSettings falls back to Shift+S and preserves stored 
     ],
   });
 
-  assert.equal(settings.syncWindowHotkey, "Shift+S");
+  assert.equal(settings.syncWindowHotkey, "Shift+D");
   assert.equal(settings.profiles.length, 1);
   assert.equal(settings.profiles[0].name, "客户端配置");
 });

@@ -69,11 +69,11 @@ test("shouldResetDbMigrationWorkspaceOnShow resets idle states but not running w
   assert.equal(shouldResetDbMigrationWorkspaceOnShow({ phase: "running", running: true }), false);
 });
 
-test("DEFAULT_DB_MIGRATION_WINDOW_HOTKEY falls back to Shift+D", () => {
-  assert.equal(DEFAULT_DB_MIGRATION_WINDOW_HOTKEY, "Shift+D");
-  assert.equal(normalizeDbMigrationWindowHotkey(""), "Shift+D");
-  assert.equal(normalizeDbMigrationWindowHotkey("Shift"), "Shift+D");
-  assert.equal(normalizeDbMigrationWindowHotkey("shift+d"), "Shift+D");
+test("DEFAULT_DB_MIGRATION_WINDOW_HOTKEY falls back to Shift+S", () => {
+  assert.equal(DEFAULT_DB_MIGRATION_WINDOW_HOTKEY, "Shift+S");
+  assert.equal(normalizeDbMigrationWindowHotkey(""), "Shift+S");
+  assert.equal(normalizeDbMigrationWindowHotkey("Shift"), "Shift+S");
+  assert.equal(normalizeDbMigrationWindowHotkey("shift+s"), "Shift+S");
 });
 
 test("buildDbMigrationHeadline stays compact and focuses on source-target selection", () => {

@@ -2336,11 +2336,12 @@ mark {
 .table-modal {
   display: flex;
   flex-direction: column;
-  height: min(82vh, 760px);
-  resize: both;
+  width: calc(100vw - 12px);
+  height: calc(100vh - 12px);
+  resize: none;
   overflow: hidden;
-  min-width: 500px;
-  min-height: 400px;
+  min-width: min(500px, calc(100vw - 12px));
+  min-height: min(400px, calc(100vh - 12px));
   max-width: calc(100vw - 12px);
   max-height: calc(100vh - 12px);
   background: rgba(245, 245, 247, 0.96);
@@ -8309,8 +8310,8 @@ mark {
 }
 
 .panel-tab-chip[data-tab-kind="opened"] {
-  flex: 1 1 156px;
-  min-width: 112px;
+  flex: 0 1 auto;
+  min-width: 44px;
   max-width: 220px;
 }
 
@@ -8388,14 +8389,14 @@ mark {
 }
 
 .panel-tab-strip.is-compressed .panel-tab-chip[data-tab-kind="opened"] {
-  flex-basis: 124px;
-  min-width: 84px;
+  flex-basis: auto;
+  min-width: 44px;
   max-width: 168px;
   padding: 0 8px;
 }
 
 .panel-tab-strip.is-compressed .panel-tab-chip.active[data-tab-kind="opened"] {
-  flex-basis: 144px;
+  max-width: 184px;
 }
 
 .recent-tabs-arrow {

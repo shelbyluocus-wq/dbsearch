@@ -105,7 +105,7 @@ const DB_MIGRATION_WORKSPACE_WIDTH: f64 = 1120.0;
 const DB_MIGRATION_WORKSPACE_HEIGHT: f64 = 760.0;
 const DB_MIGRATION_WORKSPACE_MIN_WIDTH: f64 = 980.0;
 const DB_MIGRATION_WORKSPACE_MIN_HEIGHT: f64 = 660.0;
-const DEFAULT_DB_MIGRATION_WINDOW_HOTKEY: &str = "Shift+D";
+const DEFAULT_DB_MIGRATION_WINDOW_HOTKEY: &str = "Shift+S";
 const TRAY_ICON_ID: &str = "main_tray";
 const TRAY_MENU_OPEN_PANEL_ID: &str = "tray-open-panel";
 const TRAY_MENU_SHOW_PET_ID: &str = "tray-show-pet";
@@ -249,7 +249,7 @@ fn default_always_on_top_hotkey() -> String {
     "P".into()
 }
 fn default_sync_window_hotkey() -> String {
-    "Shift+S".into()
+    "Shift+D".into()
 }
 fn default_db_migration_window_hotkey() -> String {
     DEFAULT_DB_MIGRATION_WINDOW_HOTKEY.into()
@@ -486,7 +486,7 @@ impl Default for PersonalConfig {
             widget_mode: "tray".into(),
             hotkey: "Ctrl+Shift+F".into(),
             quick_date_hotkey: "F9".into(),
-            sync_window_hotkey: "Shift+S".into(),
+            sync_window_hotkey: "Shift+D".into(),
             db_migration_window_hotkey: default_db_migration_window_hotkey(),
             always_on_top: true,
             auto_start: false,
@@ -3776,8 +3776,13 @@ mod tests {
     }
 
     #[test]
-    fn db_migration_hotkey_defaults_to_shift_d() {
-        assert_eq!(default_db_migration_window_hotkey(), "Shift+D");
+    fn sync_hotkey_defaults_to_shift_d() {
+        assert_eq!(default_sync_window_hotkey(), "Shift+D");
+    }
+
+    #[test]
+    fn db_migration_hotkey_defaults_to_shift_s() {
+        assert_eq!(default_db_migration_window_hotkey(), "Shift+S");
     }
 
     #[test]

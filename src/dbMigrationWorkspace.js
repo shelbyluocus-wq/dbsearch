@@ -1,6 +1,6 @@
 import { normalizeHotkeyDisplay } from "./syncWorkspace.js";
 
-export const DEFAULT_DB_MIGRATION_WINDOW_HOTKEY = "Shift+D";
+export const DEFAULT_DB_MIGRATION_WINDOW_HOTKEY = "Shift+S";
 export const FIXED_DB_MIGRATION_HOTKEY = DEFAULT_DB_MIGRATION_WINDOW_HOTKEY;
 const DB_MIGRATION_PROFILE_ID_PREFIX = "db-migration-profile-";
 

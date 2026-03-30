@@ -73,3 +73,21 @@ test("runPetMenuAction still hides the menu when the backend hide command fails"
     "invoke:hide_pet_menu",
   ]);
 });
+
+test("runPetMenuAction sync opens the sync workspace and then hides the pet menu", async () => {
+  const calls = [];
+
+  await runPetMenuAction("sync", {
+    isTauriWindow: true,
+    invoke: async (command) => {
+      calls.push(`invoke:${command}`);
+    },
+    getWindowByLabel: async () => null,
+    setPetHiddenForSession: () => {},
+  });
+
+  assert.deepEqual(calls, [
+    "invoke:toggle_sync_workspace_window",
+    "invoke:hide_pet_menu",
+  ]);
+});
