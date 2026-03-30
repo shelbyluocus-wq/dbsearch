@@ -3,11 +3,14 @@ import assert from "node:assert/strict";
 
 import * as panelChrome from "./panelChrome.js";
 import {
+  buildFavoritesMenuItems,
   buildPanelTabs,
   describeTableFolderChip,
   findHighlightRanges,
   getDefaultTableDialogState,
+  getTableSortMeta,
   normalizeBackgroundOpacity,
+  resolveNextTableSortMode,
   resolveTableDialogKeyAction,
   shouldShowOrgToolbar,
   shouldShowPanelTabStrip,
@@ -113,6 +116,64 @@ test("buildPanelTabs keeps opened tabs in live order and appends closed starred 
         active: false,
         starred: true,
         opened: false,
+      },
+    ],
+  );
+});
+
+test("getTableSortMeta normalizes invalid sort modes to the default name ascending state", () => {
+  assert.deepEqual(getTableSortMeta("comment_desc"), {
+    column: "comment",
+    direction: "desc",
+  });
+  assert.deepEqual(getTableSortMeta("weird"), {
+    column: "name",
+    direction: "asc",
+  });
+});
+
+test("resolveNextTableSortMode switches columns to ascending first, then toggles direction", () => {
+  assert.equal(resolveNextTableSortMode("name_asc", "name"), "name_desc");
+  assert.equal(resolveNextTableSortMode("name_desc", "name"), "name_asc");
+  assert.equal(resolveNextTableSortMode("name_desc", "comment"), "comment_asc");
+  assert.equal(resolveNextTableSortMode("comment_asc", "comment"), "comment_desc");
+});
+
+test("buildFavoritesMenuItems returns the starred entry first and then valid folders", () => {
+  assert.deepEqual(
+    buildFavoritesMenuItems({
+      starredTables: ["users", "orders"],
+      tableFolders: [
+        { id: "folder-a", name: "核心", tables: ["users"] },
+        { id: "folder-b", name: "报表", tables: ["orders", "invoices"] },
+        { id: "", name: "ignored", tables: ["noop"] },
+      ],
+      activeFolder: "folder-b",
+    }),
+    [
+      {
+        key: "starred",
+        kind: "starred",
+        id: "starred",
+        label: "星标",
+        tableCount: 2,
+        active: false,
+      },
+      {
+        key: "folder:folder-a",
+        kind: "folder",
+        id: "folder-a",
+        label: "核心",
+        tableCount: 1,
+        active: false,
+      },
+      {
+        key: "folder:folder-b",
+        kind: "folder",
+        id: "folder-b",
+        label: "报表",
+        tableCount: 2,
+        active: true,
       },
     ],
   );

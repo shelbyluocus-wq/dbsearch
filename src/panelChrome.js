@@ -194,6 +194,58 @@ export function buildPanelTabs({
   return [...merged, ...closedStarred];
 }
 
+export function getTableSortMeta(sortMode = "name_asc") {
+  const [rawColumn, rawDirection] = String(sortMode || "name_asc").toLowerCase().split("_");
+  const column = rawColumn === "comment" ? "comment" : "name";
+  const direction = rawDirection === "desc" ? "desc" : "asc";
+  return { column, direction };
+}
+
+export function resolveNextTableSortMode(currentMode = "name_asc", column = "name") {
+  const targetColumn = column === "comment" ? "comment" : "name";
+  const current = getTableSortMeta(currentMode);
+  if (current.column !== targetColumn) return `${targetColumn}_asc`;
+  return `${targetColumn}_${current.direction === "asc" ? "desc" : "asc"}`;
+}
+
+export function buildFavoritesMenuItems({
+  starredTables = [],
+  tableFolders = [],
+  activeFolder = "all",
+} = {}) {
+  const starredCount = Array.isArray(starredTables)
+    ? starredTables.filter(Boolean).length
+    : 0;
+  const folders = (Array.isArray(tableFolders) ? tableFolders : [])
+    .map((folder) => {
+      const id = String(folder?.id || "").trim();
+      const name = String(folder?.name || "").trim();
+      const tables = Array.isArray(folder?.tables) ? folder.tables.filter(Boolean) : [];
+      if (!id || !name) return null;
+      return {
+        key: `folder:${id}`,
+        kind: "folder",
+        id,
+        label: name,
+        tableCount: tables.length,
+        active: activeFolder === id,
+      };
+    })
+    .filter(Boolean);
+
+  return [
+    {
+      key: "starred",
+      kind: "starred",
+      id: "starred",
+      label: "星标",
+      tableCount: starredCount,
+      active: activeFolder === "starred",
+    },
+    ...folders,
+  ];
+}
+
 export function shouldShowPanelTabStrip({
   dbConnected = false,
   panelTabsCount = 0,

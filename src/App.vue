@@ -9,15 +9,17 @@ import "./styles.css";
 import DbMigrationWorkspace from "./DbMigrationWorkspace.vue";
 import { WeatherEngine } from "./weatherEngine.js";
 import {
+  buildFavoritesMenuItems,
   buildPanelTabs,
   describeTableFolderChip,
   findHighlightRanges,
   getDefaultTableDialogState,
+  getTableSortMeta,
   normalizeBackgroundOpacity,
   panelChromeConstants,
   rankTableSearchCandidates,
+  resolveNextTableSortMode,
   resolveTableDialogKeyAction,
-  shouldShowOrgToolbar,
   shouldShowPanelTabStrip,
   shouldUseReducedTransparencyMode,
 } from "./panelChrome.js";
@@ -38,7 +40,6 @@ import {
   resolveSyncTargetDirectoryOpenRequest,
   resolveSyncProfileSelection,
 } from "./syncWorkspace.js";
-import { formatAppDisplayTitle } from "./appIdentity.js";
 import {
   normalizeUpdateSettings,
   preserveOpaqueInstance,
@@ -71,7 +72,7 @@ import {
 } from "./tableTabDrag.js";
 
 const APP_VERSION = __APP_VERSION__;
-const APP_WINDOW_TITLE = formatAppDisplayTitle(APP_VERSION);
+const VERSION_DISPLAY_LABEL = `V${APP_VERSION}`;
 
 function createTabStripDragState() {
   return {
@@ -337,6 +338,7 @@ const SETTINGS_TABS = [
   { id: 'connection', label: '连接', icon: '\u{1F5C4}' },
   { id: 'shortcuts',  label: '快捷键', icon: '\u2328' },
   { id: 'appearance', label: '外观', icon: '\u{1F3A8}' },
+  { id: 'version', label: '版本号', icon: VERSION_DISPLAY_LABEL },
 ];
 const TABLE_DIALOG_DEFAULTS = getDefaultTableDialogState();
 const tableOpen = ref(false);
@@ -734,7 +736,7 @@ const sortMode = ref("name_asc"); // name_asc | name_desc | comment_asc | commen
 const activeFolder = ref("all"); // "all" | "starred" | folder id
 const starredTables = reactive(new Set());
 const tableFolders = ref([]); // [{ id, name, tables: [] }]
-const sortMenuOpen = ref(false);
+const favoritesDropdownOpen = ref(false);
 const folderCtxTarget = ref(null); // folder id being right-clicked
 const folderCtxPos = reactive({ x: 0, y: 0 });
 const folderRenameId = ref(null);
@@ -745,6 +747,8 @@ const itemCtxTableName = ref("");
 const itemCtxSubMenuOpen = ref(false);
 const newFolderDialogOpen = ref(false);
 const newFolderName = ref("");
+const tableSortFlashColumn = ref("");
+let tableSortFlashTimer = null;
 const slashModeOpen = ref(false);
 const slashQuery = ref("");
 const slashActiveIndex = ref(0);
@@ -1440,7 +1444,13 @@ function addToRecentTables(tableName, tableComment) {
   saveRecentTables();
 }
 function toggleRecentTabsDropdown() {
+  favoritesDropdownOpen.value = false;
   recentTabsDropdownOpen.value = !recentTabsDropdownOpen.value;
+}
+
+function toggleFavoritesDropdown() {
+  recentTabsDropdownOpen.value = false;
+  favoritesDropdownOpen.value = !favoritesDropdownOpen.value;
 }
 
 const recentTablesGrouped = computed(() => {
@@ -1464,6 +1474,14 @@ const recentTablesGrouped = computed(() => {
 
   return groups;
 });
+
+const favoritesMenuItems = computed(() =>
+  buildFavoritesMenuItems({
+    starredTables: [...starredTables],
+    tableFolders: tableFolders.value,
+    activeFolder: activeFolder.value,
+  }),
+);
 
 function toggleStar(tableName) {
   if (starredTables.has(tableName)) starredTables.delete(tableName);
@@ -1588,7 +1606,8 @@ const tableTabCount = computed(() => (isKeywordEmpty.value ? defaultTableResults
 
 const sortedSearchTableResults = computed(() => {
   if (isKeywordEmpty.value) return defaultTableResults.value;
-  const base = applyFolderFilter(
+  const base = rankTableSearchCandidates(
+    keyword.value,
     (Array.isArray(tableOptions.value) ? tableOptions.value : []).map((item) => ({
       ...item,
       match_type: "TableName",
@@ -1597,7 +1616,7 @@ const sortedSearchTableResults = computed(() => {
       _type: "table",
     })),
   );
-  return applyStarPinning(rankTableSearchCandidates(keyword.value, base));
+  return applyStarPinning(sortTableItems(applyFolderFilter(base), sortMode.value));
 });
 const sortedSearchColumnResults = computed(() => {
   const base = results.column.map((i) => ({ ...i, _type: "column" }));
@@ -1640,13 +1659,21 @@ const showPanelTabStrip = computed(() =>
     recentTablesCount: recentTables.value.length,
   }),
 );
-const showOrgToolbar = computed(() =>
-  shouldShowOrgToolbar({
-    dbConnected: dbConnected.value,
-    starredCount: starredTables.size,
-    folderCount: tableFolders.value.length,
-  }),
+const showHeaderShelf = computed(() =>
+  dbConnected.value ||
+  panelTabs.value.length > 0 ||
+  recentTables.value.length > 0 ||
+  starredTables.size > 0 ||
+  tableFolders.value.length > 0,
 );
+const tableSortMeta = computed(() => getTableSortMeta(sortMode.value));
+const showTableScopeBar = computed(() => activeFolder.value !== "all");
+const showTableResultHeader = computed(() => {
+  if (isKeywordEmpty.value) {
+    return activeResultTab.value === "全部" || activeResultTab.value === "表名";
+  }
+  return activeResultTab.value === "表名";
+});
 
 const tableTabsController = createTabStripController({
   isEnabled: () => tableOpen.value,
@@ -2211,20 +2238,32 @@ function openItemCtxMenu(event, tableName) {
   itemCtxPos.y = event.clientY;
   itemCtxOpen.value = true;
   itemCtxSubMenuOpen.value = false;
-  sortMenuOpen.value = false;
+  favoritesDropdownOpen.value = false;
   folderCtxTarget.value = null;
 }
 function closeItemCtxMenu() {
   itemCtxOpen.value = false;
   itemCtxSubMenuOpen.value = false;
 }
-function toggleSortMenu() {
-  sortMenuOpen.value = !sortMenuOpen.value;
-}
 function selectSortMode(mode) {
   sortMode.value = mode;
-  sortMenuOpen.value = false;
   saveOrgData();
+  syncSummaryForDefaultTableBrowse();
+}
+function triggerTableSortFlash(column) {
+  tableSortFlashColumn.value = column;
+  if (tableSortFlashTimer) clearTimeout(tableSortFlashTimer);
+  tableSortFlashTimer = window.setTimeout(() => {
+    if (tableSortFlashColumn.value === column) tableSortFlashColumn.value = "";
+  }, 180);
+}
+function toggleTableSort(column) {
+  triggerTableSortFlash(column);
+  selectSortMode(resolveNextTableSortMode(sortMode.value, column));
+}
+function selectFavoriteFilter(target) {
+  activeFolder.value = target;
+  favoritesDropdownOpen.value = false;
   syncSummaryForDefaultTableBrowse();
 }
 function openFolderCtxMenu(event, folderId) {
@@ -2233,7 +2272,7 @@ function openFolderCtxMenu(event, folderId) {
   folderCtxTarget.value = folderId;
   folderCtxPos.x = event.clientX;
   folderCtxPos.y = event.clientY;
-  sortMenuOpen.value = false;
+  favoritesDropdownOpen.value = true;
   itemCtxOpen.value = false;
 }
 function closeFolderCtxMenu() {
@@ -2271,26 +2310,26 @@ function handleItemCtxRemoveFromFolder() {
 }
 function handleNewFolderFromCtx() {
   closeItemCtxMenu();
+  favoritesDropdownOpen.value = false;
+  newFolderDialogOpen.value = true;
+  newFolderName.value = "";
+}
+function handleNewFolderFromFavorites() {
+  favoritesDropdownOpen.value = false;
   newFolderDialogOpen.value = true;
   newFolderName.value = "";
 }
 function handleDeleteFolder(folderId) {
   deleteFolder(folderId);
   closeFolderCtxMenu();
+  syncSummaryForDefaultTableBrowse();
 }
 function closeAllOrgMenus() {
-  sortMenuOpen.value = false;
+  favoritesDropdownOpen.value = false;
   recentTabsDropdownOpen.value = false;
   closeItemCtxMenu();
   closeFolderCtxMenu();
 }
-const SORT_OPTIONS = [
-  { key: "name_asc",    label: "表名 A → Z" },
-  { key: "name_desc",   label: "表名 Z → A" },
-  { key: "comment_asc", label: "备注 A → Z" },
-  { key: "comment_desc",label: "备注 Z → A" },
-];
-const sortLabel = computed(() => SORT_OPTIONS.find((o) => o.key === sortMode.value)?.label || "排序");
 const availableIdleOptions = computed(() => {
   const skin = settingsDraft.petSkin;
   const ssDef = SPRITE_SHEET_IDLE_STATES[skin];
@@ -3062,7 +3101,7 @@ function onTableCommandInputKeydown(event) {
 }
 
 async function fetchWeather() {
-  if (!isTauriWindow || !weatherEnabled.value) return;
+  if (!isTauriWindow) return;
   try {
     const info = await invoke('get_weather');
     const normalizedCategory = normalizeWeatherCategory(info.category);
@@ -3083,6 +3122,19 @@ async function fetchWeather() {
     }
   } catch (e) {
     console.warn('[Weather] fetch failed:', e);
+  }
+}
+
+function ensureWeatherRefreshTimer() {
+  if (!weatherRefreshTimer) {
+    weatherRefreshTimer = setInterval(fetchWeather, WEATHER_REFRESH_MS);
+  }
+}
+
+function stopWeatherRefreshTimer() {
+  if (weatherRefreshTimer) {
+    clearInterval(weatherRefreshTimer);
+    weatherRefreshTimer = null;
   }
 }
 
@@ -3181,8 +3233,6 @@ function destroyWeatherEngine() {
     weatherEngine.destroy();
     weatherEngine = null;
   }
-  clearInterval(weatherRefreshTimer);
-  weatherRefreshTimer = null;
 }
 
 onMounted(async () => {
@@ -3238,15 +3288,15 @@ onMounted(async () => {
       }
     }
 
-    // ── Weather engine init ──
+    // ── Weather data + weather engine init ──
     weatherEnabled.value = config.personal.weather_enabled !== false;
+    fetchWeather();
+    ensureWeatherRefreshTimer();
     if (weatherEnabled.value) {
       themeId.value = 'azure'
       document.documentElement.dataset.theme = 'azure'
       await nextTick();
       initWeatherEngine();
-      fetchWeather();
-      weatherRefreshTimer = setInterval(fetchWeather, WEATHER_REFRESH_MS);
     }
     // Sky time auto-update every 5 minutes
     skyTimeTimer = setInterval(() => {
@@ -3387,7 +3437,9 @@ onMounted(async () => {
 onBeforeUnmount(() => {
   stopSpriteSheetAnimation();
   destroyWeatherEngine();
+  stopWeatherRefreshTimer();
   if (skyTimeTimer) { clearInterval(skyTimeTimer); skyTimeTimer = null; }
+  if (tableSortFlashTimer) { clearTimeout(tableSortFlashTimer); tableSortFlashTimer = null; }
   if (isPanelWindow.value) {
     detachPanelListeners();
     clearIdlePreview();
@@ -4569,16 +4621,14 @@ function closeSettings() {
   // Restore weather state if toggled during settings without saving
   if (_weatherBeforeSettings !== weatherEnabled.value) {
     weatherEnabled.value = _weatherBeforeSettings;
+    fetchWeather();
+    ensureWeatherRefreshTimer();
     if (_weatherBeforeSettings) {
       themeId.value = 'azure'
       document.documentElement.dataset.theme = 'azure'
       nextTick().then(() => {
         if (!weatherEngine) {
           initWeatherEngine();
-          fetchWeather();
-          if (!weatherRefreshTimer) {
-            weatherRefreshTimer = setInterval(fetchWeather, WEATHER_REFRESH_MS);
-          }
         }
       });
     } else {
@@ -4694,16 +4744,14 @@ async function saveSettings() {
   config.personal.reduce_transparency_mode = !!settingsDraft.reduceTransparencyMode;
   config.personal.auto_check_updates = !!settingsDraft.autoCheckUpdates;
   weatherEnabled.value = !!settingsDraft.weatherEnabled;
+  fetchWeather();
+  ensureWeatherRefreshTimer();
   if (weatherEnabled.value) {
     themeId.value = 'azure'
     document.documentElement.dataset.theme = 'azure'
     await nextTick();
     if (!weatherEngine) {
       initWeatherEngine();
-      fetchWeather();
-      if (!weatherRefreshTimer) {
-        weatherRefreshTimer = setInterval(fetchWeather, WEATHER_REFRESH_MS);
-      }
     }
   } else {
     destroyWeatherEngine();
@@ -6903,8 +6951,146 @@ function escapeHtml(str) {
           <button class="traffic-btn traffic-yellow" title="最小化" @click="panelMinimize"></button>
           <button class="traffic-btn traffic-green" title="最大化/还原" @click="panelToggleMaximize"></button>
         </div>
-        <div class="title-drag"></div>
-        <span class="window-title" @pointerdown.stop @dblclick.stop style="cursor:default">{{ APP_WINDOW_TITLE }}</span>
+        <div v-if="showHeaderShelf" class="titlebar-shelf-wrap" @click.self="closeAllOrgMenus">
+          <div class="titlebar-shelf-controls">
+            <div class="titlebar-popover-wrap">
+              <button
+                :class="['titlebar-shelf-btn', { active: recentTabsDropdownOpen }]"
+                :title="'最近打开'"
+                aria-label="最近打开"
+                @pointerdown.stop
+                @click.stop="toggleRecentTabsDropdown"
+              >
+                <svg class="titlebar-shelf-icon titlebar-shelf-icon--search" viewBox="0 0 1024 1024" aria-hidden="true">
+                  <path d="M713.088 582.826667l49.152-40.96 106.538667 127.829333-49.194667 40.96zM162.986667 207.786667h170.666666v64h-170.666666zM162.986667 506.026667h170.666666v64h-170.666666zM178.346667 804.266667h682.666666v64h-682.666666z" fill="currentColor"></path>
+                  <path d="M614.826667 646.4c-135.253333 0-245.333333-110.08-245.333334-245.333333s110.08-245.333333 245.333334-245.333334 245.333333 110.08 245.333333 245.333334-110.08 245.333333-245.333333 245.333333z m0-426.666667c-99.84 0-181.333333 81.493333-181.333334 181.333334s81.493333 181.333333 181.333334 181.333333 181.333333-81.493333 181.333333-181.333333c0-100.266667-81.493333-181.333333-181.333333-181.333334z" fill="currentColor"></path>
+                </svg>
+              </button>
+              <Transition name="recent-dropdown">
+                <div v-if="recentTabsDropdownOpen" class="recent-tabs-dropdown titlebar-dropdown-panel" @click.stop>
+                  <div class="recent-tabs-header">
+                    <span>最近打开</span>
+                    <button class="recent-tabs-close" @click="recentTabsDropdownOpen = false">✕</button>
+                  </div>
+                  <div v-if="recentTables.length === 0" class="recent-tabs-empty">暂无最近打开的表</div>
+                  <template v-for="group in recentTablesGrouped" :key="group.folderName || '_ungrouped'">
+                    <div v-if="group.folderName" class="recent-tabs-group-header">{{ group.folderName }}</div>
+                    <button
+                      v-for="item in group.tables" :key="item.tableName"
+                      class="recent-tabs-item"
+                      @click="openOrActivateTableTab(item.tableName); recentTabsDropdownOpen = false"
+                    >
+                      <span v-if="starredTables.has(item.tableName)" class="recent-tabs-star">★</span>
+                      <span class="recent-tabs-name">{{ item.tableName }}</span>
+                      <span class="recent-tabs-comment">{{ item.tableComment || '' }}</span>
+                    </button>
+                  </template>
+                </div>
+              </Transition>
+            </div>
+
+            <div class="titlebar-popover-wrap">
+              <button
+                :class="['titlebar-shelf-btn', { active: favoritesDropdownOpen || activeFolder !== 'all', 'is-filtered': activeFolder !== 'all' }]"
+                :title="activeFolder === 'all' ? '收藏夹' : `收藏夹：${activeFolderName}`"
+                aria-label="收藏夹"
+                @pointerdown.stop
+                @click.stop="toggleFavoritesDropdown"
+              >
+                <svg class="titlebar-shelf-icon" viewBox="0 0 44 44" aria-hidden="true">
+                  <path d="M6.5 13.5a3 3 0 0 1 3-3h8l3 3h14a3 3 0 0 1 3 3v14a3 3 0 0 1-3 3h-25a3 3 0 0 1-3-3z" fill="none" stroke="currentColor" stroke-width="3" stroke-linejoin="round"></path>
+                </svg>
+                <span v-if="activeFolder !== 'all'" class="titlebar-shelf-indicator"></span>
+              </button>
+              <Transition name="recent-dropdown">
+                <div v-if="favoritesDropdownOpen" class="favorites-dropdown titlebar-dropdown-panel" @click.stop>
+                  <div class="recent-tabs-header">
+                    <span>收藏夹</span>
+                    <button class="recent-tabs-close" @click="favoritesDropdownOpen = false">✕</button>
+                  </div>
+                  <div class="favorites-dropdown-list">
+                    <button
+                      v-for="item in favoritesMenuItems.filter((entry) => entry.kind === 'starred')"
+                      :key="item.key"
+                      :class="['favorites-item', { active: item.active }]"
+                      @click="selectFavoriteFilter(item.id)"
+                    >
+                      <span class="favorites-item-icon favorites-item-icon--star">★</span>
+                      <span class="favorites-item-label">{{ item.label }}</span>
+                      <span class="favorites-item-count">{{ item.tableCount }}</span>
+                    </button>
+                    <div class="favorites-divider"></div>
+                    <div v-if="tableFolders.length === 0" class="favorites-empty">暂无文件夹，点击下方加号创建</div>
+                    <template v-for="folder in tableFolders" :key="folder.id">
+                      <button
+                        v-if="folderRenameId !== folder.id"
+                        :class="['favorites-item', { active: activeFolder === folder.id }]"
+                        @click="selectFavoriteFilter(folder.id)"
+                        @contextmenu.prevent.stop="openFolderCtxMenu($event, folder.id)"
+                      >
+                        <span class="favorites-item-label">{{ folder.name }}</span>
+                        <span class="favorites-item-count">{{ folder.tables.length }}</span>
+                      </button>
+                      <input
+                        v-else
+                        class="favorites-rename-input"
+                        v-model="folderRenameValue"
+                        @blur="commitFolderRename"
+                        @keydown.enter="commitFolderRename"
+                        @keydown.escape="folderRenameId = null"
+                        @vue:mounted="({ el }) => nextTick(() => el.focus())"
+                      />
+                    </template>
+                  </div>
+                  <div class="favorites-footer">
+                    <button class="favorites-add-btn" title="新建文件夹" @click="handleNewFolderFromFavorites">＋</button>
+                  </div>
+                </div>
+              </Transition>
+            </div>
+          </div>
+
+          <section
+            v-if="showPanelTabStrip"
+            ref="panelTabsRef"
+            :class="['panel-tab-strip', 'panel-tab-strip--demo', 'panel-tab-strip--titlebar', { 'is-compressed': panelTabsCompressed }]"
+            @click.self="closeAllOrgMenus"
+            @wheel="onTableTabsWheel"
+          >
+            <button
+              v-for="tab in panelTabs"
+              :key="tab.key"
+              :id="tab.tabId ? `panel-tab-${tab.tabId}` : undefined"
+              :data-tab-id="tab.tabId || undefined"
+              :data-tab-kind="tab.kind"
+              :data-tab-draggable="tab.draggable ? 'true' : 'false'"
+              :class="[
+                'panel-tab-chip',
+                {
+                  active: tab.active,
+                  opened: tab.opened,
+                  starred: tab.starred,
+                  dragging: tab.tabId === panelTabDrag.tabId && panelTabDrag.dragging,
+                  'drag-over-before': panelTabDrag.overTabId === tab.tabId && !panelTabDrag.insertAfter,
+                  'drag-over-after': panelTabDrag.overTabId === tab.tabId && panelTabDrag.insertAfter,
+                },
+              ]"
+              :title="tab.tableName"
+              @click="activatePanelChromeTab(tab)"
+              @pointerdown="onPanelTabPointerDown($event, tab)"
+            >
+              <span v-if="tab.starred" class="panel-tab-chip-star">★</span>
+              <span class="panel-tab-chip-label">{{ tab.tableName }}</span>
+              <span
+                v-if="tab.opened"
+                class="panel-tab-chip-close"
+                title="关闭标签"
+                @pointerdown.stop
+                @click.stop="closePanelChromeTab(tab)"
+              >✕</span>
+            </button>
+          </section>
+        </div>
         <button
           class="header-weather header-weather--action"
           :title="`${FIXED_WEATHER_CITY} ${weatherHeaderLabel} ${weatherTemp}°C`"
@@ -6920,73 +7106,7 @@ function escapeHtml(str) {
           <button class="icon-btn icon-btn-subtle" title="设置" @click="openSettings()">⚙</button>
         </div>
       </header>
-
-      <div v-if="showPanelTabStrip" class="panel-tab-strip-wrap">
-        <section
-          ref="panelTabsRef"
-          :class="['panel-tab-strip', 'panel-tab-strip--demo', { 'is-compressed': panelTabsCompressed }]"
-          @click.self="closeAllOrgMenus"
-          @wheel="onTableTabsWheel"
-        >
-          <button class="panel-tab-chip panel-tab-chip-add" title="最近打开的表" @click.stop="toggleRecentTabsDropdown">
-            <span :class="['recent-tabs-arrow', { open: recentTabsDropdownOpen }]">▾</span>
-          </button>
-          <button
-            v-for="tab in panelTabs"
-            :key="tab.key"
-            :id="tab.tabId ? `panel-tab-${tab.tabId}` : undefined"
-            :data-tab-id="tab.tabId || undefined"
-            :data-tab-kind="tab.kind"
-            :data-tab-draggable="tab.draggable ? 'true' : 'false'"
-            :class="[
-              'panel-tab-chip',
-              {
-                active: tab.active,
-                opened: tab.opened,
-                starred: tab.starred,
-                dragging: tab.tabId === panelTabDrag.tabId && panelTabDrag.dragging,
-                'drag-over-before': panelTabDrag.overTabId === tab.tabId && !panelTabDrag.insertAfter,
-                'drag-over-after': panelTabDrag.overTabId === tab.tabId && panelTabDrag.insertAfter,
-              },
-            ]"
-            :title="tab.tableName"
-            @click="activatePanelChromeTab(tab)"
-            @pointerdown="onPanelTabPointerDown($event, tab)"
-          >
-            <span v-if="tab.starred" class="panel-tab-chip-star">★</span>
-            <span class="panel-tab-chip-label">{{ tab.tableName }}</span>
-            <span
-              v-if="tab.opened"
-              class="panel-tab-chip-close"
-              title="关闭标签"
-              @pointerdown.stop
-              @click.stop="closePanelChromeTab(tab)"
-            >✕</span>
-          </button>
-        </section>
-        <Transition name="recent-dropdown">
-          <div v-if="recentTabsDropdownOpen" class="recent-tabs-dropdown" @click.stop>
-            <div class="recent-tabs-header">
-              <span>最近打开</span>
-              <button class="recent-tabs-close" @click="recentTabsDropdownOpen = false">✕</button>
-            </div>
-            <div v-if="recentTables.length === 0" class="recent-tabs-empty">暂无最近打开的表</div>
-            <template v-for="group in recentTablesGrouped" :key="group.folderName || '_ungrouped'">
-              <div v-if="group.folderName" class="recent-tabs-group-header">{{ group.folderName }}</div>
-              <button
-                v-for="item in group.tables" :key="item.tableName"
-                class="recent-tabs-item"
-                @click="openOrActivateTableTab(item.tableName); recentTabsDropdownOpen = false"
-              >
-                <span v-if="starredTables.has(item.tableName)" class="recent-tabs-star">★</span>
-                <span class="recent-tabs-name">{{ item.tableName }}</span>
-                <span class="recent-tabs-comment">{{ item.tableComment || '' }}</span>
-              </button>
-            </template>
-          </div>
-        </Transition>
-      </div>
-      <div v-if="recentTabsDropdownOpen" class="recent-tabs-backdrop" @click="recentTabsDropdownOpen = false"></div>
+      <div v-if="recentTabsDropdownOpen || favoritesDropdownOpen" class="recent-tabs-backdrop" @click="closeAllOrgMenus"></div>
 
       <div class="panel-content-viewport">
       <div class="panel-content-scale" :style="contentScaleStyle">
@@ -7041,54 +7161,6 @@ function escapeHtml(str) {
         </div>
       </section>
 
-      <!-- 表整理工具栏 -->
-      <div v-if="showOrgToolbar" class="org-toolbar org-toolbar--demo" @click.self="closeAllOrgMenus">
-        <div class="org-folder-chips">
-          <button :class="['org-chip', { active: activeFolder === 'all' }]" @click="activeFolder = 'all'; syncSummaryForDefaultTableBrowse()">全部</button>
-          <button :class="['org-chip org-chip-star', { active: activeFolder === 'starred' }]" @click="activeFolder = 'starred'; syncSummaryForDefaultTableBrowse()">
-            <span class="org-chip-icon">★</span>星标
-          </button>
-          <template v-for="folder in tableFolders" :key="folder.id">
-            <button
-              v-if="folderRenameId !== folder.id"
-              :class="['org-chip', { active: activeFolder === folder.id }]"
-              @click="activeFolder = folder.id; syncSummaryForDefaultTableBrowse()"
-              @contextmenu.prevent.stop="openFolderCtxMenu($event, folder.id)"
-            >
-              <span class="org-chip-icon">📁</span>{{ folder.name }}
-            </button>
-            <input
-              v-else
-              class="org-chip-rename-input"
-              v-model="folderRenameValue"
-              @blur="commitFolderRename"
-              @keydown.enter="commitFolderRename"
-              @keydown.escape="folderRenameId = null"
-              @vue:mounted="({ el }) => nextTick(() => el.focus())"
-            />
-          </template>
-          <button class="org-chip org-chip-add" title="新建文件夹" @click="newFolderDialogOpen = true; newFolderName = ''">＋</button>
-        </div>
-        <div class="org-sort-wrap">
-          <button class="org-sort-btn" @click.stop="toggleSortMenu" title="排序">
-            <span class="org-sort-icon">↕</span>{{ sortLabel }}
-          </button>
-          <template v-if="sortMenuOpen">
-            <div class="org-ctx-backdrop" @click="sortMenuOpen = false"></div>
-            <div class="org-sort-menu">
-              <button
-                v-for="opt in SORT_OPTIONS" :key="opt.key"
-                :class="['org-sort-option', { active: sortMode === opt.key }]"
-                @click="selectSortMode(opt.key)"
-              >
-                {{ opt.label }}
-                <span v-if="sortMode === opt.key" class="org-sort-check">✓</span>
-              </button>
-            </div>
-          </template>
-        </div>
-      </div>
-
       <div class="results-layout" id="resultsWrap">
         <aside :class="['result-sidebar', { 'kb-zone': navZone === 'sidebar' }]">
           <div class="demo-sidebar-heading">Data Explorer</div>
@@ -7102,28 +7174,71 @@ function escapeHtml(str) {
           </button>
         </aside>
 
-        <section class="results-main">
+        <section :class="['results-main', { 'table-list-mode': showTableResultHeader }]">
+          <div v-if="showTableScopeBar" class="table-scope-bar">
+            <button class="table-scope-reset" @click="selectFavoriteFilter('all')">全部</button>
+            <span class="table-scope-current">当前筛选：{{ activeFolderName }}</span>
+          </div>
+          <div v-if="showTableResultHeader" class="table-results-header">
+            <button
+              :class="['table-results-header-btn', { flash: tableSortFlashColumn === 'name' }]"
+              @click="toggleTableSort('name')"
+            >
+              <span class="table-results-header-label">表名</span>
+              <span
+                v-if="tableSortMeta.column === 'name'"
+                class="table-results-header-indicator"
+                :data-direction="tableSortMeta.direction"
+                aria-hidden="true"
+              >
+                <svg viewBox="0 0 12 8" focusable="false" aria-hidden="true">
+                  <path d="M2 5.5L6 2L10 5.5" />
+                </svg>
+              </span>
+            </button>
+            <button
+              :class="['table-results-header-btn', { flash: tableSortFlashColumn === 'comment' }]"
+              @click="toggleTableSort('comment')"
+            >
+              <span class="table-results-header-label">备注</span>
+              <span
+                v-if="tableSortMeta.column === 'comment'"
+                class="table-results-header-indicator"
+                :data-direction="tableSortMeta.direction"
+                aria-hidden="true"
+              >
+                <svg viewBox="0 0 12 8" focusable="false" aria-hidden="true">
+                  <path d="M2 5.5L6 2L10 5.5" />
+                </svg>
+              </span>
+            </button>
+            <div class="table-results-header-spacer">操作</div>
+          </div>
           <div class="list list-main">
             <template v-for="(item, idx) in filteredResults" :key="getResultKey(item)">
               <button
                 v-if="item._type === 'table'"
                 :id="`result-item-${idx}`"
-                :class="['list-item demo-result-card', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
+                :class="['list-item demo-result-card demo-result-card--table', { 'kb-active': navZone === 'results' && navResultIndex === idx }]"
                 @click="navZone = 'results'; navResultIndex = idx; openFromMeta(item)"
                 @contextmenu="openItemCtxMenu($event, item.table_name)"
               >
-                <span :class="['star-btn', { starred: starredTables.has(item.table_name) }]" @click.stop="toggleStar(item.table_name)" title="星标">{{ starredTables.has(item.table_name) ? '★' : '☆' }}</span>
-                <div class="main" v-html="renderHighlighted(item.table_name)"></div>
-                <div class="sub" v-html="renderHighlighted(getTableComment(item.table_name) || '-')"></div>
-                <span
-                  v-if="getTableFolderChip(item.table_name).visible"
-                  :class="['badge', 'folder-badge', { 'is-uncategorized': getTableFolderChip(item.table_name).uncategorized }]"
-                  :title="getTableFolderChip(item.table_name).title"
-                >
-                  <span class="folder-badge-label">{{ getTableFolderChip(item.table_name).label }}</span>
-                  <span v-if="getTableFolderChip(item.table_name).extraCount > 0" class="folder-badge-more">+{{ getTableFolderChip(item.table_name).extraCount }}</span>
-                </span>
-                <span class="copy-icon-btn" @click.stop="copyText(item.table_name)" title="复制">⎘</span>
+                <div class="table-result-name">
+                  <span :class="['star-btn', { starred: starredTables.has(item.table_name) }]" @click.stop="toggleStar(item.table_name)" title="星标">{{ starredTables.has(item.table_name) ? '★' : '☆' }}</span>
+                  <div class="main" v-html="renderHighlighted(item.table_name)"></div>
+                </div>
+                <div class="table-result-comment" v-html="renderHighlighted(getTableComment(item.table_name) || '-')"></div>
+                <div class="table-result-tools">
+                  <span
+                    v-if="getTableFolderChip(item.table_name).visible"
+                    :class="['badge', 'folder-badge', { 'is-uncategorized': getTableFolderChip(item.table_name).uncategorized }]"
+                    :title="getTableFolderChip(item.table_name).title"
+                  >
+                    <span class="folder-badge-label">{{ getTableFolderChip(item.table_name).label }}</span>
+                    <span v-if="getTableFolderChip(item.table_name).extraCount > 0" class="folder-badge-more">+{{ getTableFolderChip(item.table_name).extraCount }}</span>
+                  </span>
+                  <span class="copy-icon-btn" @click.stop="copyText(item.table_name)" title="复制">⎘</span>
+                </div>
               </button>
               <button
                 v-else-if="item._type === 'column'"
@@ -8126,10 +8241,9 @@ function escapeHtml(str) {
 
       <!-- Entry Card Grid (when no tab selected) -->
       <div v-if="settingsTab === -1" class="settings-entry-grid">
-        <div v-for="(tab, i) in SETTINGS_TABS" :key="tab.id" class="settings-entry-card" @click="switchSettingsTab(i)">
-          <span class="entry-icon">{{ tab.icon }}</span>
+        <div v-for="(tab, i) in SETTINGS_TABS" :key="tab.id" :class="['settings-entry-card', { 'settings-entry-card--version': tab.id === 'version' }]" @click="switchSettingsTab(i)">
+          <span :class="['entry-icon', { 'entry-icon--version': tab.id === 'version' }]">{{ tab.icon }}</span>
           <span class="entry-title">{{ tab.label }}</span>
-          <span v-if="tab.id === 'connection' && config.shared.db.host" class="entry-summary">{{ config.shared.db.host }}:{{ config.shared.db.port }}</span>
         </div>
       </div>
 
@@ -8190,10 +8304,6 @@ function escapeHtml(str) {
             <div class="glass-card">
               <h4 class="glass-card-title">系统</h4>
               <div style="display:flex;flex-direction:column;gap:12px">
-                <div class="update-settings-summary">
-                  <span class="muted">当前版本</span>
-                  <strong>v{{ updateCurrentVersion }}</strong>
-                </div>
                 <label class="glass-toggle"><input v-model="settingsDraft.autoStart" type="checkbox" /><span class="glass-toggle-track"></span>开机自启</label>
                 <label class="glass-toggle"><input v-model="settingsDraft.alwaysOnTop" type="checkbox" /><span class="glass-toggle-track"></span>窗口置顶</label>
                 <label class="glass-toggle"><input v-model="settingsDraft.resetOnOpenToAllTables" type="checkbox" /><span class="glass-toggle-track"></span>打开窗口重置为全表</label>
@@ -8345,6 +8455,12 @@ function escapeHtml(str) {
               </label>
             </div>
           </div>
+          <div v-else-if="settingsTab === 3" key="version" class="settings-tab-pane settings-tab-pane--version">
+            <div class="glass-card glass-card-version">
+              <h4 class="glass-card-title">版本号</h4>
+              <div class="version-card-value">{{ VERSION_DISPLAY_LABEL }}</div>
+            </div>
+          </div>
       </div>
 
       <!-- Footer -->
@@ -8414,7 +8530,8 @@ function escapeHtml(str) {
               </div>
             </div>
           </div>
-        </div>
+
+      </div>
 
         <!-- Section 3: Action Binding -->
         <div v-if="skinEditorAnims.length" class="form-group" style="margin-bottom:12px">

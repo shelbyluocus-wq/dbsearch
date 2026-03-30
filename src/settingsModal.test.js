@@ -17,7 +17,6 @@ test("settings overview cards only render icon and title", () => {
   assert.match(overviewMarkup, /entry-icon/);
   assert.match(overviewMarkup, /entry-title/);
   assert.match(overviewMarkup, /settings-entry-card/);
-  assert.match(overviewMarkup, /entry-summary/);
 });
 
 test("dark themes define readable glass select option colors", () => {
