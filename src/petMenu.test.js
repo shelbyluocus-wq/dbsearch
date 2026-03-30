@@ -74,10 +74,10 @@ test("runPetMenuAction still hides the menu when the backend hide command fails"
   ]);
 });
 
-test("runPetMenuAction sync opens the sync workspace and then hides the pet menu", async () => {
+test("runPetMenuAction file_sync opens the sync workspace and then hides the pet menu", async () => {
   const calls = [];
 
-  await runPetMenuAction("sync", {
+  await runPetMenuAction("file_sync", {
     isTauriWindow: true,
     invoke: async (command) => {
       calls.push(`invoke:${command}`);
@@ -88,6 +88,24 @@ test("runPetMenuAction sync opens the sync workspace and then hides the pet menu
 
   assert.deepEqual(calls, [
     "invoke:toggle_sync_workspace_window",
+    "invoke:hide_pet_menu",
+  ]);
+});
+
+test("runPetMenuAction db_sync opens the db migration workspace and then hides the pet menu", async () => {
+  const calls = [];
+
+  await runPetMenuAction("db_sync", {
+    isTauriWindow: true,
+    invoke: async (command) => {
+      calls.push(`invoke:${command}`);
+    },
+    getWindowByLabel: async () => null,
+    setPetHiddenForSession: () => {},
+  });
+
+  assert.deepEqual(calls, [
+    "invoke:toggle_db_migration_window",
     "invoke:hide_pet_menu",
   ]);
 });

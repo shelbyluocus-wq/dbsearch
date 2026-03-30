@@ -9,8 +9,10 @@ export async function runPetMenuAction(action, deps) {
   try {
     if (action === "open") {
       await invoke("show_panel_window", { openSettings: false });
-    } else if (action === "sync") {
+    } else if (action === "sync" || action === "file_sync") {
       await invoke("toggle_sync_workspace_window");
+    } else if (action === "db_sync") {
+      await invoke("toggle_db_migration_window");
     } else if (action === "settings") {
       await invoke("show_panel_window", { openSettings: true });
     } else if (action === "hide_pet") {

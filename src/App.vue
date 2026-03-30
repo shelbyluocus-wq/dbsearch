@@ -7558,8 +7558,19 @@ function escapeHtml(str) {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 1 0 4.031 11.604l4.433 4.433 1.414-1.414-4.433-4.433A6.5 6.5 0 0 0 10.5 4Zm0 2a4.5 4.5 0 1 1 0 9a4.5 4.5 0 0 1 0-9Z" fill="currentColor"/></svg>
         <span>打开搜索</span>
       </button>
-      <button class="pet-menu-btn" @click="contextAction('sync')">
-        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4l3.5 3.5-1.414 1.414L13 7.828V15h-2V7.828L9.914 8.914 8.5 7.5 12 4Zm0 16l-3.5-3.5 1.414-1.414L11 16.172V9h2v7.172l1.086-1.086 1.414 1.414L12 20Zm7-10h2v8a2 2 0 0 1-2 2h-4v-2h4v-8ZM3 6a2 2 0 0 1 2-2h4v2H5v8H3V6Z" fill="currentColor"/></svg>
+      <button class="pet-menu-btn" @click="contextAction('file_sync')">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M3.5 7.5A2.5 2.5 0 0 1 6 5h4.2l1.6 1.8H18A2.5 2.5 0 0 1 20.5 9.3v6.2A2.5 2.5 0 0 1 18 18H6a2.5 2.5 0 0 1-2.5-2.5v-8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+          <path d="M9 12h6M12 9l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <span>文件同步</span>
+      </button>
+      <button class="pet-menu-btn" @click="contextAction('db_sync')">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <ellipse cx="12" cy="6.5" rx="6.5" ry="2.8" fill="none" stroke="currentColor" stroke-width="1.8"/>
+          <path d="M5.5 6.5v5c0 1.55 2.91 2.8 6.5 2.8s6.5-1.25 6.5-2.8v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+          <path d="M5.5 11.5v5c0 1.55 2.91 2.8 6.5 2.8s6.5-1.25 6.5-2.8v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
+        </svg>
         <span>数据库同步</span>
       </button>
       <button class="pet-menu-btn" @click="contextAction('settings')">
