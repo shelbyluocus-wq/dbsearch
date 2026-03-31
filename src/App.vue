@@ -6,6 +6,8 @@ import { getCurrentWindow, Window } from "@tauri-apps/api/window";
 import { ask, save, open } from "@tauri-apps/plugin-dialog";
 import { check as checkForAppUpdate } from "@tauri-apps/plugin-updater";
 import "./styles.css";
+import { resolveSettingsVersionLabel } from "./appIdentity.js";
+import { APP_PACKAGE_VERSION } from "./appVersion.js";
 import DbMigrationWorkspace from "./DbMigrationWorkspace.vue";
 import { WeatherEngine } from "./weatherEngine.js";
 import {
@@ -21,6 +23,8 @@ import {
   resolveTableDialogSurfaceMode,
   resolveNextTableSortMode,
   resolveTableDialogKeyAction,
+  shouldEnablePanelTabDrag,
+  shouldShowTitlebarDbSwitcher,
   shouldShowPanelTabStrip,
   shouldUseReducedTransparencyMode,
 } from "./panelChrome.js";
@@ -71,9 +75,10 @@ import {
   hasExceededTabDragThreshold,
   resolveTabStripDropIndex,
 } from "./tableTabDrag.js";
+import { resolveAdaptiveTablePageSize } from "./tableDialogLayout.js";
 
-const APP_VERSION = __APP_VERSION__;
-const VERSION_DISPLAY_LABEL = APP_VERSION;
+const APP_VERSION = APP_PACKAGE_VERSION;
+const VERSION_DISPLAY_LABEL = resolveSettingsVersionLabel(APP_VERSION);
 
 function createTabStripDragState() {
   return {
@@ -797,10 +802,12 @@ let idleTimer = null;
 let idleStateTimer = null;
 let resetIdleHandler = null;
 const columnWidthMap = reactive({});
+const schemaColumnWidthMap = reactive({});
 const collapsedColumnMap = reactive({});
 const collapsedColumnRestoreWidthMap = reactive({});
 const overflowingColumnMap = reactive({});
 let columnResizeState = null;
+let schemaColumnResizeState = null;
 let tableLayoutObserver = null;
 let tableLayoutRaf = 0;
 let columnOverflowMeasureRaf = 0;
@@ -819,6 +826,7 @@ const TABLE_PAGE_SIZE_MAX = 200;
 const TABLE_ROW_HEIGHT_FALLBACK = 28;
 const TABLE_HEADER_HEIGHT_FALLBACK = 32;
 const TABLE_TAB_DRAG_THRESHOLD = 6;
+const SCHEMA_COLUMN_WIDTH_MIN = 80;
 const COLUMN_COLLAPSE_HORIZONTAL_PADDING = 16;
 const COLUMN_COLLAPSE_BADGE_ALLOWANCE = 20;
 const COLUMN_COLLAPSE_RESIZE_ALLOWANCE = 8;
@@ -1660,6 +1668,12 @@ const showPanelTabStrip = computed(() =>
     recentTablesCount: recentTables.value.length,
   }),
 );
+const showTitlebarDbSwitcher = computed(() =>
+  shouldShowTitlebarDbSwitcher({
+    dbConnected: dbConnected.value,
+    templateCount: Array.isArray(config.shared.db_templates) ? config.shared.db_templates.length : 0,
+  }),
+);
 const showHeaderShelf = computed(() =>
   dbConnected.value ||
   panelTabs.value.length > 0 ||
@@ -1696,7 +1710,10 @@ const tableTabsController = createTabStripController({
 });
 
 const panelTabsController = createTabStripController({
-  isEnabled: () => dbConnected.value,
+  isEnabled: () =>
+    shouldEnablePanelTabDrag({
+      panelTabs: panelTabs.value,
+    }),
   getItems: () => panelTabs.value,
   getId: (tab) => tab?.tabId,
   isItemDraggable: (tab) => Boolean(tab?.draggable && tab?.tabId),
@@ -2632,6 +2649,15 @@ function cloneColumnWidthMap(input = columnWidthMap) {
   return out;
 }
 
+function cloneSchemaColumnWidthMap(input = schemaColumnWidthMap) {
+  const out = {};
+  Object.entries(input || {}).forEach(([key, value]) => {
+    const width = Number(value);
+    if (Number.isFinite(width) && width > 0) out[key] = width;
+  });
+  return out;
+}
+
 function cloneBooleanMap(input = {}) {
   const out = {};
   Object.entries(input || {}).forEach(([key, value]) => {
@@ -2678,6 +2704,7 @@ function createLiveTableSnapshot({ id, tableName } = {}) {
     allHitRows: cloneHitRows(allHitRows.value),
     allHitRowsLoading: allHitRowsLoading.value,
     columnWidthMap: cloneColumnWidthMap(columnWidthMap),
+    schemaColumnWidthMap: cloneSchemaColumnWidthMap(schemaColumnWidthMap),
     collapsedColumnMap: cloneBooleanMap(collapsedColumnMap),
     collapsedColumnRestoreWidthMap: cloneColumnWidthMap(collapsedColumnRestoreWidthMap),
   };
@@ -2718,6 +2745,7 @@ function createNewTableSnapshot(tableName, rowIndex = null, columnName = null, h
     allHitRows: [],
     allHitRowsLoading: false,
     columnWidthMap: {},
+    schemaColumnWidthMap: {},
     collapsedColumnMap: {},
     collapsedColumnRestoreWidthMap: {},
   };
@@ -2729,6 +2757,16 @@ function applyColumnWidthMap(nextMap = {}) {
     const width = Number(value);
     if (Number.isFinite(width) && width > 0) {
       columnWidthMap[key] = width;
+    }
+  });
+}
+
+function applySchemaColumnWidthMap(nextMap = {}) {
+  clearSchemaColumnWidths();
+  Object.entries(nextMap || {}).forEach(([key, value]) => {
+    const width = Number(value);
+    if (Number.isFinite(width) && width > 0) {
+      schemaColumnWidthMap[key] = width;
     }
   });
 }
@@ -2791,6 +2829,7 @@ function restoreLiveStateFromTableSnapshot(tab) {
   allHitRows.value = cloneHitRows(tab.allHitRows);
   allHitRowsLoading.value = !!tab.allHitRowsLoading;
   applyColumnWidthMap(tab.columnWidthMap || {});
+  applySchemaColumnWidthMap(tab.schemaColumnWidthMap || {});
   applyCollapsedColumnState(tab.collapsedColumnMap || {}, tab.collapsedColumnRestoreWidthMap || {});
   tableTabRestoring = false;
   scheduleColumnOverflowMeasure();
@@ -3586,6 +3625,7 @@ onBeforeUnmount(() => {
     columnOverflowMeasureRaf = 0;
   }
   stopColumnResize();
+  stopSchemaColumnResize();
   clearTableTabDragState();
   clearPanelTabDragState();
 });
@@ -4655,9 +4695,16 @@ function panelHeaderPointerDown(event) {
 }
 
 function modalHeaderPointerDown(event) {
-  if (event.button !== 0 || !isTauriWindow) return;
+  if (event.button !== 0) return;
   const target = event.target;
   if (target instanceof Element && target.closest("button, input, textarea, select, label, a")) return;
+  const tableSurface = event.currentTarget instanceof Element
+    ? event.currentTarget.closest(".table-modal")
+    : null;
+  if (tableSurface instanceof HTMLElement) {
+    tableSurface.focus({ preventScroll: true });
+  }
+  if (!isTauriWindow) return;
   getCurrentWindow().startDragging().catch(() => {});
 }
 
@@ -5271,22 +5318,23 @@ function readAdaptiveTablePageSize() {
   const tableEl = wrap.querySelector("table.data-table");
   if (!(tableEl instanceof HTMLElement)) return null;
 
+  const visualScale = normalizeUiScale(config.personal.ui_scale);
   const headerRow = tableEl.querySelector("thead tr");
   const bodyRow = tableEl.querySelector("tbody tr");
-  const headerHeight = Math.max(
-    1,
-    Math.round(headerRow?.getBoundingClientRect?.().height || TABLE_HEADER_HEIGHT_FALLBACK),
+  const headerHeight = Math.round(
+    headerRow?.getBoundingClientRect?.().height || TABLE_HEADER_HEIGHT_FALLBACK * visualScale,
   );
-  const rowHeight = Math.max(
-    1,
-    Math.round(bodyRow?.getBoundingClientRect?.().height || TABLE_ROW_HEIGHT_FALLBACK),
+  const rowHeight = Math.round(
+    bodyRow?.getBoundingClientRect?.().height || TABLE_ROW_HEIGHT_FALLBACK * visualScale,
   );
-  const visibleHeight = Math.round(wrap.clientHeight || 0);
-  const bodyVisible = visibleHeight - headerHeight;
-  if (bodyVisible <= 0) return null;
-  const rows = Math.floor(bodyVisible / rowHeight);
-  if (!Number.isFinite(rows) || rows <= 0) return null;
-  return Math.max(TABLE_PAGE_SIZE_MIN, Math.min(TABLE_PAGE_SIZE_MAX, rows));
+  const visibleHeight = Math.round(wrap.getBoundingClientRect().height || 0);
+  return resolveAdaptiveTablePageSize({
+    visibleHeight,
+    headerHeight,
+    rowHeight,
+    minRows: TABLE_PAGE_SIZE_MIN,
+    maxRows: TABLE_PAGE_SIZE_MAX,
+  });
 }
 
 async function applyAdaptiveTablePageSize() {
@@ -5737,6 +5785,16 @@ function getColumnStyle(columnName) {
   };
 }
 
+function getSchemaColumnStyle(columnName) {
+  const width = Number(schemaColumnWidthMap[columnName] || 0);
+  if (width <= 0) return null;
+  return {
+    width: `${width}px`,
+    minWidth: `${width}px`,
+    maxWidth: `${width}px`,
+  };
+}
+
 function seedColumnWidth(columnName, width) {
   if (!columnName || Number(columnWidthMap[columnName]) > 0) return;
   const numeric = Math.max(80, Math.round(Number(width) || 0));
@@ -5747,6 +5805,10 @@ function seedColumnWidth(columnName, width) {
 
 function clearColumnWidths() {
   Object.keys(columnWidthMap).forEach((key) => { delete columnWidthMap[key]; });
+}
+
+function clearSchemaColumnWidths() {
+  Object.keys(schemaColumnWidthMap).forEach((key) => { delete schemaColumnWidthMap[key]; });
 }
 
 function measureOverflowingColumns() {
@@ -5793,10 +5855,26 @@ function onColumnResizeMove(event) {
   scheduleColumnOverflowMeasure();
 }
 
+function onSchemaColumnResizeMove(event) {
+  if (!schemaColumnResizeState) return;
+  const delta = event.clientX - schemaColumnResizeState.startX;
+  const width = Math.max(
+    SCHEMA_COLUMN_WIDTH_MIN,
+    Math.round(schemaColumnResizeState.startWidth + delta),
+  );
+  schemaColumnWidthMap[schemaColumnResizeState.columnName] = width;
+}
+
 function stopColumnResize() {
   window.removeEventListener("pointermove", onColumnResizeMove);
   window.removeEventListener("pointerup", stopColumnResize);
   columnResizeState = null;
+}
+
+function stopSchemaColumnResize() {
+  window.removeEventListener("pointermove", onSchemaColumnResizeMove);
+  window.removeEventListener("pointerup", stopSchemaColumnResize);
+  schemaColumnResizeState = null;
 }
 
 function startColumnResize(event, columnName) {
@@ -5813,6 +5891,21 @@ function startColumnResize(event, columnName) {
   };
   window.addEventListener("pointermove", onColumnResizeMove);
   window.addEventListener("pointerup", stopColumnResize);
+}
+
+function startSchemaColumnResize(event, columnName) {
+  event.preventDefault();
+  event.stopPropagation();
+  const th = event.currentTarget?.closest?.("th");
+  const rect = th?.getBoundingClientRect?.();
+  const startWidth = Number(schemaColumnWidthMap[columnName] || rect?.width || 120);
+  schemaColumnResizeState = {
+    columnName,
+    startX: event.clientX,
+    startWidth,
+  };
+  window.addEventListener("pointermove", onSchemaColumnResizeMove);
+  window.addEventListener("pointerup", stopSchemaColumnResize);
 }
 
 function splitKeywordTerms(value) {
@@ -6002,10 +6095,12 @@ function doCloseTableDialog() {
   snapshotActiveTableTab();
   resetTableFindState();
   clearColumnWidths();
+  clearSchemaColumnWidths();
   clearTableTabDragState();
   stopTableTabsCompressionMeasure();
   tableTabsCompressed.value = false;
   stopTableLayoutObserver();
+  stopSchemaColumnResize();
   exitTableFullscreen().catch(() => {});
   closeTableCommandPalette();
   tableOpen.value = false;
@@ -7201,22 +7296,7 @@ function escapeHtml(str) {
               </svg>
             </button>
           </section>
-        </div>
-        <button
-          class="header-weather header-weather--action"
-          :title="`${FIXED_WEATHER_CITY} ${weatherHeaderLabel} ${weatherTemp}°C`"
-          @click="openSettings('appearance')"
-        >
-          <span class="header-weather-icon">{{ weatherHeaderIcon }}</span>
-          <span class="header-weather-city">{{ FIXED_WEATHER_CITY }}</span>
-          <span class="header-weather-temp">{{ weatherTemp }}°</span>
-        </button>
-        <div class="header-actions">
-          <span class="header-connection">
-            <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
-            <span class="db-name" id="dbName">{{ dbConnected ? dbName : '未连接' }}</span>
-          </span>
-          <button class="icon-btn icon-btn-subtle" title="设置" @click="openSettings()">⚙</button>
+
         </div>
       </header>
       <div v-if="recentTabsDropdownOpen || favoritesDropdownOpen" class="recent-tabs-backdrop" @click="closeAllOrgMenus"></div>
@@ -7446,25 +7526,47 @@ function escapeHtml(str) {
       </Teleport>
       </div>
       </div>
-      <div class="panel-footer panel-footer--demo">
-        <div class="template-quick-switch template-quick-switch--demo">
+      <div class="panel-footer panel-footer--demo panel-footer--controls">
+        <div class="panel-footer-controls-left">
+          <span class="header-connection footer-db-connection" :title="dbConnected ? `${dbName}（已连接）` : '未连接数据库'">
+            <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
+            <span class="db-name" id="dbName">{{ dbConnected ? dbName : '未连接' }}</span>
+          </span>
+        </div>
+        <div class="panel-footer-controls-right">
+          <div v-if="showTitlebarDbSwitcher" class="footer-db-switcher">
+            <div class="template-quick-switch footer-template-switch">
+              <button
+                class="small-btn template-switch-btn"
+                :disabled="templateSwitching || config.shared.db_templates.length === 0"
+                title="上一模板"
+                @click="switchTemplateByStep(-1)"
+              >
+                ◀
+              </button>
+              <span class="template-current-name" :title="activeTemplateName">{{ activeTemplateName }}</span>
+              <button
+                class="small-btn template-switch-btn"
+                :disabled="templateSwitching || config.shared.db_templates.length === 0"
+                title="下一模板"
+                @click="switchTemplateByStep(1)"
+              >
+                ▶
+              </button>
+            </div>
+          </div>
           <button
-            class="small-btn template-switch-btn"
-            :disabled="templateSwitching || config.shared.db_templates.length === 0"
-            title="上一模板"
-            @click="switchTemplateByStep(-1)"
+            class="header-weather header-weather--action footer-weather-action"
+            :title="`${FIXED_WEATHER_CITY} ${weatherHeaderLabel} ${weatherTemp}°C`"
+            @click="openSettings('appearance')"
           >
-            ◀
+            <span class="header-weather-icon">{{ weatherHeaderIcon }}</span>
+            <span class="header-weather-city">{{ FIXED_WEATHER_CITY }}</span>
+            <span class="header-weather-temp">{{ weatherTemp }}°</span>
           </button>
-          <span class="template-current-name">{{ activeTemplateName }}</span>
-          <button
-            class="small-btn template-switch-btn"
-            :disabled="templateSwitching || config.shared.db_templates.length === 0"
-            title="下一模板"
-            @click="switchTemplateByStep(1)"
-          >
-            ▶
-          </button>
+          <div class="header-actions footer-actions">
+            <button class="icon-btn icon-btn-subtle" title="设置" @click="openSettings()">⚙</button>
+          </div>
         </div>
       </div>
     </section>
@@ -7873,10 +7975,15 @@ function escapeHtml(str) {
 
   <div
     v-if="tableOpen"
-    :class="['dialog-mask', { 'table-dialog-mask': tableDialogSurfaceMode.muteBackdrop }]"
+    :class="[
+      'dialog-mask',
+      'table-dialog-root',
+      'table-dialog-root--instant',
+      { 'table-dialog-mask': tableDialogSurfaceMode.muteBackdrop },
+    ]"
   >
-    <section ref="tableModalRef" :class="[
-      'modal-card', 'wide', 'table-modal',
+    <section ref="tableModalRef" tabindex="-1" :class="[
+      'modal-card', 'wide', 'table-modal', 'table-modal--instant',
       { 'table-modal--host-fill': tableDialogSurfaceMode.fillHostWindow },
       { fullscreen: tableFullscreen },
       editGlowPhase !== 'none' ? `edit-glow-${editGlowPhase}` : '',
@@ -7896,7 +8003,7 @@ function escapeHtml(str) {
         </div>
         <div class="table-header-actions">
           <button class="small-btn" @click="toggleTableDetailView">{{ tableDetailView === 'full' ? '只看命中(Tab)' : '返回原页(Tab)' }}</button>
-          <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏' : '全屏查看' }}</button>
+          <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏(W)' : '全屏查看(W)' }}</button>
           <button :class="['small-btn', 'edit-toggle-btn', { active: editMode }]"
             :disabled="!dbConnected" @click="onEditToggleClick"
             :title="editMode ? '退出编辑模式' : '进入编辑模式'">
@@ -7976,9 +8083,28 @@ function escapeHtml(str) {
               :class="{ 'find-active-schema': tableFindFocus.type === 'schema' && tableFindFocus.schemaKey === 'table_comment' }"
               v-html="renderDetailHighlighted(tableView.tableComment)"
             ></div>
-            <table class="schema-table">
+            <table class="schema-table schema-table--resizable">
+              <colgroup>
+                <col :style="getSchemaColumnStyle('column_name')" />
+                <col :style="getSchemaColumnStyle('column_type')" />
+                <col />
+              </colgroup>
               <thead>
-                <tr><th>字段名</th><th>类型</th><th>备注</th></tr>
+                <tr>
+                  <th data-schema-column="column_name" data-schema-resizable="true">
+                    <div class="schema-th-content">
+                      <span class="th-label">字段名</span>
+                    </div>
+                    <span class="schema-col-resize-handle" @pointerdown="startSchemaColumnResize($event, 'column_name')"></span>
+                  </th>
+                  <th data-schema-column="column_type" data-schema-resizable="true">
+                    <div class="schema-th-content">
+                      <span class="th-label">类型</span>
+                    </div>
+                    <span class="schema-col-resize-handle" @pointerdown="startSchemaColumnResize($event, 'column_type')"></span>
+                  </th>
+                  <th>备注</th>
+                </tr>
               </thead>
               <tbody>
                 <tr
@@ -8149,9 +8275,28 @@ function escapeHtml(str) {
             </button>
           </div>
           <div v-show="!schemaCollapsed" class="section-body">
-            <table v-if="hitOnlySchemaColumns.length > 0" class="schema-table">
+            <table v-if="hitOnlySchemaColumns.length > 0" class="schema-table schema-table--resizable">
+              <colgroup>
+                <col :style="getSchemaColumnStyle('column_name')" />
+                <col :style="getSchemaColumnStyle('column_type')" />
+                <col />
+              </colgroup>
               <thead>
-                <tr><th>字段名</th><th>类型</th><th>备注</th></tr>
+                <tr>
+                  <th data-schema-column="column_name" data-schema-resizable="true">
+                    <div class="schema-th-content">
+                      <span class="th-label">字段名</span>
+                    </div>
+                    <span class="schema-col-resize-handle" @pointerdown="startSchemaColumnResize($event, 'column_name')"></span>
+                  </th>
+                  <th data-schema-column="column_type" data-schema-resizable="true">
+                    <div class="schema-th-content">
+                      <span class="th-label">类型</span>
+                    </div>
+                    <span class="schema-col-resize-handle" @pointerdown="startSchemaColumnResize($event, 'column_type')"></span>
+                  </th>
+                  <th>备注</th>
+                </tr>
               </thead>
               <tbody>
                 <tr v-for="col in hitOnlySchemaColumns" :key="col.column_name" class="hit">

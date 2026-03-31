@@ -112,6 +112,7 @@ const DB_MIGRATION_WORKSPACE_HEIGHT: f64 = 760.0;
 const DB_MIGRATION_WORKSPACE_MIN_WIDTH: f64 = 980.0;
 const DB_MIGRATION_WORKSPACE_MIN_HEIGHT: f64 = 660.0;
 const DEFAULT_DB_MIGRATION_WINDOW_HOTKEY: &str = "Shift+S";
+const APP_DISPLAY_NAME: &str = "鹰捷";
 const TRAY_ICON_ID: &str = "main_tray";
 const TRAY_MENU_OPEN_PANEL_ID: &str = "tray-open-panel";
 const TRAY_MENU_SHOW_PET_ID: &str = "tray-show-pet";
@@ -131,6 +132,23 @@ enum WindowCloseAction {
 
 fn tray_click_opens_panel(button: MouseButton, state: MouseButtonState) -> bool {
     button == MouseButton::Left && state == MouseButtonState::Up
+}
+
+fn format_app_display_title(version: &str) -> String {
+    let normalized_version = version.trim();
+    if normalized_version.is_empty() {
+        APP_DISPLAY_NAME.to_string()
+    } else {
+        format!("{APP_DISPLAY_NAME}V{normalized_version}")
+    }
+}
+
+fn format_window_title(app: &tauri::AppHandle, suffix: Option<&str>) -> String {
+    let base_title = format_app_display_title(&app.package_info().version.to_string());
+    match suffix.map(str::trim).filter(|suffix| !suffix.is_empty()) {
+        Some(suffix) => format!("{base_title} {suffix}"),
+        None => base_title,
+    }
 }
 
 fn resolve_tray_menu_action(id: impl AsRef<str>) -> Option<TrayMenuAction> {
@@ -2313,7 +2331,7 @@ fn ensure_panel_window(
         PANEL_WINDOW_LABEL,
         WebviewUrl::App("index.html".into()),
     )
-    .title("DB Scout")
+    .title(format_window_title(app, None))
     .inner_size(remembered_size.width, remembered_size.height)
     .min_inner_size(PANEL_MIN_WIDTH, PANEL_MIN_HEIGHT)
     .resizable(true)
@@ -2358,7 +2376,7 @@ fn ensure_sync_workspace_window(app: &tauri::AppHandle) -> Result<WebviewWindow,
         SYNC_WORKSPACE_WINDOW_LABEL,
         WebviewUrl::App("index.html".into()),
     )
-    .title("DB Scout Sync")
+    .title(format_window_title(app, Some("同步工作台")))
     .inner_size(SYNC_WORKSPACE_WIDTH, SYNC_WORKSPACE_HEIGHT)
     .min_inner_size(680.0, 500.0)
     .resizable(true)
@@ -2486,7 +2504,7 @@ fn ensure_db_migration_workspace_window(app: &tauri::AppHandle) -> Result<Webvie
         DB_MIGRATION_WORKSPACE_WINDOW_LABEL,
         WebviewUrl::App("index.html".into()),
     )
-    .title("DB Scout Migration")
+    .title(format_window_title(app, Some("数据库迁移")))
     .inner_size(remembered_size.width, remembered_size.height)
     .min_inner_size(
         DB_MIGRATION_WORKSPACE_MIN_WIDTH,
@@ -2538,7 +2556,7 @@ fn ensure_pet_menu_window(app: &tauri::AppHandle) -> Result<WebviewWindow, Strin
         PET_MENU_WINDOW_LABEL,
         WebviewUrl::App("index.html".into()),
     )
-    .title("Pet Menu")
+    .title(format_window_title(app, Some("宠物菜单")))
     .inner_size(PET_MENU_WIDTH, PET_MENU_HEIGHT)
     .resizable(false)
     .decorations(false)

@@ -13,11 +13,13 @@ import {
   resolveTableDialogSurfaceMode,
   resolveNextTableSortMode,
   resolveTableDialogKeyAction,
+  shouldEnablePanelTabDrag,
+  shouldShowTitlebarDbSwitcher,
   shouldShowOrgToolbar,
   shouldShowPanelTabStrip,
 } from "./panelChrome.js";
 
-test("buildPanelTabs de-duplicates starred tables and appends closed starred tabs after opened tabs", () => {
+test("buildPanelTabs keeps only opened tabs in the titlebar while preserving star markers", () => {
   const tabs = buildPanelTabs({
     starredTables: ["users", "orders"],
     tableTabs: [
@@ -37,7 +39,6 @@ test("buildPanelTabs de-duplicates starred tables and appends closed starred tab
     [
       { tableName: "orders", kind: "opened", starred: true, opened: true },
       { tableName: "audit_logs", kind: "opened", starred: false, opened: true },
-      { tableName: "users", kind: "starred-closed", starred: true, opened: false },
     ],
   );
 });
@@ -60,7 +61,7 @@ test("buildPanelTabs marks the active opened tab from the live tab order", () =>
   assert.equal(tabs[1].active, true);
 });
 
-test("buildPanelTabs keeps opened tabs in live order and appends closed starred tabs", () => {
+test("buildPanelTabs keeps opened tabs in live order without appending closed starred tabs", () => {
   const tabs = buildPanelTabs({
     starredTables: ["users", "orders", "reports"],
     tableTabs: [
@@ -108,15 +109,6 @@ test("buildPanelTabs keeps opened tabs in live order and appends closed starred 
         active: true,
         starred: true,
         opened: true,
-      },
-      {
-        tableName: "reports",
-        kind: "starred-closed",
-        tabId: "",
-        draggable: false,
-        active: false,
-        starred: true,
-        opened: false,
       },
     ],
   );
@@ -204,6 +196,60 @@ test("shouldShowPanelTabStrip keeps recent/opened shelves visible without a live
       dbConnected: false,
       panelTabsCount: 0,
       recentTablesCount: 0,
+    }),
+    false,
+  );
+});
+
+test("shouldEnablePanelTabDrag turns on reordering whenever there are opened draggable tabs", () => {
+  assert.equal(
+    shouldEnablePanelTabDrag({
+      panelTabs: [
+        { tabId: "tab-1", draggable: true },
+        { tabId: "", draggable: false },
+      ],
+    }),
+    true,
+  );
+});
+
+test("shouldEnablePanelTabDrag stays off when the titlebar only has non-draggable items", () => {
+  assert.equal(
+    shouldEnablePanelTabDrag({
+      panelTabs: [
+        { tabId: "", draggable: false },
+        { tabId: null, draggable: false },
+      ],
+    }),
+    false,
+  );
+});
+
+test("shouldShowTitlebarDbSwitcher keeps the titlebar switcher visible when connected", () => {
+  assert.equal(
+    shouldShowTitlebarDbSwitcher({
+      dbConnected: true,
+      templateCount: 0,
+    }),
+    true,
+  );
+});
+
+test("shouldShowTitlebarDbSwitcher keeps the titlebar switcher visible when saved templates exist", () => {
+  assert.equal(
+    shouldShowTitlebarDbSwitcher({
+      dbConnected: false,
+      templateCount: 2,
+    }),
+    true,
+  );
+});
+
+test("shouldShowTitlebarDbSwitcher hides the titlebar switcher when disconnected without templates", () => {
+  assert.equal(
+    shouldShowTitlebarDbSwitcher({
+      dbConnected: false,
+      templateCount: 0,
     }),
     false,
   );

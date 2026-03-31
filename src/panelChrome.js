@@ -147,8 +147,11 @@ export function buildPanelTabs({
   activeTableTabId = "",
 } = {}) {
   const merged = [];
-  const openedByName = new Map();
-  const closedStarred = [];
+  const starredSet = new Set(
+    (Array.isArray(starredTables) ? starredTables : [])
+      .map((tableName) => normalizeTableName(tableName))
+      .filter(Boolean),
+  );
 
   for (const tab of tableTabs) {
     const normalized = normalizeTableName(tab?.tableName);
@@ -160,38 +163,14 @@ export function buildPanelTabs({
       tabId: String(tab.id || ""),
       kind: "opened",
       draggable: true,
-      starred: false,
+      starred: starredSet.has(normalized),
       opened: true,
       active: String(tab.id || "") === activeTableTabId,
     };
 
-    openedByName.set(normalized, item);
     merged.push(item);
   }
-
-  for (const tableName of starredTables) {
-    const normalized = normalizeTableName(tableName);
-    if (!normalized) continue;
-
-    const existing = openedByName.get(normalized);
-    if (existing) {
-      existing.starred = true;
-      continue;
-    }
-
-    closedStarred.push({
-      key: `starred:${normalized}`,
-      tableName: String(tableName).trim(),
-      tabId: "",
-      kind: "starred-closed",
-      draggable: false,
-      starred: true,
-      opened: false,
-      active: false,
-    });
-  }
-
-  return [...merged, ...closedStarred];
+  return merged;
 }
 
 export function getTableSortMeta(sortMode = "name_asc") {
@@ -253,6 +232,22 @@ export function shouldShowPanelTabStrip({
 } = {}) {
   if (dbConnected) return true;
   return Number(panelTabsCount) > 0 || Number(recentTablesCount) > 0;
+}
+
+export function shouldEnablePanelTabDrag({
+  panelTabs = [],
+} = {}) {
+  return (Array.isArray(panelTabs) ? panelTabs : []).some(
+    (tab) => Boolean(tab?.draggable && tab?.tabId),
+  );
+}
+
+export function shouldShowTitlebarDbSwitcher({
+  dbConnected = false,
+  templateCount = 0,
+} = {}) {
+  if (dbConnected) return true;
+  return Number(templateCount) > 0;
 }
 
 export function shouldShowOrgToolbar({
