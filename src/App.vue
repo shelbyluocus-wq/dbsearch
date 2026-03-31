@@ -18,6 +18,7 @@ import {
   normalizeBackgroundOpacity,
   panelChromeConstants,
   rankTableSearchCandidates,
+  resolveTableDialogSurfaceMode,
   resolveNextTableSortMode,
   resolveTableDialogKeyAction,
   shouldShowPanelTabStrip,
@@ -72,7 +73,7 @@ import {
 } from "./tableTabDrag.js";
 
 const APP_VERSION = __APP_VERSION__;
-const VERSION_DISPLAY_LABEL = `V${APP_VERSION}`;
+const VERSION_DISPLAY_LABEL = APP_VERSION;
 
 function createTabStripDragState() {
   return {
@@ -1684,7 +1685,7 @@ const tableTabsController = createTabStripController({
   labelSelector: ".table-tab-label",
   closeSelector: ".table-tab-close",
   addButtonSelector: ".table-tab-add",
-  gapWidth: 8,
+  gapWidth: 4,
   threshold: TABLE_TAB_DRAG_THRESHOLD,
   onReorder: ({ fromIndex, toIndex }) => {
     tableTabs.value = moveTableTab(tableTabs.value, fromIndex, toIndex);
@@ -1705,7 +1706,7 @@ const panelTabsController = createTabStripController({
   labelSelector: ".panel-tab-chip-label",
   closeSelector: ".panel-tab-chip-close",
   addButtonSelector: ".panel-tab-chip-add",
-  gapWidth: 8,
+  gapWidth: 4,
   threshold: TABLE_TAB_DRAG_THRESHOLD,
   onReorder: ({ fromIndex, toIndex }) => {
     tableTabs.value = moveTableTab(tableTabs.value, fromIndex, toIndex);
@@ -1717,8 +1718,8 @@ const panelTabsController = createTabStripController({
     measureTabStripItemWidth(itemEl, {
       labelSelector: ".panel-tab-chip-label",
       closeSelector: ".panel-tab-chip-close",
-      minWidth: 132,
-      maxWidth: 220,
+      minWidth: 120,
+      maxWidth: 208,
       chromeWidth: 40,
     }),
 });
@@ -1732,6 +1733,15 @@ const panelTabsCompressed = panelTabsController.compressed;
 const panelTabDrag = panelTabsController.drag;
 const panelTabSuppressClickUntil = panelTabsController.suppressClickUntil;
 const panelTabsRef = panelTabsController.wrapRef;
+const resultsMainRef = ref(null);
+const tableCommentAlignOffset = ref(18);
+const TABLE_COMMENT_OFFSET_FALLBACK = 18;
+let tableCommentAlignObserver = null;
+let tableCommentAlignRaf = 0;
+
+const tableListLayoutStyle = computed(() => ({
+  "--table-comment-offset": `${tableCommentAlignOffset.value}px`,
+}));
 
 const filteredResults = computed(() => {
   if (isKeywordEmpty.value) {
@@ -1999,6 +2009,11 @@ const reducedTransparencyEnabled = computed(() =>
   shouldUseReducedTransparencyMode({
     reduceTransparency: config.personal.reduce_transparency_mode,
     windowLabel: windowLabel.value,
+  }),
+);
+const tableDialogSurfaceMode = computed(() =>
+  resolveTableDialogSurfaceMode({
+    isPanelWindow: isPanelWindow.value,
   }),
 );
 const contentScaleStyle = computed(() => ({
@@ -2824,6 +2839,76 @@ function schedulePanelTabsCompressionMeasure() {
   panelTabsController.scheduleCompressionMeasure();
 }
 
+function measureTableCommentAlignment() {
+  const root = resultsMainRef.value;
+  if (!(root instanceof HTMLElement) || !showTableResultHeader.value) {
+    tableCommentAlignOffset.value = TABLE_COMMENT_OFFSET_FALLBACK;
+    return;
+  }
+
+  const commentLabel = root.querySelector(".table-results-header .table-results-header-btn:nth-child(2) .table-results-header-label");
+  const firstCommentCell = root.querySelector(".list-main .demo-result-card--table .table-result-comment");
+  if (!(commentLabel instanceof HTMLElement) || !(firstCommentCell instanceof HTMLElement)) {
+    tableCommentAlignOffset.value = TABLE_COMMENT_OFFSET_FALLBACK;
+    return;
+  }
+
+  const nextOffset = Math.round(commentLabel.getBoundingClientRect().left - firstCommentCell.getBoundingClientRect().left);
+  tableCommentAlignOffset.value = Number.isFinite(nextOffset)
+    ? Math.max(0, nextOffset)
+    : TABLE_COMMENT_OFFSET_FALLBACK;
+}
+
+function stopTableCommentAlignObserver() {
+  if (tableCommentAlignObserver) {
+    tableCommentAlignObserver.disconnect();
+    tableCommentAlignObserver = null;
+  }
+  if (tableCommentAlignRaf) {
+    cancelAnimationFrame(tableCommentAlignRaf);
+    tableCommentAlignRaf = 0;
+  }
+}
+
+function scheduleTableCommentAlignmentMeasure() {
+  if (tableCommentAlignRaf) {
+    cancelAnimationFrame(tableCommentAlignRaf);
+  }
+  tableCommentAlignRaf = requestAnimationFrame(() => {
+    tableCommentAlignRaf = 0;
+    nextTick(() => {
+      measureTableCommentAlignment();
+    });
+  });
+}
+
+async function startTableCommentAlignObserver() {
+  stopTableCommentAlignObserver();
+  if (typeof ResizeObserver === "undefined") return;
+  await nextTick();
+
+  const root = resultsMainRef.value;
+  if (!(root instanceof HTMLElement)) return;
+
+  const targets = [
+    root,
+    root.querySelector(".table-results-header"),
+    root.querySelector(".list-main"),
+    root.querySelector(".list-main .demo-result-card--table"),
+  ].filter((item) => item instanceof HTMLElement);
+
+  if (targets.length === 0) {
+    tableCommentAlignOffset.value = TABLE_COMMENT_OFFSET_FALLBACK;
+    return;
+  }
+
+  tableCommentAlignObserver = new ResizeObserver(() => {
+    scheduleTableCommentAlignmentMeasure();
+  });
+  targets.forEach((target) => tableCommentAlignObserver.observe(target));
+  scheduleTableCommentAlignmentMeasure();
+}
+
 function applyDefaultTableDialogState() {
   tableFullscreen.value = TABLE_DIALOG_DEFAULTS.fullscreen;
 }
@@ -3244,6 +3329,7 @@ onMounted(async () => {
   await loadConfig();
   await refreshUpdateSettings();
   applyCustomFont();
+  await startTableCommentAlignObserver();
   // Load custom skins
   if (isTauriWindow) {
     try {
@@ -3493,6 +3579,7 @@ onBeforeUnmount(() => {
   disposeAvailableUpdate();
   stopTableTabsCompressionMeasure();
   stopPanelTabsCompressionMeasure();
+  stopTableCommentAlignObserver();
   stopTableLayoutObserver();
   if (columnOverflowMeasureRaf) {
     cancelAnimationFrame(columnOverflowMeasureRaf);
@@ -3915,6 +4002,20 @@ watch(filteredResults, (items) => {
     scrollKeyboardResultIntoView();
   }
 });
+
+watch(
+  () => [
+    showTableResultHeader.value,
+    filteredResults.value.length,
+    filteredResults.value.find((item) => item?._type === "table")?.table_name || "",
+    activeResultTab.value,
+    keyword.value,
+  ],
+  () => {
+    startTableCommentAlignObserver().catch(() => {});
+  },
+  { flush: "post" },
+);
 
 function onDocDragover(e) { e.preventDefault(); }
 
@@ -7053,7 +7154,7 @@ function escapeHtml(str) {
           <section
             v-if="showPanelTabStrip"
             ref="panelTabsRef"
-            :class="['panel-tab-strip', 'panel-tab-strip--demo', 'panel-tab-strip--titlebar', { 'is-compressed': panelTabsCompressed }]"
+            :class="['panel-tab-strip', 'panel-tab-strip--titlebar', { 'is-compressed': panelTabsCompressed }]"
             @click.self="closeAllOrgMenus"
             @wheel="onTableTabsWheel"
           >
@@ -7089,6 +7190,16 @@ function escapeHtml(str) {
                 @click.stop="closePanelChromeTab(tab)"
               >✕</span>
             </button>
+            <button
+              class="panel-tab-chip-add"
+              title="打开表 (Ctrl+P)"
+              aria-label="打开表"
+              @click.stop="openTableCommandPalette()"
+            >
+              <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                <path d="M8 3.25v9.5M3.25 8h9.5" />
+              </svg>
+            </button>
           </section>
         </div>
         <button
@@ -7101,8 +7212,10 @@ function escapeHtml(str) {
           <span class="header-weather-temp">{{ weatherTemp }}°</span>
         </button>
         <div class="header-actions">
-          <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
-          <span class="db-name" id="dbName">{{ dbConnected ? dbName : '未连接' }}</span>
+          <span class="header-connection">
+            <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
+            <span class="db-name" id="dbName">{{ dbConnected ? dbName : '未连接' }}</span>
+          </span>
           <button class="icon-btn icon-btn-subtle" title="设置" @click="openSettings()">⚙</button>
         </div>
       </header>
@@ -7174,7 +7287,11 @@ function escapeHtml(str) {
           </button>
         </aside>
 
-        <section :class="['results-main', { 'table-list-mode': showTableResultHeader }]">
+        <section
+          ref="resultsMainRef"
+          :class="['results-main', { 'table-list-mode': showTableResultHeader }]"
+          :style="tableListLayoutStyle"
+        >
           <div v-if="showTableScopeBar" class="table-scope-bar">
             <button class="table-scope-reset" @click="selectFavoriteFilter('all')">全部</button>
             <span class="table-scope-current">当前筛选：{{ activeFolderName }}</span>
@@ -7754,9 +7871,13 @@ function escapeHtml(str) {
     </section>
   </div>
 
-  <div v-if="tableOpen" class="dialog-mask">
+  <div
+    v-if="tableOpen"
+    :class="['dialog-mask', { 'table-dialog-mask': tableDialogSurfaceMode.muteBackdrop }]"
+  >
     <section ref="tableModalRef" :class="[
       'modal-card', 'wide', 'table-modal',
+      { 'table-modal--host-fill': tableDialogSurfaceMode.fillHostWindow },
       { fullscreen: tableFullscreen },
       editGlowPhase !== 'none' ? `edit-glow-${editGlowPhase}` : '',
       { 'edit-mode-active': editMode },

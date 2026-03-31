@@ -271,6 +271,22 @@ export function getDefaultTableDialogState() {
   };
 }
 
+export function resolveTableDialogSurfaceMode({
+  isPanelWindow = false,
+} = {}) {
+  if (isPanelWindow) {
+    return {
+      fillHostWindow: true,
+      muteBackdrop: true,
+    };
+  }
+
+  return {
+    fillHostWindow: false,
+    muteBackdrop: false,
+  };
+}
+
 export function describeTableFolderChip(tableName, tableFolders = []) {
   const normalizedTable = normalizeTableName(tableName);
   if (!normalizedTable) {

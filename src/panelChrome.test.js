@@ -10,6 +10,7 @@ import {
   getDefaultTableDialogState,
   getTableSortMeta,
   normalizeBackgroundOpacity,
+  resolveTableDialogSurfaceMode,
   resolveNextTableSortMode,
   resolveTableDialogKeyAction,
   shouldShowOrgToolbar,
@@ -242,6 +243,30 @@ test("getDefaultTableDialogState keeps backdrop close disabled and leaves fullsc
     fullscreen: false,
     backdropClosable: false,
   });
+});
+
+test("resolveTableDialogSurfaceMode makes table dialogs fill panel windows without an overlay backdrop", () => {
+  assert.deepEqual(
+    resolveTableDialogSurfaceMode({
+      isPanelWindow: true,
+    }),
+    {
+      fillHostWindow: true,
+      muteBackdrop: true,
+    },
+  );
+});
+
+test("resolveTableDialogSurfaceMode keeps the floating overlay presentation outside panel windows", () => {
+  assert.deepEqual(
+    resolveTableDialogSurfaceMode({
+      isPanelWindow: false,
+    }),
+    {
+      fillHostWindow: false,
+      muteBackdrop: false,
+    },
+  );
 });
 
 test("normalizeBackgroundOpacity clamps values into the supported range", () => {

@@ -44,11 +44,13 @@ struct AppState {
     runtime: Arc<tokio::sync::Mutex<RuntimeState>>,
     cancel_seq: Arc<AtomicU64>,
     panel_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
+    panel_window_size_sync: Arc<std::sync::RwLock<Option<PanelWindowSize>>>,
     quick_date_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     sync_window_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     db_migration_window_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     db_migration_window_size_sync: Arc<std::sync::RwLock<Option<DbMigrationWindowSize>>>,
     db_migration_running_sync: Arc<AtomicBool>,
+    panel_resize_seq: Arc<AtomicU64>,
     db_migration_resize_seq: Arc<AtomicU64>,
     pet_hitbox: Arc<std::sync::RwLock<Option<PetHitbox>>>,
     pet_cursor_ignored: Arc<AtomicBool>,
@@ -59,11 +61,13 @@ impl Default for AppState {
             runtime: Arc::new(tokio::sync::Mutex::new(RuntimeState::default())),
             cancel_seq: Arc::new(AtomicU64::new(0)),
             panel_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
+            panel_window_size_sync: Arc::new(std::sync::RwLock::new(None)),
             quick_date_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             sync_window_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             db_migration_window_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             db_migration_window_size_sync: Arc::new(std::sync::RwLock::new(None)),
             db_migration_running_sync: Arc::new(AtomicBool::new(false)),
+            panel_resize_seq: Arc::new(AtomicU64::new(0)),
             db_migration_resize_seq: Arc::new(AtomicU64::new(0)),
             pet_hitbox: Arc::new(std::sync::RwLock::new(None)),
             pet_cursor_ignored: Arc::new(AtomicBool::new(false)),
@@ -91,6 +95,8 @@ const SYNC_WORKSPACE_WINDOW_LABEL: &str = "sync_workspace";
 const DB_MIGRATION_WORKSPACE_WINDOW_LABEL: &str = "db_migration_workspace";
 const PANEL_WIDTH: f64 = 780.0;
 const PANEL_HEIGHT: f64 = 860.0;
+const PANEL_MIN_WIDTH: f64 = 680.0;
+const PANEL_MIN_HEIGHT: f64 = 720.0;
 const PET_MENU_WIDTH: f64 = 252.0;
 const PET_MENU_HEIGHT: f64 = 332.0;
 const PET_MENU_BUTTON_COUNT: f64 = 6.0;
@@ -227,6 +233,8 @@ struct PersonalConfig {
     #[serde(default)]
     last_used_sync_profile_id: Option<String>,
     #[serde(default)]
+    panel_window_size: Option<PanelWindowSize>,
+    #[serde(default)]
     db_migration_window_size: Option<DbMigrationWindowSize>,
     #[serde(default)]
     db_migration_profiles: Vec<DbMigrationProfile>,
@@ -270,6 +278,25 @@ fn sanitize_db_migration_window_size(
             height: value.height.max(DB_MIGRATION_WORKSPACE_MIN_HEIGHT).round(),
         })
     })
+}
+
+fn sanitize_panel_window_size(size: Option<PanelWindowSize>) -> Option<PanelWindowSize> {
+    size.and_then(|value| {
+        if !value.width.is_finite() || !value.height.is_finite() {
+            return None;
+        }
+        Some(PanelWindowSize {
+            width: value.width.max(PANEL_MIN_WIDTH).round(),
+            height: value.height.max(PANEL_MIN_HEIGHT).round(),
+        })
+    })
+}
+
+fn default_panel_window_size() -> PanelWindowSize {
+    PanelWindowSize {
+        width: PANEL_WIDTH,
+        height: PANEL_HEIGHT,
+    }
 }
 
 fn default_db_migration_window_size() -> DbMigrationWindowSize {
@@ -471,6 +498,47 @@ fn clamp_db_migration_window_size_to_monitor(
     next
 }
 
+fn clamp_panel_window_size_to_monitor(
+    app: &tauri::AppHandle,
+    size: PanelWindowSize,
+) -> PanelWindowSize {
+    let mut next = sanitize_panel_window_size(Some(size)).unwrap_or_else(default_panel_window_size);
+
+    let monitor = if let Some(window) = app
+        .get_webview_window(PANEL_WINDOW_LABEL)
+        .or_else(|| app.get_webview_window(MAIN_WINDOW_LABEL))
+    {
+        window.current_monitor().ok().flatten()
+    } else {
+        app.primary_monitor().ok().flatten()
+    };
+
+    if let Some(monitor) = monitor {
+        let scale = monitor.scale_factor();
+        let width_limit = (monitor.size().width as f64 / scale - 40.0).floor();
+        let height_limit = (monitor.size().height as f64 / scale - 40.0).floor();
+
+        if width_limit.is_finite() && width_limit > 0.0 {
+            next.width = next.width.min(width_limit.max(PANEL_MIN_WIDTH));
+        }
+        if height_limit.is_finite() && height_limit > 0.0 {
+            next.height = next.height.min(height_limit.max(PANEL_MIN_HEIGHT));
+        }
+    }
+
+    next
+}
+
+fn resolve_panel_window_size_from_cache(state: &AppState) -> PanelWindowSize {
+    sanitize_panel_window_size(state.panel_window_size_sync.read().unwrap().clone())
+        .unwrap_or_else(default_panel_window_size)
+}
+
+fn resolve_panel_window_size(app: &tauri::AppHandle) -> PanelWindowSize {
+    let state = app.state::<AppState>();
+    clamp_panel_window_size_to_monitor(app, resolve_panel_window_size_from_cache(&state))
+}
+
 fn resolve_db_migration_window_size_from_cache(state: &AppState) -> DbMigrationWindowSize {
     sanitize_db_migration_window_size(state.db_migration_window_size_sync.read().unwrap().clone())
         .unwrap_or_else(default_db_migration_window_size)
@@ -519,6 +587,7 @@ impl Default for PersonalConfig {
             sync_profiles: Vec::new(),
             default_sync_profile_id: None,
             last_used_sync_profile_id: None,
+            panel_window_size: None,
             db_migration_window_size: None,
             db_migration_profiles: Vec::new(),
             last_used_db_migration_profile_id: None,
@@ -592,6 +661,11 @@ fn build_update_check_plan(
 struct WindowPosition {
     x: i32,
     y: i32,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PanelWindowSize {
+    width: f64,
+    height: f64,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct DbMigrationWindowSize {
@@ -2033,6 +2107,7 @@ async fn show_panel_window(
 #[tauri::command]
 async fn hide_panel_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(panel) = app.get_webview_window(PANEL_WINDOW_LABEL) {
+        schedule_panel_window_size_save(app.clone());
         panel.hide().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -2049,6 +2124,7 @@ async fn toggle_panel_window(
     let visible = panel.is_visible().map_err(|e| e.to_string())?;
 
     if visible {
+        schedule_panel_window_size_save(app.clone());
         panel.hide().map_err(|e| e.to_string())?;
     } else {
         panel.show().map_err(|e| e.to_string())?;
@@ -2230,14 +2306,16 @@ fn ensure_panel_window(
         return Ok(panel);
     }
 
+    let remembered_size = resolve_panel_window_size(app);
+
     let panel = WebviewWindowBuilder::new(
         app,
         PANEL_WINDOW_LABEL,
         WebviewUrl::App("index.html".into()),
     )
     .title("DB Scout")
-    .inner_size(PANEL_WIDTH, PANEL_HEIGHT)
-    .min_inner_size(680.0, 720.0)
+    .inner_size(remembered_size.width, remembered_size.height)
+    .min_inner_size(PANEL_MIN_WIDTH, PANEL_MIN_HEIGHT)
     .resizable(true)
     .decorations(false)
     .transparent(true)
@@ -2250,15 +2328,21 @@ fn ensure_panel_window(
     .map_err(|e| format!("failed to create panel window: {e}"))?;
 
     let panel_for_events = panel.clone();
-    panel.on_window_event(move |event| {
-        if let WindowEvent::CloseRequested { api, .. } = event {
+    let app_handle = app.clone();
+    panel.on_window_event(move |event| match event {
+        WindowEvent::CloseRequested { api, .. } => {
             api.prevent_close();
+            schedule_panel_window_size_save(app_handle.clone());
             match close_request_action_for_window(PANEL_WINDOW_LABEL) {
                 WindowCloseAction::HideToTray | WindowCloseAction::HideWindow => {
                     let _ = panel_for_events.hide();
                 }
             }
         }
+        WindowEvent::Resized(_) => {
+            schedule_panel_window_size_save(app_handle.clone());
+        }
+        _ => {}
     });
 
     Ok(panel)
@@ -2329,6 +2413,47 @@ async fn persist_db_migration_window_size(
         rt.config.personal.db_migration_window_size.clone();
     save_config_to_disk(&app, &rt.config)?;
     Ok(())
+}
+
+async fn persist_panel_window_size(
+    app: tauri::AppHandle,
+    state: AppState,
+) -> Result<(), String> {
+    let Some(window) = app.get_webview_window(PANEL_WINDOW_LABEL) else {
+        return Ok(());
+    };
+
+    if window.is_maximized().map_err(|e| e.to_string())? {
+        return Ok(());
+    }
+
+    let physical_size = window.inner_size().map_err(|e| e.to_string())?;
+    let scale_factor = window.scale_factor().map_err(|e| e.to_string())?;
+    let logical_size = PanelWindowSize {
+        width: physical_size.width as f64 / scale_factor,
+        height: physical_size.height as f64 / scale_factor,
+    };
+
+    let mut rt = state.runtime.lock().await;
+    rt.config.personal.panel_window_size = sanitize_panel_window_size(Some(logical_size));
+    *state.panel_window_size_sync.write().unwrap() = rt.config.personal.panel_window_size.clone();
+    save_config_to_disk(&app, &rt.config)?;
+    Ok(())
+}
+
+fn schedule_panel_window_size_save(app: tauri::AppHandle) {
+    let state = app.state::<AppState>().inner().clone();
+    let seq = state.panel_resize_seq.fetch_add(1, Ordering::SeqCst) + 1;
+
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(220)).await;
+        if state.panel_resize_seq.load(Ordering::SeqCst) != seq {
+            return;
+        }
+        if let Err(e) = persist_panel_window_size(app.clone(), state.clone()).await {
+            eprintln!("failed to persist panel window size: {e}");
+        }
+    });
 }
 
 fn schedule_db_migration_window_size_save(app: tauri::AppHandle) {
@@ -3419,6 +3544,8 @@ pub fn run() {
                 loaded.personal.db_migration_window_hotkey =
                     default_db_migration_window_hotkey();
             }
+            loaded.personal.panel_window_size =
+                sanitize_panel_window_size(loaded.personal.panel_window_size.take());
             loaded.personal.db_migration_window_size =
                 sanitize_db_migration_window_size(loaded.personal.db_migration_window_size.take());
             loaded.personal.db_migration_last_connection = sanitize_db_migration_remembered_connection(
@@ -3527,6 +3654,7 @@ pub fn run() {
             *st.sync_window_hotkey_sync.write().unwrap() = registered_sync_window_hotkey.clone();
             *st.db_migration_window_hotkey_sync.write().unwrap() =
                 registered_db_migration_window_hotkey.clone();
+            *st.panel_window_size_sync.write().unwrap() = loaded.personal.panel_window_size.clone();
             *st.db_migration_window_size_sync.write().unwrap() =
                 loaded.personal.db_migration_window_size.clone();
             tauri::async_runtime::block_on(async move {
@@ -3809,6 +3937,32 @@ mod tests {
 
         assert_eq!(size.width, 1240.0);
         assert_eq!(size.height, 820.0);
+    }
+
+    #[test]
+    fn panel_window_size_is_clamped_to_minimum_dimensions() {
+        let size = sanitize_panel_window_size(Some(PanelWindowSize {
+            width: 520.0,
+            height: 600.0,
+        }))
+        .expect("size should stay available");
+
+        assert_eq!(size.width, 680.0);
+        assert_eq!(size.height, 720.0);
+    }
+
+    #[test]
+    fn panel_window_size_can_be_resolved_from_sync_cache() {
+        let state = AppState::default();
+        *state.panel_window_size_sync.write().unwrap() = Some(PanelWindowSize {
+            width: 1080.0,
+            height: 860.0,
+        });
+
+        let size = resolve_panel_window_size_from_cache(&state);
+
+        assert_eq!(size.width, 1080.0);
+        assert_eq!(size.height, 860.0);
     }
 
     #[test]
