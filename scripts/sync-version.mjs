@@ -5,6 +5,8 @@ import { pathToFileURL } from "node:url";
 import { formatAppDisplayTitle } from "../src/appIdentity.js";
 
 const PACKAGE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/;
+const CARGO_PACKAGE_SECTION_PATTERN = /\[package\]([\s\S]*?)(?:\r?\n\[|$)/;
+const CARGO_VERSION_LINE_PATTERN = /^(\s*version\s*=\s*")[^"]+(")(\r?\n|$)/m;
 
 function normalizeVersion(version) {
   const normalized = String(version || "").trim();
@@ -16,21 +18,21 @@ function normalizeVersion(version) {
 
 export function syncCargoTomlVersion(content, version) {
   const normalizedVersion = normalizeVersion(version);
-  const packageSectionMatch = content.match(/\[package\]([\s\S]*?)(?:\n\[|$)/);
+  const packageSectionMatch = content.match(CARGO_PACKAGE_SECTION_PATTERN);
   if (!packageSectionMatch) {
     throw new Error("Could not locate the [package] section in Cargo.toml.");
   }
 
   const packageSection = packageSectionMatch[0];
-  if (!/^\s*version\s*=\s*"[^"]+"\s*$/m.test(packageSection)) {
+  if (!CARGO_VERSION_LINE_PATTERN.test(packageSection)) {
     throw new Error("Could not locate the package version entry in Cargo.toml.");
   }
 
   return content.replace(
-    /\[package\]([\s\S]*?)(?:\n\[|$)/,
+    CARGO_PACKAGE_SECTION_PATTERN,
     (matchedSection) => matchedSection.replace(
-      /^\s*version\s*=\s*"[^"]+"\s*$/m,
-      `version = "${normalizedVersion}"`,
+      CARGO_VERSION_LINE_PATTERN,
+      (_, prefix, suffix, lineEnding) => `${prefix}${normalizedVersion}${suffix}${lineEnding}`,
     ),
   );
 }

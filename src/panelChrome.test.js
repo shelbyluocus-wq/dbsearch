@@ -10,9 +10,13 @@ import {
   getDefaultTableDialogState,
   getTableSortMeta,
   normalizeBackgroundOpacity,
+  resolvePanelActivatedFocusTarget,
   resolveTableDialogSurfaceMode,
   resolveNextTableSortMode,
   resolveTableDialogKeyAction,
+  shouldClearArmedTableDialogShortcutAfterAction,
+  shouldBypassEditableGuardForArmedTableDialogKey,
+  shouldFocusPanelShellFromTitlebarPointerDown,
   shouldEnablePanelTabDrag,
   shouldShowTitlebarDbSwitcher,
   shouldShowOrgToolbar,
@@ -315,6 +319,32 @@ test("resolveTableDialogSurfaceMode keeps the floating overlay presentation outs
   );
 });
 
+test("resolvePanelActivatedFocusTarget keeps focus on the table surface while a table dialog is open", () => {
+  assert.equal(
+    resolvePanelActivatedFocusTarget({
+      isPanelWindow: true,
+      tableOpen: true,
+    }),
+    "table",
+  );
+
+  assert.equal(
+    resolvePanelActivatedFocusTarget({
+      isPanelWindow: true,
+      tableOpen: false,
+    }),
+    "keyword",
+  );
+
+  assert.equal(
+    resolvePanelActivatedFocusTarget({
+      isPanelWindow: false,
+      tableOpen: true,
+    }),
+    "none",
+  );
+});
+
 test("normalizeBackgroundOpacity clamps values into the supported range", () => {
   assert.equal(normalizeBackgroundOpacity(undefined), 1);
   assert.equal(normalizeBackgroundOpacity("0.1"), 0.75);
@@ -428,6 +458,7 @@ test("resolveTableDialogKeyAction uses W for fullscreen and preserves close shor
   assert.equal(
     resolveTableDialogKeyAction({
       key: "w",
+      code: "KeyW",
       ctrlKey: false,
       metaKey: false,
       altKey: false,
@@ -441,6 +472,7 @@ test("resolveTableDialogKeyAction uses W for fullscreen and preserves close shor
   assert.equal(
     resolveTableDialogKeyAction({
       key: "w",
+      code: "KeyW",
       ctrlKey: true,
       metaKey: false,
       altKey: false,
@@ -454,6 +486,7 @@ test("resolveTableDialogKeyAction uses W for fullscreen and preserves close shor
   assert.equal(
     resolveTableDialogKeyAction({
       key: "w",
+      code: "KeyW",
       ctrlKey: false,
       metaKey: false,
       altKey: true,
@@ -467,6 +500,7 @@ test("resolveTableDialogKeyAction uses W for fullscreen and preserves close shor
   assert.equal(
     resolveTableDialogKeyAction({
       key: "w",
+      code: "KeyW",
       ctrlKey: false,
       metaKey: false,
       altKey: false,
@@ -475,6 +509,115 @@ test("resolveTableDialogKeyAction uses W for fullscreen and preserves close shor
       isEditable: true,
     }),
     "none",
+  );
+
+  assert.equal(
+    resolveTableDialogKeyAction({
+      key: "Process",
+      code: "KeyW",
+      ctrlKey: false,
+      metaKey: false,
+      altKey: false,
+      tableOpen: true,
+      settingsOpen: false,
+      isEditable: false,
+    }),
+    "toggleFullscreen",
+  );
+});
+
+test("shouldFocusPanelShellFromTitlebarPointerDown only reacts to primary non-interactive titlebar clicks", () => {
+  assert.equal(
+    shouldFocusPanelShellFromTitlebarPointerDown({
+      button: 0,
+      interactiveTarget: false,
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldFocusPanelShellFromTitlebarPointerDown({
+      button: 0,
+      interactiveTarget: true,
+    }),
+    false,
+  );
+
+  assert.equal(
+    shouldFocusPanelShellFromTitlebarPointerDown({
+      button: 1,
+      interactiveTarget: false,
+    }),
+    false,
+  );
+});
+
+test("shouldBypassEditableGuardForArmedTableDialogKey only unlocks W shortcuts after a titlebar click", () => {
+  assert.equal(
+    shouldBypassEditableGuardForArmedTableDialogKey({
+      key: "w",
+      code: "KeyW",
+      armed: true,
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldBypassEditableGuardForArmedTableDialogKey({
+      key: "W",
+      code: "KeyW",
+      armed: true,
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldBypassEditableGuardForArmedTableDialogKey({
+      key: "Process",
+      code: "KeyW",
+      armed: true,
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldBypassEditableGuardForArmedTableDialogKey({
+      key: "q",
+      code: "KeyQ",
+      armed: true,
+    }),
+    false,
+  );
+
+  assert.equal(
+    shouldBypassEditableGuardForArmedTableDialogKey({
+      key: "w",
+      code: "KeyW",
+      armed: false,
+    }),
+    false,
+  );
+});
+
+test("shouldClearArmedTableDialogShortcutAfterAction keeps fullscreen toggles armed for the next W", () => {
+  assert.equal(
+    shouldClearArmedTableDialogShortcutAfterAction("toggleFullscreen"),
+    false,
+  );
+
+  assert.equal(
+    shouldClearArmedTableDialogShortcutAfterAction("closeTable"),
+    true,
+  );
+
+  assert.equal(
+    shouldClearArmedTableDialogShortcutAfterAction("closeAllTables"),
+    true,
+  );
+
+  assert.equal(
+    shouldClearArmedTableDialogShortcutAfterAction("none"),
+    false,
   );
 });
 

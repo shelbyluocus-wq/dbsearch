@@ -109,6 +109,7 @@ export function findHighlightRanges(text, termsInput) {
 
 export function resolveTableDialogKeyAction({
   key = "",
+  code = "",
   ctrlKey = false,
   metaKey = false,
   altKey = false,
@@ -120,13 +121,34 @@ export function resolveTableDialogKeyAction({
   if (!tableOpen || settingsOpen || isEditable) return "none";
 
   const lower = String(key || "").toLowerCase();
+  const keyCode = String(code || "");
   const withPrimary = ctrlKey || metaKey;
-  if (lower !== "w" || shiftKey) return "none";
+  const isWShortcut = lower === "w" || keyCode === "KeyW";
+  if (!isWShortcut || shiftKey) return "none";
 
   if (withPrimary && !altKey) return "closeTable";
   if (!withPrimary && altKey) return "closeAllTables";
   if (!withPrimary && !altKey) return "toggleFullscreen";
   return "none";
+}
+
+export function shouldFocusPanelShellFromTitlebarPointerDown({
+  button = 0,
+  interactiveTarget = false,
+} = {}) {
+  return Number(button) === 0 && !interactiveTarget;
+}
+
+export function shouldBypassEditableGuardForArmedTableDialogKey({
+  key = "",
+  code = "",
+  armed = false,
+} = {}) {
+  return Boolean(armed) && (String(key || "").toLowerCase() === "w" || String(code || "") === "KeyW");
+}
+
+export function shouldClearArmedTableDialogShortcutAfterAction(action = "none") {
+  return action === "closeTable" || action === "closeAllTables";
 }
 
 export function normalizeBackgroundOpacity(value) {
@@ -280,6 +302,14 @@ export function resolveTableDialogSurfaceMode({
     fillHostWindow: false,
     muteBackdrop: false,
   };
+}
+
+export function resolvePanelActivatedFocusTarget({
+  isPanelWindow = false,
+  tableOpen = false,
+} = {}) {
+  if (!isPanelWindow) return "none";
+  return tableOpen ? "table" : "keyword";
 }
 
 export function describeTableFolderChip(tableName, tableFolders = []) {

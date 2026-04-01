@@ -28,6 +28,17 @@ some-lib = "4.4.8"
   assert.match(result, /some-lib = "4\.4\.8"/);
 });
 
+test("syncCargoTomlVersion preserves CRLF line endings", () => {
+  const cargoToml = "[package]\r\nname = \"tauri-app\"\r\nversion = \"4.4.8\"\r\ndescription = \"fixture\"\r\n";
+
+  const result = syncCargoTomlVersion(cargoToml, "5.0.0");
+
+  assert.equal(
+    result,
+    "[package]\r\nname = \"tauri-app\"\r\nversion = \"5.0.0\"\r\ndescription = \"fixture\"\r\n",
+  );
+});
+
 test("syncTauriConfigContent keeps tauri version pointed at package.json and refreshes the title", () => {
   const config = {
     productName: "鹰捷",

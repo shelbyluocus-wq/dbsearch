@@ -20,9 +20,13 @@ import {
   normalizeBackgroundOpacity,
   panelChromeConstants,
   rankTableSearchCandidates,
+  resolvePanelActivatedFocusTarget,
   resolveTableDialogSurfaceMode,
   resolveNextTableSortMode,
+  shouldClearArmedTableDialogShortcutAfterAction,
+  shouldBypassEditableGuardForArmedTableDialogKey,
   resolveTableDialogKeyAction,
+  shouldFocusPanelShellFromTitlebarPointerDown,
   shouldEnablePanelTabDrag,
   shouldShowTitlebarDbSwitcher,
   shouldShowPanelTabStrip,
@@ -767,6 +771,7 @@ const tableCommandOpen = ref(false);
 const tableCommandQuery = ref("");
 const tableCommandActiveIndex = ref(0);
 const tableCommandSlashMode = ref(false);
+let armedTitlebarTableShortcut = false;
 const navZone = ref("sidebar");
 const navResultIndex = ref(-1);
 const templateSwitching = ref(false);
@@ -2463,12 +2468,21 @@ function resetPanelStateForDefaultBrowse() {
 
 function handlePanelActivated({ reset = false } = {}) {
   if (!isPanelWindow.value) return;
-  focusKeyword();
   if (reset) {
     resetPanelStateForDefaultBrowse();
-  } else {
-    syncSummaryForDefaultTableBrowse();
+    focusKeyword();
+    return;
   }
+  const focusTarget = resolvePanelActivatedFocusTarget({
+    isPanelWindow: isPanelWindow.value,
+    tableOpen: tableOpen.value,
+  });
+  if (focusTarget === "table") {
+    focusTableSurface();
+  } else if (focusTarget === "keyword") {
+    focusKeyword();
+  }
+  syncSummaryForDefaultTableBrowse();
 }
 
 async function onDbConnectionChanged({ resetContext = false } = {}) {
@@ -3154,6 +3168,13 @@ async function closePanelChromeTab(tab) {
 }
 
 function onPanelTabPointerDown(event, tab) {
+  if (shouldFocusPanelShellFromTitlebarPointerDown({
+    button: event.button,
+    interactiveTarget: false,
+  })) {
+    armedTitlebarTableShortcut = true;
+    focusPanelShell();
+  }
   if (!tab?.draggable || !tab?.tabId) return;
   panelTabsController.onPointerDown(event, tab.tabId);
 }
@@ -4107,6 +4128,9 @@ function detachPanelListeners() {
 }
 
 function onWindowClick(event) {
+  if (isEditableTarget(event.target)) {
+    armedTitlebarTableShortcut = false;
+  }
   const slashPanel = document.getElementById("slashDropdown");
   if (slashPanel && !slashPanel.contains(event.target) && !event.target?.closest?.("#keywordInput")) {
     slashModeOpen.value = false;
@@ -4292,6 +4316,11 @@ function onWindowKeydown(event) {
   const lower = String(event.key || "").toLowerCase();
   const withPrimary = event.ctrlKey || event.metaKey;
   const allowPanelShortcut = !isEditableTarget(event.target) || isKeywordInputTarget(event.target);
+  const bypassEditableGuard = shouldBypassEditableGuardForArmedTableDialogKey({
+    key: event.key,
+    code: event.code,
+    armed: armedTitlebarTableShortcut,
+  });
 
   if (!isTauriWindow && !event.repeat && isEventMatchingHotkey(event, config.personal.quick_date_hotkey)) {
     if (!resolveEditableTarget(document.activeElement)) return;
@@ -4506,14 +4535,18 @@ function onWindowKeydown(event) {
 
   const tableDialogKeyAction = resolveTableDialogKeyAction({
     key: event.key,
+    code: event.code,
     ctrlKey: event.ctrlKey,
     metaKey: event.metaKey,
     altKey: event.altKey,
     shiftKey: event.shiftKey,
     tableOpen: tableOpen.value,
     settingsOpen: settingsOpen.value,
-    isEditable: isEditableTarget(event.target),
+    isEditable: isEditableTarget(event.target) && !bypassEditableGuard,
   });
+  if (shouldClearArmedTableDialogShortcutAfterAction(tableDialogKeyAction)) {
+    armedTitlebarTableShortcut = false;
+  }
   if (tableDialogKeyAction === "closeTable") {
     event.preventDefault();
     closeTableDialog();
@@ -4528,6 +4561,9 @@ function onWindowKeydown(event) {
     event.preventDefault();
     toggleTableFullscreen().catch(() => {});
     return;
+  }
+  if (armedTitlebarTableShortcut && lower && !["control", "shift", "alt", "meta"].includes(lower)) {
+    armedTitlebarTableShortcut = false;
   }
 
   if (!isEditableTarget(event.target) && isEventMatchingHotkey(event, config.personal.always_on_top_hotkey)) {
@@ -4581,6 +4617,15 @@ function focusKeyword() {
   requestAnimationFrame(() => {
     const input = document.getElementById("keywordInput");
     input?.focus();
+  });
+}
+
+function focusTableSurface() {
+  requestAnimationFrame(() => {
+    const tableSurface = tableModalRef.value;
+    if (tableSurface instanceof HTMLElement) {
+      tableSurface.focus({ preventScroll: true });
+    }
   });
 }
 
@@ -4686,23 +4731,52 @@ async function panelToggleMaximize() {
 }
 
 function panelHeaderPointerDown(event) {
-  if (event.button !== 0 || !isTauriWindow || !isPanelWindow.value) return;
   const target = event.target;
-  if (target instanceof Element && target.closest("button, input, textarea, select, label, a")) {
-    return;
+  const interactiveTarget = target instanceof Element && target.closest("button, input, textarea, select, label, a");
+  if (shouldFocusPanelShellFromTitlebarPointerDown({
+    button: event.button,
+    interactiveTarget: Boolean(interactiveTarget),
+  })) {
+    armedTitlebarTableShortcut = true;
+    focusPanelShell();
   }
+  if (event.button !== 0 || !isTauriWindow || !isPanelWindow.value) return;
+  if (interactiveTarget) return;
   getCurrentWindow().startDragging().catch(() => {});
 }
 
+function focusPanelShell() {
+  if (document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
+  const shell = document.getElementById("appShell");
+  if (shell instanceof HTMLElement) {
+    shell.focus({ preventScroll: true });
+    requestAnimationFrame(() => shell.focus({ preventScroll: true }));
+    return;
+  }
+}
+
 function modalHeaderPointerDown(event) {
-  if (event.button !== 0) return;
   const target = event.target;
-  if (target instanceof Element && target.closest("button, input, textarea, select, label, a")) return;
+  const interactiveTarget = target instanceof Element && target.closest("button, input, textarea, select, label, a");
+  if (shouldFocusPanelShellFromTitlebarPointerDown({
+    button: event.button,
+    interactiveTarget: Boolean(interactiveTarget),
+  })) {
+    armedTitlebarTableShortcut = true;
+  }
+  if (event.button !== 0) return;
+  if (interactiveTarget) return;
+  if (document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
   const tableSurface = event.currentTarget instanceof Element
     ? event.currentTarget.closest(".table-modal")
     : null;
   if (tableSurface instanceof HTMLElement) {
     tableSurface.focus({ preventScroll: true });
+    requestAnimationFrame(() => tableSurface.focus({ preventScroll: true }));
   }
   if (!isTauriWindow) return;
   getCurrentWindow().startDragging().catch(() => {});
@@ -7102,6 +7176,7 @@ function escapeHtml(str) {
     v-if="isPanelWindow"
     :class="['app-shell', 'open', 'panel-shell', { 'reduced-transparency': reducedTransparencyEnabled }]"
     id="appShell"
+    tabindex="-1"
     @contextmenu.prevent
   >
     <section
