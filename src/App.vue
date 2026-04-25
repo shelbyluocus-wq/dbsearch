@@ -584,6 +584,68 @@ const syncCenterSectionCollapsed = ref({
   database: false,
   file: false,
 });
+const syncCenterCtxMenu = ref(null);
+
+function openSyncCenterCtxMenu(event, profileId, mode) {
+  event.preventDefault();
+  event.stopPropagation();
+  syncCenterCtxMenu.value = {
+    profileId,
+    mode,
+    x: event.clientX,
+    y: event.clientY,
+  };
+}
+
+function closeSyncCenterCtxMenu() {
+  syncCenterCtxMenu.value = null;
+}
+
+function deleteSyncCenterProfile() {
+  if (!syncCenterCtxMenu.value) return;
+  const { profileId, mode } = syncCenterCtxMenu.value;
+  closeSyncCenterCtxMenu();
+  if (mode === "database") {
+    const profiles = syncCenterDbSidebarState.value.profiles || [];
+    const remaining = profiles.filter((p) => p.id !== profileId);
+    dbMigrationWorkspaceRef.value?.removeProfile?.(profileId);
+  } else {
+    removeSyncProfile(profileId);
+  }
+}
+
+// 转表 - 添加模板弹窗状态
+const dbAddModalVisible = ref(false);
+const dbAddForm = ref({
+  name: '',
+  scriptExecutablePath: '',
+  outputDir: '',
+  targetPath: '',
+});
+
+function openDbAddModal() {
+  dbAddForm.value = { name: '', scriptExecutablePath: '', outputDir: '', targetPath: '' };
+  dbAddModalVisible.value = true;
+}
+function closeDbAddModal() {
+  dbAddModalVisible.value = false;
+}
+function confirmDbAddModal() {
+  if (!dbAddForm.value.name.trim()) return;
+  const seed = {
+    name: dbAddForm.value.name.trim(),
+    script_executable_path: dbAddForm.value.scriptExecutablePath,
+    output_root: dbAddForm.value.outputDir,
+    targetDatabase: dbAddForm.value.targetPath,
+  };
+  selectSyncCenterMode("database");
+  syncCenterSectionCollapsed.value = { ...syncCenterSectionCollapsed.value, database: false };
+  nextTick(() => {
+    dbMigrationWorkspaceRef.value?.addProfileWithSeed?.(seed);
+  });
+  closeDbAddModal();
+}
+
 const syncCenterDbLogState = ref({
   entries: [],
   running: false,
@@ -1167,11 +1229,7 @@ function handleDbMigrationSidebarState(state = {}) {
 }
 
 function addDbMigrationProfileFromSyncCenter() {
-  selectSyncCenterMode("database");
-  syncCenterSectionCollapsed.value = { ...syncCenterSectionCollapsed.value, database: false };
-  nextTick(() => {
-    dbMigrationWorkspaceRef.value?.addProfile?.();
-  });
+  openDbAddModal();
 }
 
 function selectDbMigrationProfileFromSyncCenter(profileId) {
@@ -7929,24 +7987,7 @@ function escapeHtml(str) {
 
     <div class="sync-center-drag-strip" aria-hidden="true" @pointerdown="syncWorkspaceHeaderPointerDown"></div>
 
-    <div class="sync-center-top-actions" @pointerdown.stop>
-      <button
-        class="sw-toolbar-btn"
-        title="新增"
-        type="button"
-        @click="syncCenterMode === 'database' ? addDbMigrationProfileFromSyncCenter() : addSyncProfileFromSyncCenter()"
-      >
-        +
-      </button>
-      <button
-        class="sw-toolbar-btn"
-        title="设置"
-        type="button"
-        @click="syncCenterMode === 'database' ? openDbMigrationSettingsFromSyncCenter() : openSyncSettings()"
-      >
-        ⚙
-      </button>
-    </div>
+
 
     <div class="sync-center-resize-handles" aria-hidden="true">
       <div class="sync-center-resize-handle is-n" @pointerdown="startSyncCenterResize($event, 'North')"></div>
@@ -7968,13 +8009,6 @@ function escapeHtml(str) {
             <button class="traffic-btn traffic-green" title="最大化/还原" @click="syncWorkspaceToggleMaximize" />
           </div>
         </div>
-
-        <label class="sync-center-sidebar-search">
-          <span>⌕</span>
-          <input v-model="syncCenterSidebarQuery" type="search" placeholder="搜索任务" />
-        </label>
-
-        <div class="sync-center-sidebar-caption">项目与任务</div>
 
         <section
           :class="['sync-center-sidebar-section', 'is-transfer', {
@@ -8012,6 +8046,7 @@ function escapeHtml(str) {
               :class="['sw-sidebar-item', { selected: syncCenterMode === 'database' && profile.id === syncCenterDbSidebarState.activeProfileId }]"
               :disabled="syncCenterDbSidebarState.running || syncCenterDbSidebarState.connecting"
               @click="selectDbMigrationProfileFromSyncCenter(profile.id)"
+              @contextmenu.prevent="openSyncCenterCtxMenu($event, profile.id, 'database')"
             >
               <span :class="['sw-sidebar-status-dot', `is-${profile.statusTone || 'idle'}`]"></span>
               <span class="sw-sidebar-copy">
@@ -8037,7 +8072,7 @@ function escapeHtml(str) {
               type="button"
               @click="toggleSyncCenterSection('file')"
             >
-              <span :class="['sw-sidebar-status-dot', `is-${currentProfileStatusTone}`]"></span>
+              <span class="sync-center-sidebar-icon">⇄</span>
               <span class="sync-center-sidebar-copy">
                 <span>数据库同步</span>
                 <small>{{ currentProfileStatusText }}</small>
@@ -8060,6 +8095,7 @@ function escapeHtml(str) {
               :key="profile.id"
               :class="['sw-sidebar-item', { selected: syncCenterMode === 'file' && profile.id === syncWorkspaceActiveProfileId }]"
               @click="selectSyncProfileFromSyncCenter(profile.id)"
+              @contextmenu.prevent="openSyncCenterCtxMenu($event, profile.id, 'file')"
             >
               <span :class="['sw-sidebar-status-dot', `is-${syncWorkspaceRunning && syncWorkspaceRunProfileId === profile.id ? 'running' : (profile.last_run_status || 'idle')}`]"></span>
               <span class="sw-sidebar-copy">
@@ -8324,6 +8360,68 @@ function escapeHtml(str) {
           <button class="sw-settings-save-btn" :disabled="syncWorkspaceRunning" @click="saveSyncWorkspaceSettings(); closeSyncSettings()">保存</button>
         </footer>
       </section>
+    </div>
+    <div v-if="syncCenterCtxMenu" class="sync-center-ctx-backdrop" @click="closeSyncCenterCtxMenu" @contextmenu.prevent="closeSyncCenterCtxMenu"></div>
+    <div v-if="syncCenterCtxMenu" class="sync-center-ctx-menu" :style="{ left: syncCenterCtxMenu.x + 'px', top: syncCenterCtxMenu.y + 'px' }">
+      <button class="sync-center-ctx-item" @click="deleteSyncCenterProfile">删除模板</button>
+    </div>
+
+    <!-- 转表 - 添加模板弹窗 -->
+    <div v-if="dbAddModalVisible" class="sc-add-modal-backdrop" @click.self="closeDbAddModal">
+      <div class="sc-add-modal">
+        <button class="sc-add-modal-close" @click="closeDbAddModal" type="button">×</button>
+        <div class="sc-add-modal-header">
+          <div class="sc-add-modal-title-group">
+            <h3 class="sc-add-modal-title">添加模板</h3>
+            <p class="sc-add-modal-subtitle">配置模版信息，快速复用执行任务</p>
+          </div>
+          <div class="sc-add-modal-illustration">
+            <svg width="160" height="120" viewBox="0 0 160 120" fill="none">
+              <rect x="20" y="20" width="90" height="70" rx="12" fill="rgba(101,151,232,0.2)" stroke="rgba(101,151,232,0.4)" stroke-width="1.5"/>
+              <rect x="45" y="35" width="90" height="70" rx="12" fill="rgba(143,174,224,0.15)" stroke="rgba(143,174,224,0.35)" stroke-width="1.5"/>
+              <circle cx="95" cy="60" r="16" fill="rgba(104,153,235,0.25)" stroke="rgba(104,153,235,0.5)" stroke-width="1.5"/>
+              <path d="M89 60 L93 64 L102 55" stroke="#6999EB" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+        </div>
+
+        <div class="sc-add-modal-body">
+          <div class="sc-add-modal-section-title">配置信息</div>
+
+          <div class="sc-add-field-row">
+            <span class="sc-add-field-icon">🏷️</span>
+            <label class="sc-add-field-label">配置名称</label>
+            <input v-model="dbAddForm.name" class="sc-add-input" type="text" placeholder="请输入配置名称" maxlength="56" />
+            <span class="sc-add-char-count">{{ dbAddForm.name.length }}/56</span>
+          </div>
+
+          <div class="sc-add-field-row">
+            <span class="sc-add-field-icon">⤳</span>
+            <label class="sc-add-field-label">脚本软件路径</label>
+            <input v-model="dbAddForm.scriptExecutablePath" class="sc-add-input" type="text" placeholder="请输入脚本软件路径" />
+            <button class="sc-add-browse-btn" type="button">浏览</button>
+          </div>
+
+          <div class="sc-add-field-row">
+            <span class="sc-add-field-icon">📁</span>
+            <label class="sc-add-field-label">脚本输出目录</label>
+            <input v-model="dbAddForm.outputDir" class="sc-add-input" type="text" placeholder="请输入脚本输出目录" />
+            <button class="sc-add-browse-btn" type="button">浏览</button>
+          </div>
+
+          <div class="sc-add-field-row">
+            <span class="sc-add-field-icon">🕐</span>
+            <label class="sc-add-field-label">项目目标路径</label>
+            <input v-model="dbAddForm.targetPath" class="sc-add-input" type="text" placeholder="请输入项目目标路径" />
+            <button class="sc-add-browse-btn" type="button">浏览</button>
+          </div>
+        </div>
+
+        <div class="sc-add-modal-footer">
+          <button class="sc-add-btn sc-add-btn-cancel" @click="closeDbAddModal" type="button">取消</button>
+          <button class="sc-add-btn sc-add-btn-confirm" @click="confirmDbAddModal" :disabled="!dbAddForm.name.trim()" type="button">确定</button>
+        </div>
+      </div>
     </div>
   </main>
 

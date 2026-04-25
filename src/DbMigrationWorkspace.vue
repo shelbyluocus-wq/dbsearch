@@ -693,9 +693,9 @@ function addDraftProfile() {
   return profile;
 }
 
-async function addProfile() {
+async function addProfile(seed = {}) {
   if (running.value || connecting.value) return;
-  const profile = createDbMigrationProfileDraft(workspaceProfiles.value);
+  const profile = createDbMigrationProfileDraft(workspaceProfiles.value, seed);
   setWorkspaceProfiles([...workspaceProfiles.value, profile]);
   activeProfileId.value = profile.id;
   applyIncompleteProfileState(profile, {
@@ -712,6 +712,7 @@ async function addProfile() {
 
 defineExpose({
   addProfile,
+  addProfileWithSeed: (seed) => addProfile(seed),
   activateProfile,
   openSettings,
 });
