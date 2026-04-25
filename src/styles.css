@@ -2261,7 +2261,7 @@ mark {
 
 .sw-config-path-row {
   flex-direction: row !important;
-  align-items: flex-end;
+  align-items: center;
   gap: 8px;
 }
 
@@ -2283,6 +2283,7 @@ mark {
   cursor: pointer;
   white-space: nowrap;
   transition: background 120ms ease;
+  margin-top: 22px;
 }
 
 .sw-config-path-row > button:hover {
@@ -11795,7 +11796,9 @@ mark {
 .sync-center-root .sw-pipeline-title,
 .dmw-root--embedded .dmw-section-title,
 .dmw-root--embedded .dmw-incomplete-title,
-.dmw-root--embedded .dmw-empty-title {
+.dmw-root--embedded .dmw-empty-title,
+.dmw-root--embedded .sw-config-form-title,
+.dmw-root--embedded .sw-pipeline-title {
   color: #fff;
 }
 
@@ -12001,134 +12004,19 @@ mark {
   color: #ff6b6b;
 }
 
-/* 转表 - 添加模板弹窗 */
-.sc-add-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 300;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(8px);
-}
-.sc-add-modal {
-  position: relative;
-  width: 580px;
-  max-height: 85vh;
-  display: flex;
-  flex-direction: column;
-  border-radius: 20px;
-  border: 1px solid rgba(232, 240, 255, 0.15);
-  color: rgb(246, 248, 250);
-  background: rgba(30, 36, 44, 0.92);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.06);
-  overflow: hidden;
-}
-.sc-add-modal-close {
-  position: absolute;
-  top: 14px;
-  right: 16px;
-  width: 28px;
-  height: 28px;
-  border: none;
-  border-radius: 8px;
-  background: transparent;
-  color: rgba(246, 248, 250, 0.45);
-  font-size: 20px;
-  line-height: 1;
-  cursor: pointer;
-  z-index: 2;
-}
-.sc-add-modal-close:hover {
-  background: rgba(255, 107, 107, 0.15);
-  color: #ff6b6b;
-}
-.sc-add-modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 28px 28px 0;
-}
-.sc-add-modal-title-group { flex: 1; min-width: 0; }
-.sc-add-modal-title {
-  margin: 0 0 4px; font-size: 22px; font-weight: 700; letter-spacing: -0.3px; color: #fff;
-}
-.sc-add-modal-subtitle {
-  margin: 0; font-size: 13px; color: var(--sc-text-soft, rgba(246, 248, 250, 0.5));
-}
-.sc-add-modal-illustration { flex-shrink: 0; margin-left: 12px; opacity: 0.85; }
-
-.sc-add-modal-body { padding: 18px 28px 10px; overflow-y: auto; }
-.sc-add-modal-section-title {
-  margin-bottom: 16px; padding-left: 10px; font-size: 13px; font-weight: 600;
-  color: rgba(104, 153, 235, 0.9); letter-spacing: 0.5px; position: relative;
-}
-.sc-add-modal-section-title::before {
-  content: ''; position: absolute; left: 0; top: 50%; transform: translateY(-50%);
-  width: 3px; height: 14px; border-radius: 2px;
-  background: linear-gradient(180deg, #6899EB, #93AEE0);
-}
-
-.sc-add-field-row { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
-.sc-add-field-icon {
-  flex-shrink: 0; width: 32px; height: 36px; display: flex; align-items: center; justify-content: center;
-  border-radius: 9px; background: rgba(101, 151, 232, 0.12); font-size: 14px;
-}
-.sc-add-field-label {
-  flex-shrink: 0; width: 90px; font-size: 13px; font-weight: 500; color: rgba(246, 248, 250, 0.75);
-}
-.sc-add-input {
-  flex: 1; min-width: 0; height: 38px; padding: 0 12px;
-  border: 1px solid rgba(255, 255, 255, 0.09); border-radius: 10px;
-  background: rgba(255, 255, 255, 0.05); color: #fff; font-size: 13px; outline: none;
-}
-.sc-add-input::placeholder { color: rgba(246, 248, 250, 0.28); }
-.sc-add-input:focus {
-  border-color: rgba(104, 153, 235, 0.55);
-  box-shadow: 0 0 0 3px rgba(104, 153, 235, 0.12);
-  background: rgba(255, 255, 255, 0.07);
-}
-.sc-add-char-count {
-  flex-shrink: 0; width: 34px; text-align: right; font-size: 11px; color: rgba(246, 248, 250, 0.35);
-}
-.sc-add-browse-btn {
-  flex-shrink: 0; padding: 0 14px; height: 38px;
-  border: 1px solid rgba(104, 153, 235, 0.3); border-radius: 10px;
-  background: rgba(104, 153, 235, 0.1); color: rgba(143, 174, 224, 0.85);
-  font-size: 13px; cursor: pointer;
-}
-.sc-add-browse-btn:hover {
-  background: rgba(104, 153, 235, 0.2); border-color: rgba(104, 153, 235, 0.5);
-}
-
-.sc-add-modal-footer { display: flex; justify-content: flex-end; gap: 12px; padding: 14px 28px 22px; }
-.sc-add-btn {
-  padding: 0 28px; height: 40px; border: none; border-radius: 11px;
-  font-size: 14px; font-weight: 600; cursor: pointer;
-}
-.sc-add-btn-cancel {
-  background: rgba(255, 255, 255, 0.06); color: rgba(246, 248, 250, 0.65);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-}
-.sc-add-btn-cancel:hover { background: rgba(255, 255, 255, 0.11); color: rgba(246, 248, 250, 0.85); }
-.sc-add-btn-confirm {
-  background: linear-gradient(135deg, #5878D8, #4466C8); color: #fff;
-  box-shadow: 0 4px 14px rgba(84, 120, 216, 0.3);
-}
-.sc-add-btn-confirm:hover:not(:disabled) {
-  background: linear-gradient(135deg, #6685E0, #5574D4);
-  box-shadow: 0 6px 18px rgba(84, 120, 216, 0.42);
-}
-.sc-add-btn-confirm:disabled { opacity: 0.4; cursor: not-allowed; }
 
 /* 空状态居中 + 文字颜色 */
-.sync-center-root .sw-empty {
+.sync-center-root .sw-empty,
+.dmw-root--embedded .sw-empty {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
   padding: 0; text-align: center; margin: auto 0;
 }
-.sync-center-root .sw-empty-title { color: #fff; }
-.sync-center-root .sw-empty-desc { color: var(--sc-text-soft); }
+.sync-center-root .sw-empty-title,
+.dmw-root--embedded .sw-empty-title { color: #fff; }
+.sync-center-root .sw-empty-desc,
+.dmw-root--embedded .sw-empty-desc { color: var(--sc-text-soft); }
+.sync-center-root .sw-empty-btn,
+.dmw-root--embedded .sw-empty-btn { margin-top: 4px; }
 
 .sync-center-resize-handles {
   position: absolute;
@@ -12575,7 +12463,9 @@ mark {
 .sync-center-root .sw-pipeline-title,
 .dmw-root--embedded .dmw-section-title,
 .dmw-root--embedded .dmw-incomplete-title,
-.dmw-root--embedded .dmw-empty-title {
+.dmw-root--embedded .dmw-empty-title,
+.dmw-root--embedded .sw-config-form-title,
+.dmw-root--embedded .sw-pipeline-title {
   color: #fff;
   text-transform: none;
   letter-spacing: 0;
@@ -12757,12 +12647,12 @@ mark {
   max-width: 460px;
   height: 100%;
   min-height: 0;
-  padding: 4px 22px 16px;
+  padding: 6px 22px 16px;
   gap: 10px;
   border: 1px solid rgba(232, 240, 255, 0.2);
   border-radius: 30px;
   color: rgb(246, 248, 250);
-  background: rgb(46, 55, 64);
+  background: rgba(46, 55, 64, 0.55);
   box-shadow: none;
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
@@ -12969,4 +12859,90 @@ mark {
 .dmw-root--embedded .sw-profile-name {
   font-size: 28px;
   font-weight: 850;
+}
+
+/* ── Step tabs (connection → selection) ── */
+.dmw-steps {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+.dmw-step-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: var(--sc-text-dim);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 6px 0;
+  border-bottom: 2px solid transparent;
+  transition: color .15s, border-color .15s;
+}
+.dmw-step-tab:hover:not(:disabled) { color: var(--sc-text); }
+.dmw-step-tab.active {
+  color: var(--sc-text);
+  border-bottom-color: var(--sc-blue);
+}
+.dmw-step-tab.done .dmw-step-num {
+  background: rgba(77, 145, 244, 0.25);
+  color: var(--sc-blue);
+}
+.dmw-step-tab:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+.dmw-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  font-size: 11px;
+  font-weight: 600;
+}
+.dmw-step-arrow {
+  color: var(--sc-text-dim);
+  font-size: 16px;
+  margin: 0 2px;
+}
+
+/* ── Step card ── */
+.dmw-step-card {
+  background: var(--sc-card);
+  border: 1px solid var(--sc-line);
+  border-radius: 12px;
+  padding: 18px;
+}
+.dmw-step-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 14px;
+  flex-wrap: wrap;
+}
+.dmw-selection-actions {
+  margin-bottom: 0;
+}
+.dmw-step-note {
+  font-size: 12px;
+  color: var(--sc-text-dim);
+  margin: 8px 0 0;
+}
+
+/* ── Dark mode: browse buttons in config path rows ── */
+.sync-center-root .sw-config-path-row > button,
+.dmw-root--embedded .sw-config-path-row > button {
+  background: var(--sc-card-strong);
+  border-color: var(--sc-line-strong);
+  color: var(--sc-text);
+}
+.sync-center-root .sw-config-path-row > button:hover,
+.dmw-root--embedded .sw-config-path-row > button:hover {
+  background: rgba(111, 128, 153, 0.58);
 }

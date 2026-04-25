@@ -84,6 +84,7 @@ const hotkeyDraft = ref(DEFAULT_DB_MIGRATION_WINDOW_HOTKEY);
 const importInput = ref(null);
 const pendingImportProfileId = ref("");
 const profileStatusById = ref({});
+const dbStep = ref("connection");
 
 let selectionSyncDepth = 0;
 let unlistenProgress = null;
@@ -301,6 +302,20 @@ watch([profilesView, activeProfileId, currentStatusText, currentStatusTone, runn
     connecting: Boolean(connecting.value),
   });
 }, { immediate: true, deep: true });
+
+watch(activeProfileId, () => {
+  if (!activeProfile.value || !activeProfileConnectionReady.value) {
+    dbStep.value = "connection";
+  }
+});
+
+watch(activeProfileConnectionReady, (ready) => {
+  if (ready && dbStep.value === "connection") {
+    dbStep.value = "selection";
+  } else if (!ready) {
+    dbStep.value = "connection";
+  }
+});
 
 watch([sourceDatabase, targetDatabase], () => {
   if (selectionSyncDepth > 0 || !activeProfile.value) return;
@@ -698,22 +713,52 @@ async function addProfile(seed = {}) {
   const profile = createDbMigrationProfileDraft(workspaceProfiles.value, seed);
   setWorkspaceProfiles([...workspaceProfiles.value, profile]);
   activeProfileId.value = profile.id;
+  dbStep.value = "connection";
   applyIncompleteProfileState(profile, {
-    message: "已新增模板，请在编辑模板里补全连接信息。",
+    message: "已新增模板，请补全连接信息。",
     tone: "neutral",
   });
+  await persistWorkspaceState().catch(handleWorkspacePersistenceError);
+}
+
+async function removeProfile(profileId) {
+  if (running.value || connecting.value) return;
+  const remaining = workspaceProfiles.value.filter((p) => p.id !== profileId);
+  if (remaining.length === workspaceProfiles.value.length) return;
+  setWorkspaceProfiles(remaining);
+  if (activeProfileId.value === profileId) {
+    const nextProfile = remaining[0] || null;
+    if (nextProfile) {
+      activeProfileId.value = nextProfile.id;
+      if (!isDbMigrationProfileConnectionReady(nextProfile)) {
+        applyIncompleteProfileState(nextProfile);
+      }
+    } else {
+      applyEmptyWorkspaceState();
+    }
+  }
   if (settingsOpen.value) {
-    syncSettingsDraftFromWorkspace({ editingProfileId: profile.id });
-    settingsMessage.value = `已新增模板 ${profile.name}。`;
-    settingsMessageTone.value = "neutral";
+    syncSettingsDraftFromWorkspace({
+      editingProfileId: activeProfileId.value || remaining[0]?.id || "",
+    });
   }
   await persistWorkspaceState().catch(handleWorkspacePersistenceError);
+}
+
+async function nextStepFromConnection() {
+  if (!activeProfile.value || connecting.value || running.value) return;
+  if (!isDbMigrationProfileConnectionReady(activeProfile.value)) return;
+  const connected = await connectProfile(activeProfile.value);
+  if (connected) {
+    dbStep.value = "selection";
+  }
 }
 
 defineExpose({
   addProfile,
   addProfileWithSeed: (seed) => addProfile(seed),
   activateProfile,
+  removeProfile,
   openSettings,
 });
 
@@ -766,51 +811,8 @@ async function saveSettings() {
     const normalizedHotkey = await invoke("register_db_migration_window_hotkey", {
       hotkey: hotkeyDraft.value,
     });
-    const previousActiveProfile = activeProfile.value
-      ? normalizeDbMigrationProfile(activeProfile.value)
-      : null;
-    const nextSnapshot = buildSettingsDraftSnapshot(activeProfileId.value);
-
     workspaceHotkey.value = normalizeDbMigrationWindowHotkey(normalizedHotkey);
     hotkeyDraft.value = workspaceHotkey.value;
-    applyWorkspaceSnapshot(nextSnapshot);
-    await persistWorkspaceState({
-      profiles: nextSnapshot.profiles,
-      lastUsedProfileId: nextSnapshot.lastUsedProfileId,
-      applyToState: false,
-    });
-
-    const nextActiveProfile = workspaceProfiles.value.find(
-      (profile) => profile.id === activeProfileId.value,
-    ) || null;
-
-    if (!nextActiveProfile) {
-      applyEmptyWorkspaceState();
-    } else if (!isDbMigrationProfileConnectionReady(nextActiveProfile)) {
-      applyIncompleteProfileState(nextActiveProfile, {
-        message: "模板已保存，请先在设置里补全连接信息。",
-        tone: "neutral",
-        clearExecution: false,
-      });
-    } else if (
-      !currentConnection.value
-      || !previousActiveProfile
-      || previousActiveProfile.id !== nextActiveProfile.id
-      || !isSameDbMigrationConnection(currentConnection.value, nextActiveProfile)
-    ) {
-      await connectProfile(nextActiveProfile);
-    } else {
-      applyProfileSelections(nextActiveProfile, availableDatabases.value);
-      rememberProfileStatus(
-        nextActiveProfile.id,
-        availableDatabases.value.length >= 2 ? "success" : "error",
-      );
-      loginMessage.value = availableDatabases.value.length >= 2
-        ? `已应用模板 ${nextActiveProfile.name}`
-        : `已应用模板 ${nextActiveProfile.name}，但可见业务库少于 2 个`;
-      loginMessageTone.value = availableDatabases.value.length >= 2 ? "success" : "error";
-    }
-
     settingsMessage.value = "设置已保存。";
     settingsMessageTone.value = "success";
     closeSettings();
@@ -875,29 +877,32 @@ async function importDbConfigFile(file, profileId = pendingImportProfileId.value
       throw new Error("JSON 解析失败或缺少连接字段");
     }
 
-    if (!settingsOpen.value || !profileId) {
-      throw new Error("请先打开模板编辑，再导入 JSON 填充当前模板。");
+    const targetId = profileId || activeProfileId.value;
+    if (!targetId) {
+      throw new Error("请先选中一个模板，再导入 JSON。");
     }
 
-    const draftProfile = settingsProfilesDraft.value.find((profile) => profile.id === profileId);
-    if (!draftProfile) {
+    const profile = workspaceProfiles.value.find((p) => p.id === targetId);
+    if (!profile) {
       throw new Error("未找到要填充的模板。");
     }
 
-    replaceDraftProfile(profileId, (profile, index) =>
-      applyImportedDbMigrationProfileDraft(profile, imported, index));
-    settingsEditingProfileId.value = profileId;
-    settingsMessage.value = `已将 JSON 填充到模板 ${draftProfile.name || "当前模板"}。`;
-    settingsMessageTone.value = "success";
+    const index = workspaceProfiles.value.indexOf(profile);
+    const updated = applyImportedDbMigrationProfileDraft(profile, imported, index);
+    updateProfileFields(targetId, updated);
+    await persistWorkspaceState().catch(handleWorkspacePersistenceError);
+
+    loginMessage.value = `已将 JSON 填充到模板 ${profile.name || "当前模板"}。`;
+    loginMessageTone.value = "success";
   } catch (error) {
-    settingsMessage.value = String(error);
-    settingsMessageTone.value = "error";
+    loginMessage.value = String(error);
+    loginMessageTone.value = "error";
   }
 }
 
 function triggerImport(profileId = "") {
   if (running.value || connecting.value) return;
-  pendingImportProfileId.value = profileId;
+  pendingImportProfileId.value = profileId || activeProfileId.value;
   importInput.value?.click?.();
 }
 
@@ -1006,19 +1011,19 @@ onBeforeUnmount(() => {
             <button class="traffic-btn traffic-green" title="最大化/还原" @click="emit('toggle-maximize')" />
           </div>
         </div>
-        <section class="sync-center-sidebar-section is-transfer selected">
+        <section class="sync-center-sidebar-section is-database-sync selected">
           <div class="sync-center-sidebar-section-row">
             <button class="sync-center-sidebar-section-head" type="button">
-              <span class="sync-center-sidebar-icon">⌘</span>
+              <span class="sync-center-sidebar-icon">⇄</span>
               <span class="sync-center-sidebar-copy">
-                <span>转表</span>
+                <span>数据库同步</span>
                 <small>{{ currentStatusText }}</small>
               </span>
             </button>
             <button
               class="sync-center-sidebar-add"
               type="button"
-              title="新增迁移模板"
+              title="新增同步配置"
               :disabled="running || connecting"
               @click.stop="addProfile"
             >
@@ -1041,11 +1046,11 @@ onBeforeUnmount(() => {
               </span>
             </button>
 
-            <div v-if="workspaceProfiles.length === 0" class="sync-center-sidebar-empty">暂无迁移模板</div>
+            <div v-if="workspaceProfiles.length === 0" class="sync-center-sidebar-empty">暂无同步配置</div>
           </div>
         </section>
 
-        <section v-if="isEmbedded" class="sync-center-sidebar-section is-database-sync">
+        <section v-if="isEmbedded" class="sync-center-sidebar-section is-transfer">
           <div class="sync-center-sidebar-section-row">
             <button
               class="sync-center-sidebar-section-head"
@@ -1054,14 +1059,14 @@ onBeforeUnmount(() => {
             >
               <span :class="['sw-sidebar-status-dot', `is-${embeddedFileSyncSummary.tone}`]"></span>
               <span class="sync-center-sidebar-copy">
-                <span>数据库同步</span>
+                <span>转表并同步</span>
                 <small>{{ embeddedFileSyncSummary.status }}</small>
               </span>
             </button>
             <button
               class="sync-center-sidebar-add"
               type="button"
-              title="新增同步配置"
+              title="新增迁移模板"
               @click.stop="emit('add-file-sync')"
             >
               +
@@ -1083,88 +1088,115 @@ onBeforeUnmount(() => {
       <section class="sw-content dmw-content">
         <template v-if="activeProfile">
           <div class="sw-content-header">
-            <div class="dmw-header-copy">
-              <h1 class="sw-profile-name">{{ activeProfile.name }}</h1>
-              <div class="dmw-header-subtitle">{{ activeProfileSummary }}</div>
-            </div>
+            <h1 class="sw-profile-name">{{ activeProfile.name }}</h1>
             <div class="sw-status-line">
               <span :class="['sw-status-badge', `is-${currentStatusTone}`]">{{ currentStatusText }}</span>
-              <span>{{ headerHelperText }}</span>
             </div>
+          </div>
+
+          <!-- Step indicator -->
+          <div class="dmw-steps">
+            <button
+              :class="['dmw-step-tab', { active: dbStep === 'connection', done: activeProfileConnectionReady }]"
+              :disabled="running || connecting"
+              @click="dbStep = 'connection'"
+            >
+              <span class="dmw-step-num">1</span>
+              <span>连接配置</span>
+            </button>
+            <span class="dmw-step-arrow">›</span>
+            <button
+              :class="['dmw-step-tab', { active: dbStep === 'selection', disabled: !activeProfileConnectionReady }]"
+              :disabled="!activeProfileConnectionReady || running || connecting"
+              @click="dbStep = 'selection'"
+            >
+              <span class="dmw-step-num">2</span>
+              <span>选择数据库</span>
+            </button>
           </div>
 
           <div v-if="bannerMessage" :class="['sw-banner', `tone-${bannerTone}`]">
             {{ bannerMessage }}
           </div>
 
-          <section class="dmw-section dmw-section-primary">
-            <div class="dmw-section-head">
+          <!-- Step 1: Connection -->
+          <div v-if="dbStep === 'connection'" class="sw-config-form dmw-step-card">
+            <div class="sw-config-field">
+              <label>模板名称</label>
+              <input
+                v-model="activeProfile.name"
+                type="text"
+                placeholder="例如：17服覆盖到15服"
+                :disabled="running || connecting"
+                @change="persistWorkspaceState().catch(handleWorkspacePersistenceError)"
+              />
+            </div>
+            <div class="sw-config-field sw-config-path-row">
               <div>
-                <h2 class="dmw-section-title">执行</h2>
-                <p class="dmw-section-subtitle">{{ executionSectionSubtitle }}</p>
-              </div>
-              <div class="dmw-section-actions">
-                <button
-                  class="sw-open-dir-btn dmw-secondary-action"
-                  type="button"
+                <label>主机</label>
+                <input
+                  v-model="activeProfile.host"
+                  type="text"
+                  placeholder="127.0.0.1"
                   :disabled="running || connecting"
-                  @click="openSettingsForActiveProfile"
-                >
-                  编辑模板
-                </button>
+                  @change="persistWorkspaceState().catch(handleWorkspacePersistenceError)"
+                />
+              </div>
+              <div>
+                <label>端口</label>
+                <input
+                  v-model.number="activeProfile.port"
+                  type="number"
+                  min="1"
+                  placeholder="3306"
+                  :disabled="running || connecting"
+                  @change="persistWorkspaceState().catch(handleWorkspacePersistenceError)"
+                />
               </div>
             </div>
-
-            <div v-if="!activeProfileConnectionReady" class="dmw-incomplete-card">
-              <div class="dmw-incomplete-title">模板还没配完整</div>
-              <p class="dmw-inline-note">请在编辑模板里补全主机、端口、账号和密码；补全后点选模板会自动连接。</p>
-              <div class="sw-action-row">
-                <button class="sw-open-dir-btn" type="button" :disabled="running || connecting" @click="openSettingsForActiveProfile">
-                  去编辑模板
-                </button>
+            <div class="sw-config-field sw-config-path-row">
+              <div>
+                <label>账号</label>
+                <input
+                  v-model="activeProfile.username"
+                  type="text"
+                  placeholder="请输入账号"
+                  :disabled="running || connecting"
+                  @change="persistWorkspaceState().catch(handleWorkspacePersistenceError)"
+                />
+              </div>
+              <div>
+                <label>密码</label>
+                <input
+                  v-model="activeProfile.password"
+                  type="password"
+                  placeholder="请输入密码"
+                  :disabled="running || connecting"
+                  @change="persistWorkspaceState().catch(handleWorkspacePersistenceError)"
+                />
               </div>
             </div>
-
-            <div class="dmw-selection-preview-grid">
-              <div v-for="item in selectedDatabaseCards" :key="item.label" class="dmw-selection-preview">
-                <span class="dmw-selection-preview-label">{{ item.label }}</span>
-                <strong class="dmw-selection-preview-value" :title="item.value">{{ item.value }}</strong>
-              </div>
+            <div class="dmw-step-card-actions">
+              <button
+                class="sw-run-btn"
+                :disabled="!activeProfileConnectionReady || connecting || running"
+                @click="nextStepFromConnection"
+              >
+                {{ connecting ? '连接中...' : '下一步' }}
+              </button>
+              <button
+                class="sw-open-dir-btn"
+                :disabled="running || connecting"
+                @click="triggerImport(activeProfile.id)"
+              >
+                导入 JSON
+              </button>
             </div>
+          </div>
 
-            <div class="dmw-select-grid">
-              <div class="sw-config-field">
-                <label>源库</label>
-                <select
-                  v-model="sourceDatabase"
-                  class="dmw-select"
-                  :title="sourceDatabase || '请选择源库'"
-                  :disabled="phase === 'login' || running || connecting || !activeProfileConnectionReady"
-                >
-                  <option value="">请选择源库</option>
-                  <option v-for="db in availableDatabases" :key="`source-${db}`" :value="db">
-                    {{ db }}
-                  </option>
-                </select>
-              </div>
-
-              <div class="sw-config-field">
-                <label>目标库</label>
-                <select
-                  v-model="targetDatabase"
-                  class="dmw-select"
-                  :title="targetDatabase || '请选择目标库'"
-                  :disabled="phase === 'login' || running || connecting || !activeProfileConnectionReady"
-                >
-                  <option value="">请选择目标库</option>
-                  <option v-for="db in availableDatabases" :key="`target-${db}`" :value="db">
-                    {{ db }}
-                  </option>
-                </select>
-              </div>
-            </div>
-
-            <div class="sw-action-row">
+          <!-- Step 2: Database Selection -->
+          <div v-if="dbStep === 'selection'" class="dmw-step-card">
+            <div class="sw-action-row dmw-selection-actions">
               <button
                 class="sw-run-btn"
                 :disabled="!canRunMigration || !hasEnoughDatabases"
@@ -1177,28 +1209,44 @@ onBeforeUnmount(() => {
               </button>
             </div>
 
-            <p v-if="phase === 'login' && activeProfileConnectionReady" class="dmw-inline-note">
-              当前模板尚未连接成功，连接后才能选择源库和目标库。
-            </p>
-
-            <p v-if="!hasEnoughDatabases && phase !== 'login'" class="dmw-inline-note">
-              当前账号可见业务库少于 2 个，暂时无法执行完整覆盖。
-            </p>
-
-            <div v-if="backupDir" class="dmw-path-card">
-              <span class="dmw-path-label">备份目录</span>
-              <code class="dmw-path-value">{{ backupDir }}</code>
-            </div>
-          </section>
-
-          <section v-if="!isEmbedded" class="dmw-section">
-            <div class="dmw-section-head">
-              <div>
-                <h2 class="dmw-section-title">记录</h2>
-                <p class="dmw-section-subtitle">执行步骤和详细日志。</p>
+            <div class="sw-config-form" style="margin-top: 12px;">
+              <div class="sw-config-form-title">选择源库和目标库</div>
+              <div class="sw-config-field">
+                <label>源库</label>
+                <select
+                  v-model="sourceDatabase"
+                  class="dmw-select"
+                  :title="sourceDatabase || '请选择源库'"
+                  :disabled="phase === 'login' || running || connecting"
+                >
+                  <option value="">请选择源库</option>
+                  <option v-for="db in availableDatabases" :key="`source-${db}`" :value="db">
+                    {{ db }}
+                  </option>
+                </select>
               </div>
+              <div class="sw-config-field">
+                <label>目标库</label>
+                <select
+                  v-model="targetDatabase"
+                  class="dmw-select"
+                  :title="targetDatabase || '请选择目标库'"
+                  :disabled="phase === 'login' || running || connecting"
+                >
+                  <option value="">请选择目标库</option>
+                  <option v-for="db in availableDatabases" :key="`target-${db}`" :value="db">
+                    {{ db }}
+                  </option>
+                </select>
+              </div>
+              <p v-if="!hasEnoughDatabases" class="dmw-step-note">
+                当前账号可见业务库少于 2 个，暂时无法执行完整覆盖。
+              </p>
             </div>
+          </div>
 
+          <!-- Pipeline & Log (non-embedded only) -->
+          <section v-if="!isEmbedded && dbStep === 'selection'" class="dmw-section">
             <div class="sw-pipeline">
               <div class="sw-pipeline-title">执行步骤</div>
               <ul class="sw-step-list">
@@ -1237,26 +1285,11 @@ onBeforeUnmount(() => {
         </template>
 
         <template v-else>
-          <div class="sw-content-header">
-            <div class="dmw-header-copy">
-              <h1 class="sw-profile-name">数据库迁移工作台</h1>
-              <div class="dmw-header-subtitle">左侧模板列表会保存多套连接配置和源/目标库选择。</div>
-            </div>
-            <div class="sw-status-line">
-              <span :class="['sw-status-badge', `is-${currentStatusTone}`]">{{ currentStatusText }}</span>
-              <span>{{ headerHelperText }}</span>
-            </div>
+          <div class="sw-empty">
+            <div class="sw-empty-title">先创建一个迁移模板</div>
+            <div class="sw-empty-desc">连接 MySQL，然后选择源数据库和目标数据库</div>
+            <button class="sw-empty-btn" :disabled="running || connecting" @click="addProfile">新建模板</button>
           </div>
-
-          <section class="dmw-empty-state">
-            <h2 class="dmw-empty-title">先创建一个迁移模板</h2>
-            <p class="dmw-empty-desc">
-              模板会记住连接信息和源/目标库选择。创建后可在编辑模板里导入 JSON，并在中间执行区完成迁移。
-            </p>
-            <div class="sw-action-row">
-              <button class="sw-run-btn" :disabled="running || connecting" @click="addProfile">新建模板</button>
-            </div>
-          </section>
         </template>
 
         <input
@@ -1290,128 +1323,6 @@ onBeforeUnmount(() => {
                 @keydown="onHotkeyInputKeydown"
               />
             </div>
-          </div>
-
-          <div class="sw-settings-section">
-            <div class="dmw-settings-section-head">
-              <div>
-                <div class="sw-settings-section-title">模板管理</div>
-                <p class="dmw-settings-note">模板名称和连接信息在这里维护，源库/目标库仍在主区选择并自动回写。</p>
-              </div>
-              <button class="sw-settings-action-btn primary" type="button" :disabled="running || connecting" @click="addDraftProfile">
-                新增模板
-              </button>
-            </div>
-
-            <div v-if="settingsProfilesDraft.length === 0" class="dmw-settings-empty">
-              暂无模板，点击“新增模板”或关闭后导入 JSON 创建。
-            </div>
-
-            <div
-              v-for="(profile, index) in settingsProfilesDraft"
-              :key="profile.id"
-              class="sw-settings-profile-item dmw-settings-profile-item"
-            >
-              <button class="sw-settings-profile-row" @click="toggleSettingsProfileEdit(profile.id)">
-                <span class="dmw-settings-profile-main">
-                  <span class="sw-settings-profile-name">
-                    {{ profile.name }}
-                    <span v-if="profile.id === activeProfileId" class="dmw-settings-profile-current">当前</span>
-                  </span>
-                  <span class="dmw-settings-profile-summary">{{ describeDbMigrationProfile(profile, index) }}</span>
-                </span>
-                <span :class="['sw-settings-profile-chevron', { open: settingsEditingProfileId === profile.id }]">▶</span>
-              </button>
-
-              <div v-if="settingsEditingProfileId === profile.id" class="sw-settings-profile-edit">
-                <div class="sw-settings-field">
-                  <span class="sw-settings-field-label">模板名称</span>
-                  <input
-                    v-model="profile.name"
-                    class="sw-settings-input"
-                    type="text"
-                    placeholder="例如：17服覆盖到15服"
-                  />
-                </div>
-
-                <div class="sw-settings-path-row">
-                  <div class="sw-settings-field">
-                    <span class="sw-settings-field-label">主机</span>
-                    <input
-                      v-model="profile.host"
-                      class="sw-settings-input"
-                      type="text"
-                      placeholder="127.0.0.1"
-                    />
-                  </div>
-                  <div class="sw-settings-field">
-                    <span class="sw-settings-field-label">端口</span>
-                    <input
-                      v-model.number="profile.port"
-                      class="sw-settings-input"
-                      type="number"
-                      min="1"
-                      placeholder="3306"
-                    />
-                  </div>
-                </div>
-
-                <div class="sw-settings-path-row">
-                  <div class="sw-settings-field">
-                    <span class="sw-settings-field-label">账号</span>
-                    <input
-                      v-model="profile.username"
-                      class="sw-settings-input"
-                      type="text"
-                      placeholder="请输入账号"
-                    />
-                  </div>
-                  <div class="sw-settings-field">
-                    <span class="sw-settings-field-label">密码</span>
-                    <input
-                      v-model="profile.password"
-                      class="sw-settings-input"
-                      type="password"
-                      placeholder="请输入密码"
-                    />
-                  </div>
-                </div>
-
-                <div class="dmw-settings-inline-actions">
-                  <button
-                    class="sw-settings-action-btn"
-                    type="button"
-                    :disabled="running || connecting"
-                    @click="triggerImport(profile.id)"
-                  >
-                    导入 JSON
-                  </button>
-                  <button
-                    class="sw-settings-action-btn primary"
-                    type="button"
-                    :disabled="running || connecting"
-                    @click="connectDraftProfile(profile.id)"
-                  >
-                    {{ connecting && activeProfileId === profile.id ? '连接中...' : '连接当前模板' }}
-                  </button>
-                </div>
-
-                <div class="sw-settings-profile-actions">
-                  <button
-                    class="sw-settings-action-btn danger"
-                    type="button"
-                    :disabled="running || connecting"
-                    @click="removeDraftProfile(profile.id)"
-                  >
-                    删除
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div v-if="settingsMessage" :class="['sw-banner', `tone-${settingsMessageTone}`]">
-            {{ settingsMessage }}
           </div>
         </div>
 

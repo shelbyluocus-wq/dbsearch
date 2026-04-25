@@ -67,12 +67,6 @@ test("sync center sidebar exposes only the transfer and database sync sections w
   assert.match(syncWorkspaceMarkup, /'sync-center-sidebar-section', 'is-database-sync'/);
   assert.match(syncWorkspaceMarkup, /addDbMigrationProfileFromSyncCenter/);
   assert.match(syncWorkspaceMarkup, /addSyncProfileFromSyncCenter/);
-  const topActionsStart = syncWorkspaceMarkup.indexOf('class="sync-center-top-actions"');
-  const topActionsEnd = syncWorkspaceMarkup.indexOf('class="sync-center-resize-handles"', topActionsStart);
-  assert.notEqual(topActionsStart, -1);
-  assert.notEqual(topActionsEnd, -1);
-  const topActionsMarkup = syncWorkspaceMarkup.slice(topActionsStart, topActionsEnd);
-  assert.match(topActionsMarkup, /syncCenterMode === 'database' \? addDbMigrationProfileFromSyncCenter\(\) : addSyncProfileFromSyncCenter\(\)/);
 });
 
 test("sync center keeps logs in the right drawer and falls back to execution steps", () => {
