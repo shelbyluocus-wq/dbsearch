@@ -99,14 +99,14 @@ const PANEL_MIN_WIDTH: f64 = 680.0;
 const PANEL_MIN_HEIGHT: f64 = 720.0;
 const PET_MENU_WIDTH: f64 = 252.0;
 const PET_MENU_HEIGHT: f64 = 332.0;
-const PET_MENU_BUTTON_COUNT: f64 = 6.0;
-const PET_MENU_CHILD_COUNT: f64 = 7.0;
+const PET_MENU_BUTTON_COUNT: f64 = 5.0;
+const PET_MENU_CHILD_COUNT: f64 = 6.0;
 const PET_MENU_BUTTON_HEIGHT: f64 = 44.0;
 const PET_MENU_ROW_GAP: f64 = 6.0;
 const PET_MENU_DIVIDER_BLOCK_HEIGHT: f64 = 5.0;
 const PET_MENU_VERTICAL_PADDING: f64 = 20.0;
-const SYNC_WORKSPACE_WIDTH: f64 = 760.0;
-const SYNC_WORKSPACE_HEIGHT: f64 = 640.0;
+const SYNC_WORKSPACE_WIDTH: f64 = 1440.0;
+const SYNC_WORKSPACE_HEIGHT: f64 = 960.0;
 const DB_MIGRATION_WORKSPACE_WIDTH: f64 = 1120.0;
 const DB_MIGRATION_WORKSPACE_HEIGHT: f64 = 760.0;
 const DB_MIGRATION_WORKSPACE_MIN_WIDTH: f64 = 980.0;
@@ -1872,12 +1872,23 @@ async fn toggle_sync_workspace_window(app: tauri::AppHandle) -> Result<(), Strin
     Ok(())
 }
 
+fn emit_sync_center_mode(app: &tauri::AppHandle, mode: &str) {
+    let mode = mode.to_string();
+    let _ = app.emit_to(SYNC_WORKSPACE_WINDOW_LABEL, "sync-center-open-mode", mode.clone());
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(160)).await;
+        let _ = app.emit_to(SYNC_WORKSPACE_WINDOW_LABEL, "sync-center-open-mode", mode);
+    });
+}
+
 #[tauri::command]
 async fn show_db_migration_window(
     app: tauri::AppHandle,
     _state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let window = ensure_db_migration_workspace_window(&app)?;
+    let window = ensure_sync_workspace_window(&app)?;
+    emit_sync_center_mode(&app, "database");
     window.show().map_err(|e| e.to_string())?;
     let _ = window.unminimize();
     window.set_focus().map_err(|e| e.to_string())?;
@@ -1892,7 +1903,7 @@ async fn hide_db_migration_window(
     if state.db_migration_running_sync.load(Ordering::SeqCst) {
         return Err("数据库迁移进行中，不能隐藏窗口".into());
     }
-    if let Some(window) = app.get_webview_window(DB_MIGRATION_WORKSPACE_WINDOW_LABEL) {
+    if let Some(window) = app.get_webview_window(SYNC_WORKSPACE_WINDOW_LABEL) {
         window.hide().map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -1903,11 +1914,12 @@ async fn toggle_db_migration_window(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    let window = ensure_db_migration_workspace_window(&app)?;
+    let window = ensure_sync_workspace_window(&app)?;
     let visible = window.is_visible().map_err(|e| e.to_string())?;
     let running = state.db_migration_running_sync.load(Ordering::SeqCst);
     if visible {
         if running {
+            emit_sync_center_mode(&app, "database");
             let _ = window.unminimize();
             let _ = window.set_focus();
             return Ok(());
@@ -1916,6 +1928,7 @@ async fn toggle_db_migration_window(
         return Ok(());
     }
 
+    emit_sync_center_mode(&app, "database");
     window.show().map_err(|e| e.to_string())?;
     let _ = window.unminimize();
     window.set_focus().map_err(|e| e.to_string())?;
@@ -2378,7 +2391,7 @@ fn ensure_sync_workspace_window(app: &tauri::AppHandle) -> Result<WebviewWindow,
     )
     .title(format_window_title(app, Some("同步工作台")))
     .inner_size(SYNC_WORKSPACE_WIDTH, SYNC_WORKSPACE_HEIGHT)
-    .min_inner_size(680.0, 500.0)
+    .min_inner_size(1180.0, 780.0)
     .resizable(true)
     .decorations(false)
     .transparent(true)
@@ -2823,7 +2836,7 @@ fn toggle_sync_workspace_from_global_shortcut(app: tauri::AppHandle) {
 
 fn toggle_db_migration_from_global_shortcut(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        if let Ok(window) = ensure_db_migration_workspace_window(&app) {
+        if let Ok(window) = ensure_sync_workspace_window(&app) {
             let running = app
                 .state::<AppState>()
                 .db_migration_running_sync
@@ -2832,6 +2845,7 @@ fn toggle_db_migration_from_global_shortcut(app: tauri::AppHandle) {
 
             if visible {
                 if running {
+                    emit_sync_center_mode(&app, "database");
                     let _ = window.unminimize();
                     let _ = window.set_focus();
                 } else {
@@ -2840,6 +2854,7 @@ fn toggle_db_migration_from_global_shortcut(app: tauri::AppHandle) {
                 return;
             }
 
+            emit_sync_center_mode(&app, "database");
             let _ = window.show();
             let _ = window.unminimize();
             let _ = window.set_focus();

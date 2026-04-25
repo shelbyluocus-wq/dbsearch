@@ -26,6 +26,36 @@ import {
   shouldAutoExpandDbMigrationLog,
 } from "./dbMigrationWorkspace.js";
 
+const props = defineProps({
+  embedded: {
+    type: Boolean,
+    default: false,
+  },
+  hideSidebar: {
+    type: Boolean,
+    default: false,
+  },
+  fileSyncSummary: {
+    type: Object,
+    default: () => ({
+      name: "同步配置 1",
+      status: "未执行",
+      tone: "idle",
+    }),
+  },
+});
+const emit = defineEmits([
+  "log-state",
+  "sidebar-state",
+  "switch-mode",
+  "add-file-sync",
+  "close-window",
+  "minimize-window",
+  "toggle-maximize",
+]);
+
+const isEmbedded = computed(() => props.embedded);
+const hideSidebar = computed(() => props.hideSidebar);
 const phase = ref("login");
 const connecting = ref(false);
 const running = ref(false);
@@ -107,6 +137,11 @@ const profilesView = computed(() =>
           : "error",
   })),
 );
+const embeddedFileSyncSummary = computed(() => ({
+  name: props.fileSyncSummary?.name || "同步配置 1",
+  status: props.fileSyncSummary?.status || "未执行",
+  tone: props.fileSyncSummary?.tone || "idle",
+}));
 
 const currentStatusTone = computed(() => {
   if (connecting.value || running.value) return "running";
@@ -247,6 +282,25 @@ const timelineView = computed(() =>
 const logSummaryText = computed(() =>
   timelineView.value.length > 0 ? `详细日志 (${timelineView.value.length})` : "详细日志",
 );
+
+watch([timelineView, running, connecting], () => {
+  emit("log-state", {
+    entries: timelineView.value.map((entry) => ({ ...entry })),
+    running: Boolean(running.value || connecting.value),
+    steps: pipelineView.value.map((step) => ({ ...step })),
+  });
+}, { immediate: true, deep: true });
+
+watch([profilesView, activeProfileId, currentStatusText, currentStatusTone, running, connecting], () => {
+  emit("sidebar-state", {
+    profiles: profilesView.value.map((profile) => ({ ...profile })),
+    activeProfileId: activeProfileId.value,
+    statusText: currentStatusText.value,
+    statusTone: currentStatusTone.value,
+    running: Boolean(running.value),
+    connecting: Boolean(connecting.value),
+  });
+}, { immediate: true, deep: true });
 
 watch([sourceDatabase, targetDatabase], () => {
   if (selectionSyncDepth > 0 || !activeProfile.value) return;
@@ -639,13 +693,28 @@ function addDraftProfile() {
   return profile;
 }
 
-function addProfile() {
+async function addProfile() {
   if (running.value || connecting.value) return;
-  openSettings({ preserveDraft: settingsOpen.value });
-  const profile = addDraftProfile();
-  settingsMessage.value = `已新增模板 ${profile.name}，保存后即可出现在左侧列表。`;
-  settingsMessageTone.value = "neutral";
+  const profile = createDbMigrationProfileDraft(workspaceProfiles.value);
+  setWorkspaceProfiles([...workspaceProfiles.value, profile]);
+  activeProfileId.value = profile.id;
+  applyIncompleteProfileState(profile, {
+    message: "已新增模板，请在编辑模板里补全连接信息。",
+    tone: "neutral",
+  });
+  if (settingsOpen.value) {
+    syncSettingsDraftFromWorkspace({ editingProfileId: profile.id });
+    settingsMessage.value = `已新增模板 ${profile.name}。`;
+    settingsMessageTone.value = "neutral";
+  }
+  await persistWorkspaceState().catch(handleWorkspacePersistenceError);
 }
+
+defineExpose({
+  addProfile,
+  activateProfile,
+  openSettings,
+});
 
 function toggleSettingsProfileEdit(profileId) {
   settingsEditingProfileId.value = settingsEditingProfileId.value === profileId ? "" : profileId;
@@ -910,11 +979,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <main
-    class="sw-root dmw-root"
+  <component
+    :is="isEmbedded ? 'section' : 'main'"
+    :class="['sw-root', 'dmw-root', { 'dmw-root--embedded': isEmbedded }]"
     @contextmenu.prevent
   >
-    <header class="sw-toolbar" @pointerdown="startDragging">
+    <header v-if="!isEmbedded" class="sw-toolbar" @pointerdown="startDragging">
       <div class="traffic-lights" @dblclick.stop @pointerdown.stop>
         <button class="traffic-btn traffic-red" title="关闭" :disabled="running" @click="closeWindow" />
         <button class="traffic-btn traffic-yellow" title="最小化" @click="minimizeWindow" />
@@ -926,34 +996,86 @@ onBeforeUnmount(() => {
         <button class="sw-toolbar-btn" title="设置" @click="openSettings()">⚙</button>
       </div>
     </header>
-
     <div class="sw-body">
-      <aside class="sw-sidebar dmw-sidebar">
-        <div class="dmw-sidebar-header">
-          <span class="dmw-sidebar-caption">模板列表</span>
-          <span class="dmw-sidebar-count">{{ workspaceProfiles.length }} 个</span>
+      <aside v-if="!hideSidebar" class="sw-sidebar dmw-sidebar">
+        <div v-if="isEmbedded" class="sync-center-sidebar-chrome" @pointerdown="startDragging">
+          <div class="traffic-lights" @dblclick.stop @pointerdown.stop>
+            <button class="traffic-btn traffic-red" title="关闭" :disabled="running" @click="emit('close-window')" />
+            <button class="traffic-btn traffic-yellow" title="最小化" @click="emit('minimize-window')" />
+            <button class="traffic-btn traffic-green" title="最大化/还原" @click="emit('toggle-maximize')" />
+          </div>
         </div>
+        <section class="sync-center-sidebar-section is-transfer selected">
+          <div class="sync-center-sidebar-section-row">
+            <button class="sync-center-sidebar-section-head" type="button">
+              <span class="sync-center-sidebar-icon">⌘</span>
+              <span class="sync-center-sidebar-copy">
+                <span>转表</span>
+                <small>{{ currentStatusText }}</small>
+              </span>
+            </button>
+            <button
+              class="sync-center-sidebar-add"
+              type="button"
+              title="新增迁移模板"
+              :disabled="running || connecting"
+              @click.stop="addProfile"
+            >
+              +
+            </button>
+          </div>
 
-        <template v-if="workspaceProfiles.length > 0">
-          <button
-            v-for="profile in profilesView"
-            :key="profile.id"
-            :class="['sw-sidebar-item', 'dmw-sidebar-item', { selected: profile.id === activeProfileId }]"
-            :disabled="running || connecting"
-            @click="activateProfile(profile.id)"
-          >
-            <span :class="['sw-sidebar-status-dot', `is-${profile.statusTone}`]"></span>
-            <span class="dmw-sidebar-copy">
-              <span class="dmw-sidebar-name">{{ profile.name }}</span>
-              <span class="dmw-sidebar-summary" :title="profile.summary">{{ profile.summary }}</span>
-            </span>
-          </button>
-        </template>
+          <div class="sync-center-sidebar-items">
+            <button
+              v-for="profile in profilesView"
+              :key="profile.id"
+              :class="['sw-sidebar-item', 'dmw-sidebar-item', { selected: profile.id === activeProfileId }]"
+              :disabled="running || connecting"
+              @click="activateProfile(profile.id)"
+            >
+              <span :class="['sw-sidebar-status-dot', `is-${profile.statusTone}`]"></span>
+              <span class="dmw-sidebar-copy">
+                <span class="dmw-sidebar-name">{{ profile.name }}</span>
+                <span class="dmw-sidebar-summary" :title="profile.summary">{{ profile.summary }}</span>
+              </span>
+            </button>
 
-        <div v-else class="dmw-sidebar-empty">
-          <div class="dmw-sidebar-empty-title">还没有模板</div>
-          <div class="dmw-sidebar-empty-desc">点击右上角 +，或直接导入 JSON 创建第一套迁移模板。</div>
-        </div>
+            <div v-if="workspaceProfiles.length === 0" class="sync-center-sidebar-empty">暂无迁移模板</div>
+          </div>
+        </section>
+
+        <section v-if="isEmbedded" class="sync-center-sidebar-section is-database-sync">
+          <div class="sync-center-sidebar-section-row">
+            <button
+              class="sync-center-sidebar-section-head"
+              type="button"
+              @click="emit('switch-mode', 'file')"
+            >
+              <span :class="['sw-sidebar-status-dot', `is-${embeddedFileSyncSummary.tone}`]"></span>
+              <span class="sync-center-sidebar-copy">
+                <span>数据库同步</span>
+                <small>{{ embeddedFileSyncSummary.status }}</small>
+              </span>
+            </button>
+            <button
+              class="sync-center-sidebar-add"
+              type="button"
+              title="新增同步配置"
+              @click.stop="emit('add-file-sync')"
+            >
+              +
+            </button>
+          </div>
+          <div class="sync-center-sidebar-items">
+            <button class="sw-sidebar-item dmw-sidebar-item" type="button" @click="emit('switch-mode', 'file')">
+              <span :class="['sw-sidebar-status-dot', `is-${embeddedFileSyncSummary.tone}`]"></span>
+              <span class="dmw-sidebar-copy">
+                <span class="dmw-sidebar-name">{{ embeddedFileSyncSummary.name }}</span>
+                <span class="dmw-sidebar-summary">{{ embeddedFileSyncSummary.status }}</span>
+              </span>
+            </button>
+          </div>
+        </section>
 
       </aside>
 
@@ -1068,7 +1190,7 @@ onBeforeUnmount(() => {
             </div>
           </section>
 
-          <section class="dmw-section">
+          <section v-if="!isEmbedded" class="dmw-section">
             <div class="dmw-section-head">
               <div>
                 <h2 class="dmw-section-title">记录</h2>
@@ -1091,7 +1213,7 @@ onBeforeUnmount(() => {
             </div>
 
             <details
-              v-if="timelineView.length > 0"
+              v-if="!isEmbedded && timelineView.length > 0"
               class="sw-log-details"
               :open="logExpanded"
               @toggle="handleLogToggle"
@@ -1154,7 +1276,7 @@ onBeforeUnmount(() => {
         </header>
 
         <div class="sw-settings-body">
-          <div class="sw-settings-section">
+          <div v-if="!isEmbedded" class="sw-settings-section">
             <div class="sw-settings-section-title">快捷键</div>
             <div class="sw-settings-field">
               <span class="sw-settings-field-label">打开迁移工作台</span>
@@ -1300,5 +1422,5 @@ onBeforeUnmount(() => {
         </footer>
       </section>
     </div>
-  </main>
+  </component>
 </template>

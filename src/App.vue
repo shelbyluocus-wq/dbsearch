@@ -50,6 +50,12 @@ import {
   resolveSyncProfileSelection,
 } from "./syncWorkspace.js";
 import {
+  normalizeSyncCenterMode,
+  normalizeSyncCenterSidebarWidth,
+  resolveSyncCenterSectionToggle,
+  shouldShowSyncCenterLogDrawer,
+} from "./syncCenter.js";
+import {
   normalizeUpdateSettings,
   preserveOpaqueInstance,
   reduceUpdateDownloadProgress,
@@ -568,6 +574,31 @@ const syncContentEditing = ref(false);
 const syncWorkspaceHotkeyPlaceholder = "点击后按下快捷键";
 let unlistenSyncWorkspaceProgress = null;
 
+const syncCenterMode = ref(normalizeSyncCenterMode(localStorage.getItem("dbsearch-sync-center-mode")));
+const syncCenterLogOpen = ref(false);
+const syncCenterSidebarWidth = ref(
+  normalizeSyncCenterSidebarWidth(localStorage.getItem("dbsearch-sync-center-sidebar-width")),
+);
+const syncCenterSidebarQuery = ref("");
+const syncCenterSectionCollapsed = ref({
+  database: false,
+  file: false,
+});
+const syncCenterDbLogState = ref({
+  entries: [],
+  running: false,
+  steps: [],
+});
+const syncCenterDbSidebarState = ref({
+  profiles: [],
+  activeProfileId: "",
+  statusText: "暂无模板",
+  statusTone: "idle",
+  running: false,
+  connecting: false,
+});
+const dbMigrationWorkspaceRef = ref(null);
+
 // ── Weather state ──
 const weatherCanvasRef = ref(null);
 const weatherEnabled = ref(true);
@@ -786,6 +817,7 @@ let tableTabIdSeed = 0;
 let tableTabRestoring = false;
 let unlistenProgress = null;
 let unlistenPanelOpenSettings = null;
+let unlistenSyncCenterOpenMode = null;
 let unlistenPetLockChanged = null;
 let unlistenMenuOpened = null;
 let unlistenPetMoved = null;
@@ -1028,6 +1060,143 @@ const syncWorkspaceTimelineView = computed(() =>
     timeLabel: formatSyncWorkspaceTimestamp(entry.timestamp),
   })),
 );
+const syncCenterDbProfilesView = computed(() =>
+  Array.isArray(syncCenterDbSidebarState.value.profiles)
+    ? syncCenterDbSidebarState.value.profiles
+    : [],
+);
+const syncCenterDbStatusText = computed(() =>
+  syncCenterDbSidebarState.value.statusText || "暂无模板",
+);
+const syncCenterDbStatusTone = computed(() =>
+  syncCenterDbSidebarState.value.statusTone || "idle",
+);
+const syncCenterDbProfilesFiltered = computed(() =>
+  syncCenterDbProfilesView.value.filter((profile) =>
+    matchesSyncCenterSidebarQuery([
+      profile.name,
+      profile.summary,
+      profile.statusText,
+    ]),
+  ),
+);
+const syncCenterFileProfilesFiltered = computed(() =>
+  syncWorkspaceProfilesView.value.filter((profile) =>
+    matchesSyncCenterSidebarQuery([
+      profile.name,
+      profile.last_run_summary,
+      profile.last_run_status,
+      profile.last_run_at ? formatSyncWorkspaceTimestamp(profile.last_run_at) : "",
+    ]),
+  ),
+);
+const syncCenterAnyRunning = computed(() =>
+  Boolean(syncWorkspaceRunning.value || syncCenterDbLogState.value.running),
+);
+const syncCenterFileSummary = computed(() => ({
+  name: activeSyncProfile.value?.name || "同步配置 1",
+  status: currentProfileStatusText.value || "未执行",
+  tone: currentProfileStatusTone.value || "idle",
+}));
+const syncCenterLogDrawerVisible = computed(() =>
+  shouldShowSyncCenterLogDrawer({
+    manualOpen: syncCenterLogOpen.value,
+    running: syncCenterAnyRunning.value,
+  }),
+);
+const syncCenterActiveLogEntries = computed(() =>
+  syncCenterMode.value === "database"
+    ? syncCenterDbLogState.value.entries
+    : syncWorkspaceTimelineView.value,
+);
+const syncCenterLogTitle = computed(() =>
+  syncCenterMode.value === "database" ? "转表日志" : "数据库同步日志",
+);
+const syncCenterActiveLogEmptyText = computed(() =>
+  syncCenterMode.value === "database" ? "转表暂无日志" : "数据库同步暂无日志",
+);
+const syncCenterActiveFallbackSteps = computed(() =>
+  syncCenterMode.value === "database"
+    ? (Array.isArray(syncCenterDbLogState.value.steps) ? syncCenterDbLogState.value.steps : [])
+    : pipelineStepsView.value,
+);
+
+function matchesSyncCenterSidebarQuery(values = []) {
+  const query = syncCenterSidebarQuery.value.trim().toLowerCase();
+  if (!query) return true;
+  return values.some((value) => String(value || "").toLowerCase().includes(query));
+}
+
+function selectSyncCenterMode(mode) {
+  const nextMode = normalizeSyncCenterMode(mode);
+  syncCenterMode.value = nextMode;
+  localStorage.setItem("dbsearch-sync-center-mode", nextMode);
+}
+
+function toggleSyncCenterSection(section) {
+  const nextState = resolveSyncCenterSectionToggle(
+    section,
+    syncCenterMode.value,
+    syncCenterSectionCollapsed.value,
+  );
+  selectSyncCenterMode(nextState.mode);
+  syncCenterSectionCollapsed.value = nextState.collapsed;
+}
+
+function toggleSyncCenterLogDrawer() {
+  syncCenterLogOpen.value = !syncCenterLogOpen.value;
+}
+
+function handleDbMigrationLogState(state = {}) {
+  syncCenterDbLogState.value = {
+    entries: Array.isArray(state.entries) ? state.entries : [],
+    running: Boolean(state.running),
+    steps: Array.isArray(state.steps) ? state.steps : [],
+  };
+}
+
+function handleDbMigrationSidebarState(state = {}) {
+  syncCenterDbSidebarState.value = {
+    profiles: Array.isArray(state.profiles) ? state.profiles : [],
+    activeProfileId: state.activeProfileId ? String(state.activeProfileId) : "",
+    statusText: state.statusText ? String(state.statusText) : "暂无模板",
+    statusTone: state.statusTone ? String(state.statusTone) : "idle",
+    running: Boolean(state.running),
+    connecting: Boolean(state.connecting),
+  };
+}
+
+function addDbMigrationProfileFromSyncCenter() {
+  selectSyncCenterMode("database");
+  syncCenterSectionCollapsed.value = { ...syncCenterSectionCollapsed.value, database: false };
+  nextTick(() => {
+    dbMigrationWorkspaceRef.value?.addProfile?.();
+  });
+}
+
+function selectDbMigrationProfileFromSyncCenter(profileId) {
+  selectSyncCenterMode("database");
+  syncCenterSectionCollapsed.value = { ...syncCenterSectionCollapsed.value, database: false };
+  nextTick(() => {
+    dbMigrationWorkspaceRef.value?.activateProfile?.(profileId);
+  });
+}
+
+function addSyncProfileFromSyncCenter() {
+  selectSyncCenterMode("file");
+  syncCenterSectionCollapsed.value = { ...syncCenterSectionCollapsed.value, file: false };
+  addSyncProfile();
+}
+
+function selectSyncProfileFromSyncCenter(profileId) {
+  selectSyncCenterMode("file");
+  syncCenterSectionCollapsed.value = { ...syncCenterSectionCollapsed.value, file: false };
+  focusSyncProfile(profileId);
+}
+
+function openDbMigrationSettingsFromSyncCenter() {
+  dbMigrationWorkspaceRef.value?.openSettings?.();
+}
 
 function formatSyncWorkspaceTimestamp(value) {
   const date = value ? new Date(value) : null;
@@ -1347,6 +1516,37 @@ function syncWorkspaceHeaderPointerDown(event) {
     return;
   }
   getCurrentWindow().startDragging().catch(() => {});
+}
+
+function startSyncCenterResize(event, direction) {
+  if (event.button !== 0 || !isTauriWindow || !isSyncWorkspaceWindow.value) return;
+  event.preventDefault();
+  getCurrentWindow().startResizeDragging(direction).catch(() => {});
+}
+
+function startSyncCenterSidebarResize(event) {
+  if (event.button !== 0) return;
+  event.preventDefault();
+
+  const startX = event.clientX;
+  const startWidth = syncCenterSidebarWidth.value;
+
+  const stopResize = () => {
+    localStorage.setItem("dbsearch-sync-center-sidebar-width", String(syncCenterSidebarWidth.value));
+    window.removeEventListener("pointermove", onPointerMove);
+    window.removeEventListener("pointerup", stopResize);
+    window.removeEventListener("pointercancel", stopResize);
+  };
+
+  const onPointerMove = (moveEvent) => {
+    syncCenterSidebarWidth.value = normalizeSyncCenterSidebarWidth(
+      startWidth + moveEvent.clientX - startX,
+    );
+  };
+
+  window.addEventListener("pointermove", onPointerMove);
+  window.addEventListener("pointerup", stopResize);
+  window.addEventListener("pointercancel", stopResize);
 }
 
 async function openSyncTargetDir() {
@@ -3459,6 +3659,10 @@ onMounted(async () => {
       unlistenSyncWorkspaceProgress = await listen("sync-workspace-progress", (event) => {
         handleSyncWorkspaceProgress(event.payload);
       });
+      unlistenSyncCenterOpenMode = await listen("sync-center-open-mode", (event) => {
+        const payload = event.payload;
+        selectSyncCenterMode(typeof payload === "string" ? payload : payload?.mode);
+      });
     }
     return;
   }
@@ -3602,6 +3806,10 @@ onBeforeUnmount(() => {
   if (unlistenPanelOpenSettings) {
     unlistenPanelOpenSettings();
     unlistenPanelOpenSettings = null;
+  }
+  if (unlistenSyncCenterOpenMode) {
+    unlistenSyncCenterOpenMode();
+    unlistenSyncCenterOpenMode = null;
   }
   if (unlistenPetLockChanged) {
     unlistenPetLockChanged();
@@ -7711,142 +7919,302 @@ function escapeHtml(str) {
     </div>
   </div>
 
-  <main v-else-if="isSyncWorkspaceWindow" class="sw-root" @contextmenu.prevent>
-    <header class="sw-toolbar" @pointerdown="syncWorkspaceHeaderPointerDown">
-      <div class="traffic-lights" @dblclick.stop @pointerdown.stop>
-        <button class="traffic-btn traffic-red" title="关闭" @click="closeSyncWorkspaceWindow" />
-        <button class="traffic-btn traffic-yellow" title="最小化" @click="syncWorkspaceMinimize" />
-        <button class="traffic-btn traffic-green" title="最大化/还原" @click="syncWorkspaceToggleMaximize" />
-      </div>
-      <span class="sw-toolbar-title">一键同步工作台</span>
-      <div class="sw-toolbar-actions">
-        <button class="sw-toolbar-btn" title="新增配置" :disabled="syncWorkspaceRunning" @click="addSyncProfile">+</button>
-        <button class="sw-toolbar-btn" title="设置" @click="openSyncSettings">⚙</button>
-      </div>
-    </header>
+  <main
+    v-else-if="isSyncWorkspaceWindow"
+    :class="['sw-root', 'sync-center-root', { 'has-log-drawer': syncCenterLogDrawerVisible }]"
+    :style="{ '--sync-center-sidebar-width': `${syncCenterSidebarWidth}px` }"
+    @contextmenu.prevent
+  >
+    <div class="sync-center-wallpaper" aria-hidden="true"></div>
 
-    <div class="sw-body">
-      <nav class="sw-sidebar">
-        <button
-          v-for="profile in syncWorkspaceProfilesView"
-          :key="profile.id"
-          :class="['sw-sidebar-item', { selected: profile.id === syncWorkspaceActiveProfileId }]"
-          @click="focusSyncProfile(profile.id)"
+    <div class="sync-center-drag-strip" aria-hidden="true" @pointerdown="syncWorkspaceHeaderPointerDown"></div>
+
+    <div class="sync-center-top-actions" @pointerdown.stop>
+      <button
+        class="sw-toolbar-btn"
+        title="新增"
+        type="button"
+        @click="syncCenterMode === 'database' ? addDbMigrationProfileFromSyncCenter() : addSyncProfileFromSyncCenter()"
+      >
+        +
+      </button>
+      <button
+        class="sw-toolbar-btn"
+        title="设置"
+        type="button"
+        @click="syncCenterMode === 'database' ? openDbMigrationSettingsFromSyncCenter() : openSyncSettings()"
+      >
+        ⚙
+      </button>
+    </div>
+
+    <div class="sync-center-resize-handles" aria-hidden="true">
+      <div class="sync-center-resize-handle is-n" @pointerdown="startSyncCenterResize($event, 'North')"></div>
+      <div class="sync-center-resize-handle is-e" @pointerdown="startSyncCenterResize($event, 'East')"></div>
+      <div class="sync-center-resize-handle is-s" @pointerdown="startSyncCenterResize($event, 'South')"></div>
+      <div class="sync-center-resize-handle is-w" @pointerdown="startSyncCenterResize($event, 'West')"></div>
+      <div class="sync-center-resize-handle is-ne" @pointerdown="startSyncCenterResize($event, 'NorthEast')"></div>
+      <div class="sync-center-resize-handle is-nw" @pointerdown="startSyncCenterResize($event, 'NorthWest')"></div>
+      <div class="sync-center-resize-handle is-se" @pointerdown="startSyncCenterResize($event, 'SouthEast')"></div>
+      <div class="sync-center-resize-handle is-sw" @pointerdown="startSyncCenterResize($event, 'SouthWest')"></div>
+    </div>
+
+    <div class="sync-center-layout">
+      <nav class="sw-sidebar sync-center-sidebar sync-center-sidebar-shell">
+        <div class="sync-center-sidebar-chrome" @pointerdown="syncWorkspaceHeaderPointerDown">
+          <div class="traffic-lights" @dblclick.stop @pointerdown.stop>
+            <button class="traffic-btn traffic-red" title="关闭" @click="closeSyncWorkspaceWindow" />
+            <button class="traffic-btn traffic-yellow" title="最小化" @click="syncWorkspaceMinimize" />
+            <button class="traffic-btn traffic-green" title="最大化/还原" @click="syncWorkspaceToggleMaximize" />
+          </div>
+        </div>
+
+        <label class="sync-center-sidebar-search">
+          <span>⌕</span>
+          <input v-model="syncCenterSidebarQuery" type="search" placeholder="搜索任务" />
+        </label>
+
+        <div class="sync-center-sidebar-caption">项目与任务</div>
+
+        <section
+          :class="['sync-center-sidebar-section', 'is-transfer', {
+            selected: syncCenterMode === 'database',
+            collapsed: syncCenterSectionCollapsed.database,
+          }]"
         >
-          <span :class="['sw-sidebar-status-dot', `is-${syncWorkspaceRunning && syncWorkspaceRunProfileId === profile.id ? 'running' : (profile.last_run_status || 'idle')}`]"></span>
-          <span class="sw-sidebar-label">{{ profile.name }}</span>
-          <span v-if="profile.last_run_at" class="sw-sidebar-time">{{ formatSyncWorkspaceTimestamp(profile.last_run_at) }}</span>
-        </button>
+          <div class="sync-center-sidebar-section-row">
+            <button
+              class="sync-center-sidebar-section-head"
+              type="button"
+              @click="toggleSyncCenterSection('database')"
+            >
+              <span class="sync-center-sidebar-icon">⌘</span>
+              <span class="sync-center-sidebar-copy">
+                <span>转表</span>
+                <small>{{ syncCenterDbStatusText }}</small>
+              </span>
+              <span class="sync-center-sidebar-chevron">▾</span>
+            </button>
+            <button
+              class="sync-center-sidebar-add"
+              type="button"
+              title="新增迁移模板"
+              :disabled="syncCenterDbSidebarState.running || syncCenterDbSidebarState.connecting"
+              @click.stop="addDbMigrationProfileFromSyncCenter"
+            >
+              +
+            </button>
+          </div>
+          <div v-show="!syncCenterSectionCollapsed.database" class="sync-center-sidebar-items">
+            <button
+              v-for="profile in syncCenterDbProfilesFiltered"
+              :key="profile.id"
+              :class="['sw-sidebar-item', { selected: syncCenterMode === 'database' && profile.id === syncCenterDbSidebarState.activeProfileId }]"
+              :disabled="syncCenterDbSidebarState.running || syncCenterDbSidebarState.connecting"
+              @click="selectDbMigrationProfileFromSyncCenter(profile.id)"
+            >
+              <span :class="['sw-sidebar-status-dot', `is-${profile.statusTone || 'idle'}`]"></span>
+              <span class="sw-sidebar-copy">
+                <span class="sw-sidebar-label">{{ profile.name }}</span>
+                <span class="sw-sidebar-time" :title="profile.summary">{{ profile.summary }}</span>
+              </span>
+            </button>
+            <div v-if="syncCenterDbProfilesFiltered.length === 0" class="sync-center-sidebar-empty">
+              {{ syncCenterDbProfilesView.length === 0 ? '暂无迁移模板' : '没有匹配模板' }}
+            </div>
+          </div>
+        </section>
+
+        <section
+          :class="['sync-center-sidebar-section', 'is-database-sync', {
+            selected: syncCenterMode === 'file',
+            collapsed: syncCenterSectionCollapsed.file,
+          }]"
+        >
+          <div class="sync-center-sidebar-section-row">
+            <button
+              class="sync-center-sidebar-section-head"
+              type="button"
+              @click="toggleSyncCenterSection('file')"
+            >
+              <span :class="['sw-sidebar-status-dot', `is-${currentProfileStatusTone}`]"></span>
+              <span class="sync-center-sidebar-copy">
+                <span>数据库同步</span>
+                <small>{{ currentProfileStatusText }}</small>
+              </span>
+              <span class="sync-center-sidebar-chevron">▾</span>
+            </button>
+            <button
+              class="sync-center-sidebar-add"
+              type="button"
+              title="新增同步配置"
+              :disabled="syncWorkspaceRunning"
+              @click.stop="addSyncProfileFromSyncCenter"
+            >
+              +
+            </button>
+          </div>
+          <div v-show="!syncCenterSectionCollapsed.file" class="sync-center-sidebar-items">
+            <button
+              v-for="profile in syncCenterFileProfilesFiltered"
+              :key="profile.id"
+              :class="['sw-sidebar-item', { selected: syncCenterMode === 'file' && profile.id === syncWorkspaceActiveProfileId }]"
+              @click="selectSyncProfileFromSyncCenter(profile.id)"
+            >
+              <span :class="['sw-sidebar-status-dot', `is-${syncWorkspaceRunning && syncWorkspaceRunProfileId === profile.id ? 'running' : (profile.last_run_status || 'idle')}`]"></span>
+              <span class="sw-sidebar-copy">
+                <span class="sw-sidebar-label">{{ profile.name }}</span>
+                <span class="sw-sidebar-time">
+                  {{ profile.last_run_at ? formatSyncWorkspaceTimestamp(profile.last_run_at) : (profile.last_run_summary || '未执行') }}
+                </span>
+              </span>
+            </button>
+            <div v-if="syncCenterFileProfilesFiltered.length === 0" class="sync-center-sidebar-empty">
+              {{ syncWorkspaceProfilesView.length === 0 ? '暂无同步配置' : '没有匹配配置' }}
+            </div>
+          </div>
+        </section>
       </nav>
 
-      <section v-if="activeSyncProfile" class="sw-content">
-        <div class="sw-content-header">
-          <h1 class="sw-profile-name">{{ activeSyncProfile.name }}</h1>
-          <div class="sw-status-line">
-            <span :class="['sw-status-badge', `is-${currentProfileStatusTone}`]">{{ currentProfileStatusText }}</span>
-            <span v-if="activeSyncProfile.last_run_at">· {{ formatSyncWorkspaceTimestamp(activeSyncProfile.last_run_at) }}</span>
-          </div>
-        </div>
+      <div
+        class="sync-center-sidebar-resizer"
+        title="拖拽调整左侧宽度"
+        @pointerdown="startSyncCenterSidebarResize"
+      ></div>
 
-        <div class="sw-action-row">
-          <button
-            class="sw-run-btn"
-            :disabled="!canRunSyncProfile(activeSyncProfile) || syncWorkspaceRunning"
-            @click="runActiveSyncProfile"
-          >
-            {{ syncWorkspaceRunning && syncWorkspaceRunProfileId === activeSyncProfile.id ? '⏳ 同步中...' : '▶ 运行同步' }}
-          </button>
-          <button
-            v-if="activeSyncProfile.target_path"
-            class="sw-open-dir-btn"
-            @click="openSyncTargetDir"
-            title="在资源管理器中打开项目目标路径"
-          >
-            📂 打开目标目录
-          </button>
-        </div>
-
-        <div v-if="syncWorkspaceMessage" :class="['sw-banner', `tone-${syncWorkspaceMessageTone}`]">
-          {{ syncWorkspaceMessage }}
-        </div>
-
-        <div v-if="!canRunSyncProfile(activeSyncProfile) || syncContentEditing" class="sw-config-form">
-          <div class="sw-config-form-title">配置路径</div>
-          <div class="sw-config-field">
-            <label>配置名称</label>
-            <input v-model="activeSyncProfile.name" @input="markSyncWorkspaceDirty()" />
-          </div>
-          <div class="sw-config-field sw-config-path-row">
-            <div>
-              <label>脚本软件路径</label>
-              <input v-model="activeSyncProfile.script_executable_path" @input="markSyncWorkspaceDirty()" />
-            </div>
-            <button @click="chooseSyncExecutable(activeSyncProfile.id)">浏览</button>
-          </div>
-          <div class="sw-config-field sw-config-path-row">
-            <div>
-              <label>脚本输出目录</label>
-              <input v-model="activeSyncProfile.output_root" @input="markSyncWorkspaceDirty()" />
-            </div>
-            <button @click="chooseSyncDirectory(activeSyncProfile.id, 'output_root', '选择脚本输出目录')">浏览</button>
-          </div>
-          <div class="sw-config-field sw-config-path-row">
-            <div>
-              <label>项目目标路径</label>
-              <input v-model="activeSyncProfile.target_path" @input="markSyncWorkspaceDirty()" />
-            </div>
-            <button @click="chooseSyncDirectory(activeSyncProfile.id, 'target_path', '选择项目目标路径')">浏览</button>
-          </div>
-          <button v-if="syncContentEditing" class="sw-config-form-close" @click="syncContentEditing = false">收起</button>
-        </div>
-        <button v-if="canRunSyncProfile(activeSyncProfile) && !syncContentEditing"
-                class="sw-edit-toggle" @click="syncContentEditing = true">
-          编辑配置
-        </button>
-
-        <div class="sw-pipeline">
-          <div class="sw-pipeline-title">执行步骤</div>
-          <ul class="sw-step-list">
-            <li v-for="step in pipelineStepsView" :key="step.key" class="sw-step-item">
-              <span :class="['sw-step-icon', `is-${step.status}`]">{{ step.icon }}</span>
-              <span :class="['sw-step-label', { 'is-pending': step.status === 'pending' }]">{{ step.label }}</span>
-              <span v-if="step.message" class="sw-step-msg" :title="step.message">{{ step.message }}</span>
-              <span v-if="step.timeLabel" class="sw-step-time">{{ step.timeLabel }}</span>
-            </li>
-          </ul>
-        </div>
-
-        <details v-if="syncWorkspaceTimelineView.length > 0" class="sw-log-details">
-          <summary>详细日志 ({{ syncWorkspaceTimelineView.length }})</summary>
-          <ol class="sw-log-list-inner">
-            <li v-for="entry in syncWorkspaceTimelineView" :key="entry.key" class="sw-log-entry">
-              <div class="sw-log-entry-top">
-                <span class="sw-log-entry-step">{{ entry.stepLabel }}</span>
-                <span class="sw-log-entry-time">{{ entry.timeLabel }}</span>
-                <span :class="['sw-log-entry-status', `is-${entry.statusTone}`]">{{ entry.statusText }}</span>
+      <section v-show="syncCenterMode === 'file'" class="sync-center-view sync-center-file-view">
+        <div class="sw-body sync-center-file-body">
+          <section class="sw-content">
+            <template v-if="activeSyncProfile">
+              <div class="sw-content-header">
+                <h1 class="sw-profile-name">{{ activeSyncProfile.name }}</h1>
+                <div class="sw-status-line">
+                  <span :class="['sw-status-badge', `is-${currentProfileStatusTone}`]">{{ currentProfileStatusText }}</span>
+                  <span v-if="activeSyncProfile.last_run_at">· {{ formatSyncWorkspaceTimestamp(activeSyncProfile.last_run_at) }}</span>
+                </div>
               </div>
-              <div v-if="entry.message" class="sw-log-entry-msg">{{ entry.message }}</div>
-              <div v-if="entry.command" class="sw-log-entry-cmd">{{ entry.command }}</div>
-              <pre v-if="entry.detail" class="sw-log-entry-detail">{{ entry.detail }}</pre>
+
+              <div class="sw-action-row">
+                <button
+                  class="sw-run-btn"
+                  :disabled="!canRunSyncProfile(activeSyncProfile) || syncWorkspaceRunning"
+                  @click="runActiveSyncProfile"
+                >
+                  {{ syncWorkspaceRunning && syncWorkspaceRunProfileId === activeSyncProfile.id ? '同步中...' : '运行同步' }}
+                </button>
+                <button
+                  v-if="activeSyncProfile.target_path"
+                  class="sw-open-dir-btn"
+                  @click="openSyncTargetDir"
+                  title="在资源管理器中打开项目目标路径"
+                >
+                  打开目标目录
+                </button>
+              </div>
+
+              <div v-if="syncWorkspaceMessage" :class="['sw-banner', `tone-${syncWorkspaceMessageTone}`]">
+                {{ syncWorkspaceMessage }}
+              </div>
+
+              <div v-if="!canRunSyncProfile(activeSyncProfile) || syncContentEditing" class="sw-config-form">
+                <div class="sw-config-form-title">配置路径</div>
+                <div class="sw-config-field">
+                  <label>配置名称</label>
+                  <input v-model="activeSyncProfile.name" @input="markSyncWorkspaceDirty()" />
+                </div>
+                <div class="sw-config-field sw-config-path-row">
+                  <div>
+                    <label>脚本软件路径</label>
+                    <input v-model="activeSyncProfile.script_executable_path" @input="markSyncWorkspaceDirty()" />
+                  </div>
+                  <button @click="chooseSyncExecutable(activeSyncProfile.id)">浏览</button>
+                </div>
+                <div class="sw-config-field sw-config-path-row">
+                  <div>
+                    <label>脚本输出目录</label>
+                    <input v-model="activeSyncProfile.output_root" @input="markSyncWorkspaceDirty()" />
+                  </div>
+                  <button @click="chooseSyncDirectory(activeSyncProfile.id, 'output_root', '选择脚本输出目录')">浏览</button>
+                </div>
+                <div class="sw-config-field sw-config-path-row">
+                  <div>
+                    <label>项目目标路径</label>
+                    <input v-model="activeSyncProfile.target_path" @input="markSyncWorkspaceDirty()" />
+                  </div>
+                  <button @click="chooseSyncDirectory(activeSyncProfile.id, 'target_path', '选择项目目标路径')">浏览</button>
+                </div>
+                <button v-if="syncContentEditing" class="sw-config-form-close" @click="syncContentEditing = false">收起</button>
+              </div>
+              <button v-if="canRunSyncProfile(activeSyncProfile) && !syncContentEditing"
+                      class="sw-edit-toggle" @click="syncContentEditing = true">
+                编辑配置
+              </button>
+
+            </template>
+
+            <div v-else class="sw-empty">
+              <div class="sw-empty-title">先创建一套配置</div>
+              <div class="sw-empty-desc">每套配置保存三个路径，后续就能在这里一键执行，不用再手动找目录和更新 SVN。</div>
+              <button class="sw-empty-btn" @click="addSyncProfileFromSyncCenter">创建第一套配置</button>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <DbMigrationWorkspace
+        ref="dbMigrationWorkspaceRef"
+        v-show="syncCenterMode === 'database'"
+        embedded
+        hide-sidebar
+        :file-sync-summary="syncCenterFileSummary"
+        class="sync-center-view sync-center-db-view"
+        @log-state="handleDbMigrationLogState"
+        @sidebar-state="handleDbMigrationSidebarState"
+        @switch-mode="selectSyncCenterMode"
+        @add-file-sync="addSyncProfileFromSyncCenter"
+        @close-window="closeSyncWorkspaceWindow"
+        @minimize-window="syncWorkspaceMinimize"
+        @toggle-maximize="syncWorkspaceToggleMaximize"
+      />
+
+      <aside v-if="syncCenterLogDrawerVisible" class="sync-center-log-drawer">
+        <header class="sync-center-log-header">
+          <div>
+            <h2>{{ syncCenterLogTitle }}</h2>
+            <span>{{ syncCenterActiveLogEntries.length }} 条</span>
+          </div>
+          <button class="sw-toolbar-btn" title="关闭日志" type="button" @click="syncCenterLogOpen = false">✕</button>
+        </header>
+
+        <ol v-if="syncCenterActiveLogEntries.length > 0" class="sw-log-list-inner sync-center-log-list">
+          <li v-for="entry in syncCenterActiveLogEntries" :key="entry.key" class="sw-log-entry">
+            <div class="sw-log-entry-top">
+              <span class="sw-log-entry-step">{{ entry.stepLabel }}</span>
+              <span class="sw-log-entry-time">{{ entry.timeLabel }}</span>
+              <span :class="['sw-log-entry-status', `is-${entry.statusTone}`]">{{ entry.statusText }}</span>
+            </div>
+            <div v-if="entry.message" class="sw-log-entry-msg">{{ entry.message }}</div>
+            <div v-if="entry.command" class="sw-log-entry-cmd">{{ entry.command }}</div>
+            <pre v-if="entry.detail" class="sw-log-entry-detail">{{ entry.detail }}</pre>
+          </li>
+        </ol>
+        <div v-else class="sync-center-log-empty">
+          <div class="sync-center-log-empty-title">{{ syncCenterActiveLogEmptyText }}</div>
+          <ol class="sync-center-log-steps">
+            <li v-for="step in syncCenterActiveFallbackSteps" :key="step.key" class="sync-center-log-step">
+              <span :class="['sw-step-icon', `is-${step.status}`]">{{ step.icon }}</span>
+              <span class="sw-step-label">{{ step.label }}</span>
             </li>
           </ol>
-        </details>
-      </section>
-
-      <section v-else class="sw-content">
-        <div class="sw-empty">
-          <div class="sw-empty-title">先创建一套配置</div>
-          <div class="sw-empty-desc">每套配置保存三个路径，后续就能在这里一键执行，不用再手动找目录和更新 SVN。</div>
-          <button class="sw-empty-btn" @click="addSyncProfile">创建第一套配置</button>
         </div>
-      </section>
+      </aside>
     </div>
 
     <!-- Settings Sheet -->
     <div v-if="syncSettingsOpen" class="sw-settings-overlay" @click.self="closeSyncSettings">
       <section class="sw-settings-sheet">
         <header class="sw-settings-header">
-          <h2>同步工作台设置</h2>
+          <h2>同步中心设置</h2>
           <button class="sw-toolbar-btn" @click="closeSyncSettings">✕</button>
         </header>
 
@@ -7854,7 +8222,7 @@ function escapeHtml(str) {
           <div class="sw-settings-section">
             <div class="sw-settings-section-title">快捷键</div>
             <div class="sw-settings-field">
-              <span class="sw-settings-field-label">打开同步工作台</span>
+              <span class="sw-settings-field-label">打开同步中心</span>
               <input
                 class="sw-settings-input"
                 :value="syncWorkspaceHotkey"
@@ -7967,20 +8335,13 @@ function escapeHtml(str) {
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 1 0 4.031 11.604l4.433 4.433 1.414-1.414-4.433-4.433A6.5 6.5 0 0 0 10.5 4Zm0 2a4.5 4.5 0 1 1 0 9a4.5 4.5 0 0 1 0-9Z" fill="currentColor"/></svg>
         <span>打开搜索</span>
       </button>
-      <button class="pet-menu-btn" @click="contextAction('file_sync')">
+      <button class="pet-menu-btn" @click="contextAction('sync_center')">
         <svg viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M3.5 7.5A2.5 2.5 0 0 1 6 5h4.2l1.6 1.8H18A2.5 2.5 0 0 1 20.5 9.3v6.2A2.5 2.5 0 0 1 18 18H6a2.5 2.5 0 0 1-2.5-2.5v-8Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-          <path d="M9 12h6M12 9l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M4 7.5A2.5 2.5 0 0 1 6.5 5H10l1.5 1.7H18A2.5 2.5 0 0 1 20.5 9.2v6.3A2.5 2.5 0 0 1 18 18H6.5A2.5 2.5 0 0 1 4 15.5v-8Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/>
+          <path d="M8 12h8M12 9l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/>
+          <path d="M7.2 5.2c.8-1.3 3.2-2.2 5.8-2.2 3.6 0 6.5 1.2 6.5 2.7 0 .7-.6 1.3-1.6 1.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
         </svg>
-        <span>文件同步</span>
-      </button>
-      <button class="pet-menu-btn" @click="contextAction('db_sync')">
-        <svg viewBox="0 0 24 24" aria-hidden="true">
-          <ellipse cx="12" cy="6.5" rx="6.5" ry="2.8" fill="none" stroke="currentColor" stroke-width="1.8"/>
-          <path d="M5.5 6.5v5c0 1.55 2.91 2.8 6.5 2.8s6.5-1.25 6.5-2.8v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-          <path d="M5.5 11.5v5c0 1.55 2.91 2.8 6.5 2.8s6.5-1.25 6.5-2.8v-5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-        </svg>
-        <span>数据库同步</span>
+        <span>同步中心</span>
       </button>
       <button class="pet-menu-btn" @click="contextAction('settings')">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.036-.31.06-.62.06-.94s-.024-.63-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.12 7.12 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 14.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54c-.58.23-1.12.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L3.7 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.046.31-.07.62-.07.94s.024.63.07.94L3.82 14.16a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.05.72 1.63.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54c.58-.23 1.12-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" fill="currentColor"/></svg>
