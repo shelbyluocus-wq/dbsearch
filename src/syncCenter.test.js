@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   normalizeSyncCenterMode,
+  normalizeSyncCenterSidebarCollapsed,
   normalizeSyncCenterSidebarWidth,
   resolveSyncCenterSectionToggle,
   shouldShowSyncCenterLogDrawer,
@@ -27,6 +28,14 @@ test("normalizeSyncCenterSidebarWidth clamps the adjustable sidebar width", () =
   assert.equal(normalizeSyncCenterSidebarWidth(120), 280);
   assert.equal(normalizeSyncCenterSidebarWidth(360.6), 361);
   assert.equal(normalizeSyncCenterSidebarWidth(800), 460);
+});
+
+test("normalizeSyncCenterSidebarCollapsed restores the persisted sidebar state", () => {
+  assert.equal(normalizeSyncCenterSidebarCollapsed("1"), true);
+  assert.equal(normalizeSyncCenterSidebarCollapsed("true"), true);
+  assert.equal(normalizeSyncCenterSidebarCollapsed(true), true);
+  assert.equal(normalizeSyncCenterSidebarCollapsed("0"), false);
+  assert.equal(normalizeSyncCenterSidebarCollapsed(null), false);
 });
 
 test("resolveSyncCenterSectionToggle switches modes without collapsing the newly selected section", () => {

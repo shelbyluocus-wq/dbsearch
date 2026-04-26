@@ -11,6 +11,10 @@ const tauriDefaultCapabilitySource = fs.readFileSync(
   new URL("../src-tauri/capabilities/default.json", import.meta.url),
   "utf8",
 );
+const tauriLibSource = fs.readFileSync(
+  new URL("../src-tauri/src/lib.rs", import.meta.url),
+  "utf8",
+);
 
 function slicePetMenuMarkup() {
   const start = appVueSource.indexOf('<div v-else-if="isMenuWindow" class="pet-menu-root">');
@@ -57,6 +61,7 @@ test("embedded database workspace offers the sync-config sidebar switch", () => 
   assert.match(dbMigrationWorkspaceSource, /defineEmits\(\[[^\]]*"switch-mode"/);
   assert.match(dbMigrationWorkspaceSource, /fileSyncSummary/);
   assert.match(dbMigrationWorkspaceSource, /sync-center-sidebar-chrome[\s\S]*traffic-lights/);
+  assert.match(dbMigrationWorkspaceSource, /sync-center-hero-metrics/);
   assert.match(dbMigrationWorkspaceSource, /emit\(['"]switch-mode['"], ['"]file['"]\)/);
   assert.doesNotMatch(dbMigrationWorkspaceSource, />搜索任务</);
 });
@@ -65,6 +70,9 @@ test("sync center sidebar exposes only the transfer and database sync sections w
 
   assert.match(syncWorkspaceMarkup, /'sync-center-sidebar-section', 'is-transfer'/);
   assert.match(syncWorkspaceMarkup, /'sync-center-sidebar-section', 'is-database-sync'/);
+  assert.doesNotMatch(syncWorkspaceMarkup, /sync-center-sidebar-search/);
+  assert.match(syncWorkspaceMarkup, /sync-center-sidebar-stack/);
+  assert.match(syncWorkspaceMarkup, /sync-center-sidebar-stat/);
   assert.match(syncWorkspaceMarkup, /addDbMigrationProfileFromSyncCenter/);
   assert.match(syncWorkspaceMarkup, /addSyncProfileFromSyncCenter/);
 });
@@ -72,6 +80,13 @@ test("sync center sidebar exposes only the transfer and database sync sections w
 test("sync center keeps logs in the right drawer and falls back to execution steps", () => {
   const syncWorkspaceMarkup = sliceSyncWorkspaceMarkup();
 
+  assert.match(syncWorkspaceMarkup, /sync-center-top-actions" @pointerdown\.stop/);
+  assert.match(syncWorkspaceMarkup, /'is-open': syncCenterLogDrawerVisible/);
+  assert.match(syncWorkspaceMarkup, /:aria-hidden="!syncCenterLogDrawerVisible"/);
+  assert.match(syncWorkspaceMarkup, /name="sync-center-top-button"/);
+  assert.match(syncWorkspaceMarkup, /toggleSyncCenterLogDrawer/);
+  assert.match(syncWorkspaceMarkup, /openSyncSettings/);
+  assert.match(syncWorkspaceMarkup, /sync-center-hero-metrics/);
   assert.match(syncWorkspaceMarkup, /sync-center-log-drawer/);
   assert.match(syncWorkspaceMarkup, /syncCenterActiveFallbackSteps/);
   assert.match(syncWorkspaceMarkup, /sync-center-log-steps/);
@@ -98,12 +113,38 @@ test("sync center uses one stable resizable sidebar for both modes", () => {
   const syncWorkspaceMarkup = sliceSyncWorkspaceMarkup();
 
   assert.match(syncWorkspaceMarkup, /sync-center-sidebar-shell/);
+  assert.match(syncWorkspaceMarkup, /is-sidebar-collapsed/);
+  assert.match(syncWorkspaceMarkup, /sync-center-sidebar-restore/);
+  assert.match(syncWorkspaceMarkup, /toggleSyncCenterSidebarCollapsed/);
+  assert.match(syncWorkspaceMarkup, /sync-center-sidebar-tool[\s\S]*toggleSyncCenterSidebarCollapsed/);
+  assert.doesNotMatch(syncWorkspaceMarkup, /sync-center-sidebar-tool[\s\S]{0,260}openSyncSettings/);
   assert.match(syncWorkspaceMarkup, /sync-center-sidebar-resizer/);
   assert.match(syncWorkspaceMarkup, /startSyncCenterSidebarResize/);
   assert.match(syncWorkspaceMarkup, /--sync-center-sidebar-width/);
   assert.match(syncWorkspaceMarkup, /<DbMigrationWorkspace[\s\S]*?\bhide-sidebar\b/);
   assert.match(syncWorkspaceMarkup, /toggleSyncCenterSection\('database'\)/);
   assert.match(syncWorkspaceMarkup, /toggleSyncCenterSection\('file'\)/);
+});
+
+test("sync center settings separates database and file-sync templates", () => {
+  const syncWorkspaceMarkup = sliceSyncWorkspaceMarkup();
+
+  assert.match(syncWorkspaceMarkup, />数据库同步模板</);
+  assert.match(syncWorkspaceMarkup, />转表并同步模板</);
+  assert.match(syncWorkspaceMarkup, /addDbMigrationProfileFromSyncSettings/);
+  assert.match(syncWorkspaceMarkup, /editDbMigrationProfileFromSyncSettings/);
+  assert.match(syncWorkspaceMarkup, /removeDbMigrationProfileFromSyncSettings/);
+  assert.match(syncWorkspaceMarkup, /addSyncProfileFromSettings/);
+  assert.match(syncWorkspaceMarkup, /editSyncProfileFromSettings/);
+  assert.match(syncWorkspaceMarkup, /sync-center-settings-sheet/);
+  assert.match(syncWorkspaceMarkup, /sync-center-settings-list/);
+  assert.match(syncWorkspaceMarkup, /sync-center-settings-card/);
+  assert.match(syncWorkspaceMarkup, /sync-center-settings-editor/);
+});
+
+test("sync workspace default size matches the no-scroll glass layout", () => {
+  assert.match(tauriLibSource, /const SYNC_WORKSPACE_WIDTH: f64 = 1430\.0;/);
+  assert.match(tauriLibSource, /const SYNC_WORKSPACE_HEIGHT: f64 = 1014\.0;/);
 });
 
 test("sync center background is a static wallpaper without weather animation layers", () => {

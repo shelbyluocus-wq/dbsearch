@@ -37,6 +37,10 @@ export function normalizeSyncCenterSidebarWidth(value) {
   );
 }
 
+export function normalizeSyncCenterSidebarCollapsed(value) {
+  return value === true || value === "1" || value === "true";
+}
+
 export function resolveSyncCenterSectionToggle(section, currentMode, collapsedState = {}) {
   const nextMode = normalizeSyncCenterMode(section);
   const current = normalizeSyncCenterMode(currentMode);

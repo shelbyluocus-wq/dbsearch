@@ -1092,6 +1092,10 @@ onBeforeUnmount(() => {
             <div class="sw-status-line">
               <span :class="['sw-status-badge', `is-${currentStatusTone}`]">{{ currentStatusText }}</span>
             </div>
+            <div class="sync-center-hero-metrics" aria-label="数据库同步摘要">
+              <span><strong>2</strong><small>配置步骤</small></span>
+              <span><strong>{{ availableDatabases.length }}</strong><small>可选数据库</small></span>
+            </div>
           </div>
 
           <!-- Step indicator -->
