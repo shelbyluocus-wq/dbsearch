@@ -5,6 +5,7 @@ import { listen, emit } from "@tauri-apps/api/event";
 import { getCurrentWindow, Window } from "@tauri-apps/api/window";
 import { ask, save, open } from "@tauri-apps/plugin-dialog";
 import { check as checkForAppUpdate } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
 import "./styles.css";
 import { resolveSettingsVersionLabel } from "./appIdentity.js";
 import { APP_PACKAGE_VERSION } from "./appVersion.js";
@@ -7277,6 +7278,14 @@ function closeUpdateDialog() {
   disposeAvailableUpdate();
 }
 
+async function openGiteeReleasePage() {
+  try {
+    await invoke("open_gitee_release_page");
+  } catch {
+    window.open("https://gitee.com/shelbylouis/dbsearch-release/releases", "_blank");
+  }
+}
+
 async function refreshUpdateSettings() {
   if (!isTauriWindow) {
     updateCurrentVersion.value = APP_VERSION;
@@ -7377,12 +7386,17 @@ async function installAvailableUpdate() {
       Object.assign(updateProgress, reduceUpdateDownloadProgress(updateProgress, event));
     }, { timeout: 10 * 60 * 1000 });
     updateDialogOpen.value = false;
-    showCopyToast("更新包已下载，应用将退出以继续安装", "success");
+    showCopyToast("更新包已下载完成，即将重启应用...", "success");
+    await new Promise((r) => setTimeout(r, 1200));
+    await relaunch();
   } catch (error) {
     updateError.value = String(error);
-    showCopyToast(`更新失败：${String(error)}`, "error");
-  } finally {
     updateInstalling.value = false;
+    if (String(error).includes("network") || String(error).includes("fetch") || String(error).includes("timeout") || String(error).includes("connect")) {
+      showCopyToast("下载失败，网络连接异常，请检查网络后重试", "error");
+    } else {
+      showCopyToast(`更新失败：${String(error)}`, "error");
+    }
   }
 }
 
@@ -9576,10 +9590,12 @@ function escapeHtml(str) {
         </div>
         <div v-if="updateError" class="update-error">
           更新失败：{{ updateError }}
+          <div class="update-error-hint">可前往 Gitee 手动下载最新版本安装包</div>
         </div>
       </div>
       <footer class="modal-footer update-dialog-footer">
         <button class="small-btn" :disabled="updateInstalling" @click="closeUpdateDialog">稍后</button>
+        <button v-if="updateError" class="small-btn" @click="openGiteeReleasePage">手动下载</button>
         <button class="primary-btn" :disabled="updateInstalling" @click="installAvailableUpdate">
           {{ updateInstalling ? "下载安装中..." : "立即更新" }}
         </button>

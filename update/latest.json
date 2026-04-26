@@ -1,0 +1,11 @@
+{
+  "version": "5.1.0",
+  "notes": "1. Add automatic update\n2. Improve sync center experience\n3. Fix known issues",
+  "pub_date": "2026-04-26T12:00:00+08:00",
+  "platforms": {
+    "windows-x86_64": {
+      "url": "https://gitee.com/shelbylouis/dbsearch-release/releases/download/v5.1.0/%E9%B9%B0%E6%8D%B7_5.1.0_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUV2xsOEtpam1zRDFPeSt3SXkzaFNGb1N0NGxRZlltTENhRHBmd1g3NFQyVXZleUxuL3p0K0pwVk1oWFdkMExEOG9OWTRZcmNwdW9iZVFYQzMvZGtXL2dRTjdENEt0S2dVPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3MjAzODkyCWZpbGU66bmw5o23XzUuMS4wX3g2NC1zZXR1cC5leGUKcysrNUY3eVJ4aDRzNjdvaGhEOUVXMGJIN01YNWN0TkI2TFRQZ0Mrc2JKNWxoUkhhOVRINjY4Q3dhK1c1L2xVUTR6N214djdveDZmOWVUdldDYTYzQkE9PQo="
+    }
+  }
+}

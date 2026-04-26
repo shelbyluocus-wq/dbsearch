@@ -15,3 +15,13 @@
 ## 重要修改记录
 - 2026-04-25：互换同步中心左侧"转表"和"数据库同步"的名称与图标
 - 2026-04-25：删除"转表"添加模板弹窗（sc-add-modal），改为直接创建模板并在右侧编辑
+- 2026-04-26：完善自动更新功能——Gitee 优先 + GitHub 备用双更新源、tauri-plugin-process 重启、下载失败手动下载入口、发布指南文档
+
+## 自动更新架构
+- Tauri v2 + tauri-plugin-updater + tauri-plugin-process
+- 更新源：Gitee（`shelbylouis/dbsearch-release`）优先，GitHub（`shelbyluocus-wq/dbsearch`）备用
+- Gitee raw 链接放 latest.json：`https://gitee.com/shelbylouis/dbsearch-release/raw/master/latest.json`
+- 安装包放 Gitee Release 附件，签名校验已开启
+- 前端：`checkForAppUpdate` 检查 → `downloadAndInstall` 下载 → `relaunch()` 重启
+- 更新失败时提供「手动下载」按钮跳转 Gitee Release 页
+- 发布指南：`update/发布指南.md`，示例文件：`update/latest.json`

@@ -30,6 +30,7 @@ use tauri::{
 };
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tauri_plugin_opener::OpenerExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct PetHitbox {
@@ -2051,6 +2052,15 @@ async fn open_directory_in_explorer(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn open_gitee_release_page(app: tauri::AppHandle) -> Result<(), String> {
+    let url = "https://gitee.com/shelbylouis/dbsearch-release/releases";
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| format!("无法打开浏览器: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
 async fn run_sync_profile(
     profile_id: String,
     app: tauri::AppHandle,
@@ -3562,6 +3572,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState::default())
         .setup(|app| {
             let st = app.state::<AppState>().clone();
@@ -3801,6 +3812,7 @@ pub fn run() {
             connect_db_migration_server,
             run_db_migration,
             open_directory_in_explorer,
+            open_gitee_release_page,
             run_sync_profile,
             show_panel_window,
             hide_panel_window,
