@@ -16,6 +16,14 @@ Publish 鹰捷 desktop updates through the Tauri updater path: local version syn
 - Confirm the signing private key is available at `C:\Users\Administrator\.tauri\dbsearch.key`, or `TAURI_SIGNING_PRIVATE_KEY` is set. If the key has a password, provide `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` or a `.password` sidecar.
 - Use real Chrome / Chrome DevTools for Gitee UI when the user asks for Gitee publishing. Do not rely on an unauthenticated `git push` unless credentials are already working.
 
+## Remote Publishing Constraint
+
+- Remote Gitee publishing must be done through the authenticated Gitee website in real Chrome only.
+- Do not use `git commit`, `git push`, temporary clones, Gitee API calls, or any CLI remote write path for the release repo.
+- Do not run any command that may open a desktop credential/login prompt for Git, Gitee, or account passwords.
+- Local CLI commands are allowed only for local version sync, building, signing, reading artifacts, and verification.
+- If the Gitee web editor or release upload cannot complete through the browser, stop and ask the user to intervene in the webpage; do not fall back to Git.
+
 ## Release Flow
 
 1. Inspect current state:
@@ -47,7 +55,8 @@ Publish 鹰捷 desktop updates through the Tauri updater path: local version syn
    - Set `platforms.windows-x86_64.url` to the Gitee release attachment URL.
    - Set `platforms.windows-x86_64.signature` to the `.sig` content.
    - Update `pub_date` with an ISO timestamp.
-   - Publish it to Gitee `master` at repository root. If using the Gitee web editor, set Monaco via `window._editor.getModel().setValue(...)` and also update `#js-blob-content` before submitting.
+   - Publish it to Gitee `master` at repository root through the Gitee web editor only. Set Monaco via `window._editor.getModel().setValue(...)` and also update `#js-blob-content` before submitting.
+   - Do not update `latest.json` through a temporary clone, `git commit`, `git push`, API call, or any non-browser remote write.
 
 ## Verification Gate
 
