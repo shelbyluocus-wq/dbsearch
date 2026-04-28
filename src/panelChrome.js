@@ -366,17 +366,28 @@ export function rankTableSearchCandidates(query, candidates = []) {
     const comment = String(item?.table_comment || "").trim().toLowerCase();
     if (!name) continue;
 
+    // ── Tier 0: 完全相等（表名 == 搜索词）── 最高优先级
+    if (name === normalizedQuery) {
+      scored.push({ item, score: 50000 });
+      continue;
+    }
+
     const nameMatch = matchSearchTerm(normalizedQuery, name);
+
+    // ── Tier 1: 表名前缀连续匹配（index === 0）──
     if (nameMatch.matched && nameMatch.mode === "contiguous" && nameMatch.index === 0) {
       scored.push({ item, score: 3000 + Math.max(0, 1000 - name.length) });
       continue;
     }
 
+    // ── Tier 2: 表名中间连续匹配 ──
     if (nameMatch.matched && nameMatch.mode === "contiguous") {
-      scored.push({ item, score: 2000 + Math.max(0, 1000 - name.length) });
+      // 匹配位置越靠前分越高，名字越短分越高
+      scored.push({ item, score: 2000 + Math.max(0, 500 - nameMatch.index * 10) + Math.max(0, 500 - name.length) });
       continue;
     }
 
+    // ── Tier 3: 表名模糊匹配 ──
     if (nameMatch.matched) {
       scored.push({
         item,
@@ -386,11 +397,13 @@ export function rankTableSearchCandidates(query, candidates = []) {
     }
 
     const commentMatch = matchSearchTerm(normalizedQuery, comment);
+    // ── Tier 4: 备注连续匹配 ──
     if (commentMatch.matched && commentMatch.mode === "contiguous") {
       scored.push({ item, score: 500 + Math.max(0, 500 - comment.length) });
       continue;
     }
 
+    // ── Tier 5: 备注模糊匹配 ──
     if (commentMatch.matched) {
       scored.push({ item, score: commentMatch.score });
     }

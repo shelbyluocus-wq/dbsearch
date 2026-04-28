@@ -414,6 +414,29 @@ test("rankTableSearchCandidates reuses fuzzy acronym scoring for abbreviated tab
   );
 });
 
+test("rankTableSearchCandidates ranks exact equality above all other matches", () => {
+  const ranked = panelChrome.rankTableSearchCandidates("heroprop", [
+    { table_name: "guideheroshowprop", table_comment: "Y-引导-默认英雄立绘" },
+    { table_name: "heroartfactforgeprop", table_comment: "Y-英雄-专武锻注配" },
+    { table_name: "heroprop", table_comment: "Y-英雄-召唤物属性" },
+    { table_name: "herocallerprop", table_comment: "Y-英雄-召唤物属性" },
+    { table_name: "herocommprop", table_comment: "Y-英雄-英雄基础公" },
+    { table_name: "heroequipprop", table_comment: "Y-英雄-英雄职业装" },
+  ]);
+
+  // 精确匹配必须排第一
+  assert.equal(ranked[0].table_name, "heroprop");
+
+  // 包含完整 "heroprop" 子串的中间匹配应排在只有前缀模糊匹配的之前
+  const guideIdx = ranked.findIndex((r) => r.table_name === "guideheroshowprop");
+  const forgeIdx = ranked.findIndex((r) => r.table_name === "heroartfactforgeprop");
+  assert.ok(guideIdx < forgeIdx, "mid-string contiguous should rank above fuzzy-only");
+
+  // 精确匹配必须排在所有其他匹配之前
+  const exactIdx = ranked.findIndex((r) => r.table_name === "heroprop");
+  assert.ok(exactIdx === 0, "exact match should be rank #0");
+});
+
 test("findHighlightRanges marks contiguous matches for full keyword hits", () => {
   const ranges = findHighlightRanges("goodsprop", ["good"]);
 

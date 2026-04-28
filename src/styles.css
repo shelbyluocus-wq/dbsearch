@@ -13517,7 +13517,8 @@ mark {
   background-color: rgba(17, 28, 42, 0.34);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
   padding-left: 16px;
-  text-overflow: ellipsis;
+  line-height: 1.5;
+  font-size: 14px;
 }
 
 /* 确保同步中心内 select 文字完整显示 */
@@ -13965,6 +13966,7 @@ mark {
 .sync-center-root .dmw-root--embedded .sw-config-field input,
 .sync-center-root .dmw-root--embedded .dmw-select {
   min-height: clamp(40px, 5vh, 46px);
+  line-height: 1.5;
 }
 
 .sync-center-root .sw-run-btn,

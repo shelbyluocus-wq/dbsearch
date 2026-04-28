@@ -1873,7 +1873,9 @@ const sortedSearchTableResults = computed(() => {
       _type: "table",
     })),
   );
-  return applyStarPinning(sortTableItems(applyFolderFilter(base), sortMode.value));
+  // 搜索模式下保持 rankTableSearchCandidates 的相关性排序，不再按字母重排
+  // （无关键词时走 defaultTableResults，仍使用 sortTableItems 排序）
+  return applyStarPinning(applyFolderFilter(base));
 });
 const sortedSearchColumnResults = computed(() => {
   const base = results.column.map((i) => ({ ...i, _type: "column" }));
