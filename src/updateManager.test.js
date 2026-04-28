@@ -4,10 +4,14 @@ import { ref } from "vue";
 
 import {
   normalizeUpdateSettings,
+  buildPendingUpdateAnnouncement,
+  normalizeUpdateAnnouncement,
   preserveOpaqueInstance,
   reduceUpdateDownloadProgress,
+  resolvePostUpdateAnnouncement,
   resolveUpdateCheckPlan,
   shouldAutoRunStartupUpdateCheck,
+  splitReleaseNotes,
   summarizeReleaseNotes,
 } from "./updateManager.js";
 
@@ -178,4 +182,85 @@ test("reduceUpdateDownloadProgress tracks total bytes and completion state", () 
     totalBytes: 100,
     percent: 100,
   });
+});
+
+test("buildPendingUpdateAnnouncement keeps full release notes for the next launch", () => {
+  const announcement = buildPendingUpdateAnnouncement({
+    version: "v5.5.0",
+    date: "2026-04-28T08:30:00Z",
+    body: "1. 新增更新后首启公告\n2. 优化自动更新体验",
+  });
+
+  assert.deepEqual(announcement, {
+    version: "5.5.0",
+    notes: "1. 新增更新后首启公告\n2. 优化自动更新体验",
+    pubDate: "2026-04-28T08:30:00.000Z",
+  });
+});
+
+test("normalizeUpdateAnnouncement accepts raw manifest-style fields", () => {
+  const announcement = normalizeUpdateAnnouncement({
+    version: " v5.5.1 ",
+    notes: "  修复已知问题  ",
+    pub_date: "2026-04-28T10:00:00Z",
+  });
+
+  assert.deepEqual(announcement, {
+    version: "5.5.1",
+    notes: "修复已知问题",
+    pubDate: "2026-04-28T10:00:00.000Z",
+  });
+});
+
+test("splitReleaseNotes preserves meaningful note lines and supplies an empty fallback", () => {
+  assert.deepEqual(
+    splitReleaseNotes("\n1. 新增首启公告\n\n2. 修复下载失败提示\n"),
+    ["1. 新增首启公告", "2. 修复下载失败提示"],
+  );
+  assert.deepEqual(splitReleaseNotes(""), ["本次更新未提供详细说明。"]);
+});
+
+test("resolvePostUpdateAnnouncement shows pending notes once for the installed version", () => {
+  const announcement = resolvePostUpdateAnnouncement({
+    currentVersion: "5.5.0",
+    acknowledgedVersion: "5.4.0",
+    pendingAnnouncement: {
+      version: "v5.5.0",
+      notes: "1. 新增更新公告\n2. 修复自动更新重启提示",
+      pub_date: "2026-04-28T08:30:00Z",
+    },
+  });
+
+  assert.deepEqual(announcement, {
+    version: "5.5.0",
+    notes: "1. 新增更新公告\n2. 修复自动更新重启提示",
+    notesLines: ["1. 新增更新公告", "2. 修复自动更新重启提示"],
+    pubDate: "2026-04-28T08:30:00.000Z",
+  });
+});
+
+test("resolvePostUpdateAnnouncement skips stale or already acknowledged announcements", () => {
+  assert.equal(
+    resolvePostUpdateAnnouncement({
+      currentVersion: "5.5.0",
+      acknowledgedVersion: "5.5.0",
+      pendingAnnouncement: {
+        version: "5.5.0",
+        notes: "已看过",
+      },
+    }),
+    null,
+  );
+
+  assert.equal(
+    resolvePostUpdateAnnouncement({
+      currentVersion: "5.5.0",
+      acknowledgedVersion: "5.4.0",
+      pendingAnnouncement: {
+        version: "5.4.9",
+        notes: "旧版本说明",
+      },
+    }),
+    null,
+  );
 });

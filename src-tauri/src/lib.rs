@@ -90,10 +90,16 @@ struct RuntimeState {
 }
 
 const MAIN_WINDOW_LABEL: &str = "main";
+const WELCOME_WINDOW_LABEL: &str = "welcome";
+const UPDATE_ANNOUNCEMENT_WINDOW_LABEL: &str = "update_announcement";
 const PANEL_WINDOW_LABEL: &str = "panel";
 const PET_MENU_WINDOW_LABEL: &str = "pet_menu";
 const SYNC_WORKSPACE_WINDOW_LABEL: &str = "sync_workspace";
 const DB_MIGRATION_WORKSPACE_WINDOW_LABEL: &str = "db_migration_workspace";
+const WELCOME_WINDOW_WIDTH: f64 = 720.0;
+const WELCOME_WINDOW_HEIGHT: f64 = 320.0;
+const UPDATE_ANNOUNCEMENT_WINDOW_WIDTH: f64 = 620.0;
+const UPDATE_ANNOUNCEMENT_WINDOW_HEIGHT: f64 = 520.0;
 const PANEL_WIDTH: f64 = 780.0;
 const PANEL_HEIGHT: f64 = 860.0;
 const PANEL_MIN_WIDTH: f64 = 680.0;
@@ -209,6 +215,14 @@ impl Default for SearchConfig {
         }
     }
 }
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default)]
+struct UpdateAnnouncement {
+    version: String,
+    notes: String,
+    pub_date: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 struct PersonalConfig {
@@ -245,6 +259,10 @@ struct PersonalConfig {
     background_opacity: f32,
     #[serde(default)]
     reduce_transparency_mode: bool,
+    #[serde(default = "default_startup_welcome_text")]
+    startup_welcome_text: String,
+    #[serde(default = "default_startup_welcome_mode")]
+    startup_welcome_mode: String,
     #[serde(default)]
     sync_profiles: Vec<SyncProfile>,
     #[serde(default)]
@@ -265,6 +283,10 @@ struct PersonalConfig {
     auto_check_updates: bool,
     #[serde(default)]
     last_update_check_at: Option<String>,
+    #[serde(default)]
+    pending_update_announcement: Option<UpdateAnnouncement>,
+    #[serde(default)]
+    last_update_announcement_version: Option<String>,
 }
 fn default_true() -> bool {
     true
@@ -283,6 +305,12 @@ fn default_db_migration_window_hotkey() -> String {
 }
 fn default_pet_skin() -> String {
     "eagle".into()
+}
+fn default_startup_welcome_text() -> String {
+    "Louis".into()
+}
+fn default_startup_welcome_mode() -> String {
+    "handwriting".into()
 }
 
 fn sanitize_db_migration_window_size(
@@ -603,6 +631,8 @@ impl Default for PersonalConfig {
             weather_enabled: true,
             background_opacity: 1.0,
             reduce_transparency_mode: false,
+            startup_welcome_text: default_startup_welcome_text(),
+            startup_welcome_mode: default_startup_welcome_mode(),
             sync_profiles: Vec::new(),
             default_sync_profile_id: None,
             last_used_sync_profile_id: None,
@@ -613,6 +643,8 @@ impl Default for PersonalConfig {
             db_migration_last_connection: None,
             auto_check_updates: true,
             last_update_check_at: None,
+            pending_update_announcement: None,
+            last_update_announcement_version: None,
         }
     }
 }
@@ -643,6 +675,57 @@ fn parse_update_check_at(value: Option<&str>) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(text)
         .ok()
         .map(|parsed| parsed.with_timezone(&Utc))
+}
+
+fn normalize_update_announcement_version(version: &str) -> String {
+    version
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .trim()
+        .to_string()
+}
+
+fn normalize_update_announcement(
+    mut announcement: UpdateAnnouncement,
+) -> Option<UpdateAnnouncement> {
+    announcement.version = normalize_update_announcement_version(&announcement.version);
+    announcement.notes = announcement.notes.trim().to_string();
+    announcement.pub_date = announcement.pub_date.and_then(|value| {
+        let trimmed = value.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else {
+            Some(trimmed)
+        }
+    });
+
+    if announcement.version.is_empty() {
+        None
+    } else {
+        Some(announcement)
+    }
+}
+
+fn should_show_update_announcement(personal: &PersonalConfig, current_version: &str) -> bool {
+    let current_version = normalize_update_announcement_version(current_version);
+    if current_version.is_empty() {
+        return false;
+    }
+
+    let Some(pending) = personal.pending_update_announcement.as_ref() else {
+        return false;
+    };
+
+    if normalize_update_announcement_version(&pending.version) != current_version {
+        return false;
+    }
+
+    personal
+        .last_update_announcement_version
+        .as_deref()
+        .map(normalize_update_announcement_version)
+        .as_deref()
+        != Some(current_version.as_str())
 }
 
 fn build_update_check_plan(
@@ -1668,6 +1751,55 @@ async fn check_for_updates_now(
 }
 
 #[tauri::command]
+async fn remember_pending_update_announcement(
+    announcement: UpdateAnnouncement,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let announcement = normalize_update_announcement(announcement)
+        .ok_or_else(|| "更新公告缺少版本号".to_string())?;
+    let mut rt = state.runtime.lock().await;
+    rt.config.personal.pending_update_announcement = Some(announcement);
+    save_config_to_disk(&app, &rt.config)
+}
+
+#[tauri::command]
+async fn acknowledge_update_announcement(
+    version: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let normalized_version = normalize_update_announcement_version(&version);
+    if normalized_version.is_empty() {
+        return Err("更新公告版本号不能为空".into());
+    }
+
+    {
+        let mut rt = state.runtime.lock().await;
+        rt.config.personal.last_update_announcement_version = Some(normalized_version.clone());
+        let should_clear_pending = rt
+            .config
+            .personal
+            .pending_update_announcement
+            .as_ref()
+            .map(|announcement| {
+                normalize_update_announcement_version(&announcement.version) == normalized_version
+            })
+            .unwrap_or(false);
+        if should_clear_pending {
+            rt.config.personal.pending_update_announcement = None;
+        }
+        save_config_to_disk(&app, &rt.config)?;
+    }
+
+    if let Some(window) = app.get_webview_window(UPDATE_ANNOUNCEMENT_WINDOW_LABEL) {
+        window.close().map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
 async fn register_hotkey(
     hotkey: String,
     app: tauri::AppHandle,
@@ -2155,6 +2287,14 @@ async fn hide_panel_window(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn close_welcome_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(WELCOME_WINDOW_LABEL) {
+        window.close().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
 async fn toggle_panel_window(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -2336,6 +2476,75 @@ fn activate_panel_window(
     let _ = panel.unminimize();
     panel.set_focus().map_err(|e| e.to_string())?;
     Ok(panel)
+}
+
+fn ensure_welcome_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(WELCOME_WINDOW_LABEL) {
+        let _ = window.set_always_on_top(true);
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(window);
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        WELCOME_WINDOW_LABEL,
+        WebviewUrl::App("index.html".into()),
+    )
+    .title(format_window_title(app, Some("Welcome")))
+    .inner_size(WELCOME_WINDOW_WIDTH, WELCOME_WINDOW_HEIGHT)
+    .resizable(false)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .visible(true)
+    .center()
+    .drag_and_drop(false)
+    .build()
+    .map_err(|e| format!("failed to create welcome window: {e}"))?;
+
+    let _ = window.set_always_on_top(true);
+    let _ = window.show();
+    let _ = window.set_focus();
+    Ok(window)
+}
+
+fn ensure_update_announcement_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(UPDATE_ANNOUNCEMENT_WINDOW_LABEL) {
+        let _ = window.set_always_on_top(true);
+        let _ = window.show();
+        let _ = window.set_focus();
+        return Ok(window);
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        UPDATE_ANNOUNCEMENT_WINDOW_LABEL,
+        WebviewUrl::App("index.html".into()),
+    )
+    .title(format_window_title(app, Some("更新公告")))
+    .inner_size(
+        UPDATE_ANNOUNCEMENT_WINDOW_WIDTH,
+        UPDATE_ANNOUNCEMENT_WINDOW_HEIGHT,
+    )
+    .resizable(false)
+    .decorations(false)
+    .transparent(false)
+    .shadow(true)
+    .always_on_top(true)
+    .skip_taskbar(false)
+    .visible(true)
+    .center()
+    .drag_and_drop(false)
+    .build()
+    .map_err(|e| format!("failed to create update announcement window: {e}"))?;
+
+    let _ = window.set_always_on_top(true);
+    let _ = window.show();
+    let _ = window.set_focus();
+    Ok(window)
 }
 
 fn ensure_panel_window(
@@ -3605,6 +3814,10 @@ pub fn run() {
             loaded.personal.last_used_db_migration_profile_id =
                 last_used_db_migration_profile_id;
             let pet_position = loaded.personal.pet_position.clone();
+            let show_update_announcement = should_show_update_announcement(
+                &loaded.personal,
+                &app.package_info().version.to_string(),
+            );
             let registered_hotkey = match normalize_hotkey_for_plugin(&loaded.personal.hotkey) {
                 Ok(shortcut) => {
                     match app.global_shortcut().register(shortcut.as_str()) {
@@ -3715,6 +3928,20 @@ pub fn run() {
                 eprintln!("failed to create system tray: {e}");
             }
 
+            if let Err(e) = ensure_welcome_window(&app.handle()) {
+                eprintln!("failed to create welcome window: {e}");
+            }
+
+            if show_update_announcement {
+                let app_handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(4400));
+                    if let Err(e) = ensure_update_announcement_window(&app_handle) {
+                        eprintln!("failed to create update announcement window: {e}");
+                    }
+                });
+            }
+
             if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
                 if let Some(pos) = pet_position {
                     let _ = main_window.set_position(Position::Logical(LogicalPosition::new(
@@ -3797,6 +4024,8 @@ pub fn run() {
             get_update_settings,
             prepare_startup_update_check,
             check_for_updates_now,
+            remember_pending_update_announcement,
+            acknowledge_update_announcement,
             register_hotkey,
             register_quick_date_hotkey,
             register_sync_window_hotkey,
@@ -3816,6 +4045,7 @@ pub fn run() {
             run_sync_profile,
             show_panel_window,
             hide_panel_window,
+            close_welcome_window,
             toggle_panel_window,
             consume_panel_open_settings,
             set_panel_always_on_top,
@@ -3886,6 +4116,19 @@ mod tests {
     }
 
     #[test]
+    fn startup_welcome_text_defaults_to_louis() {
+        assert_eq!(PersonalConfig::default().startup_welcome_text, "Louis");
+    }
+
+    #[test]
+    fn startup_welcome_mode_defaults_to_handwriting() {
+        assert_eq!(
+            PersonalConfig::default().startup_welcome_mode,
+            "handwriting"
+        );
+    }
+
+    #[test]
     fn primary_windows_close_to_tray_instead_of_exiting() {
         assert_eq!(
             close_request_action_for_window(PANEL_WINDOW_LABEL),
@@ -3939,6 +4182,35 @@ mod tests {
         assert!(plan.should_check);
         assert_eq!(plan.reason, "manual");
         assert_eq!(plan.checked_at.as_deref(), Some("2026-03-20T08:00:00+00:00"));
+    }
+
+    #[test]
+    fn update_announcement_shows_pending_current_version_once() {
+        let mut personal = PersonalConfig::default();
+        personal.pending_update_announcement = Some(UpdateAnnouncement {
+            version: "v5.5.0".into(),
+            notes: "1. 新增更新公告".into(),
+            pub_date: Some("2026-04-28T08:30:00Z".into()),
+        });
+        personal.last_update_announcement_version = Some("5.4.0".into());
+
+        assert!(should_show_update_announcement(&personal, "5.5.0"));
+
+        personal.last_update_announcement_version = Some("5.5.0".into());
+
+        assert!(!should_show_update_announcement(&personal, "5.5.0"));
+    }
+
+    #[test]
+    fn update_announcement_ignores_stale_pending_version() {
+        let mut personal = PersonalConfig::default();
+        personal.pending_update_announcement = Some(UpdateAnnouncement {
+            version: "5.4.9".into(),
+            notes: "旧版本说明".into(),
+            pub_date: None,
+        });
+
+        assert!(!should_show_update_announcement(&personal, "5.5.0"));
     }
 
     #[test]

@@ -45,6 +45,67 @@ export function preserveOpaqueInstance(value) {
   return value;
 }
 
+export function normalizeUpdateVersion(value) {
+  return String(value || "").trim().replace(/^[vV]/, "").trim();
+}
+
+function normalizeReleaseNotesText(value) {
+  return String(value || "")
+    .replace(/\r\n/g, "\n")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+}
+
+export function splitReleaseNotes(notes) {
+  const lines = normalizeReleaseNotesText(notes)
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.length > 0 ? lines : ["本次更新未提供详细说明。"];
+}
+
+export function normalizeUpdateAnnouncement(value = {}) {
+  const version = normalizeUpdateVersion(value?.version);
+  if (!version) return null;
+
+  return {
+    version,
+    notes: normalizeReleaseNotesText(value?.notes ?? value?.body ?? ""),
+    pubDate: normalizeIsoTimestamp(value?.pubDate ?? value?.pub_date ?? value?.date),
+  };
+}
+
+export function buildPendingUpdateAnnouncement(update = {}, fallbackNotes = "") {
+  return normalizeUpdateAnnouncement({
+    version: update?.version,
+    notes: update?.body ?? update?.rawJson?.notes ?? fallbackNotes,
+    pubDate: update?.date ?? update?.rawJson?.pub_date ?? update?.rawJson?.pubDate ?? update?.rawJson?.date,
+  });
+}
+
+export function resolvePostUpdateAnnouncement({
+  currentVersion = "",
+  pendingAnnouncement = null,
+  acknowledgedVersion = "",
+} = {}) {
+  const current = normalizeUpdateVersion(currentVersion);
+  if (!current) return null;
+
+  const pending = normalizeUpdateAnnouncement(pendingAnnouncement);
+  if (!pending || pending.version !== current) return null;
+  if (normalizeUpdateVersion(acknowledgedVersion) === current) return null;
+
+  const notesLines = splitReleaseNotes(pending.notes);
+  return {
+    ...pending,
+    notes: pending.notes || notesLines.join("\n"),
+    notesLines,
+  };
+}
+
 export function resolveUpdateCheckPlan({
   settings = normalizeUpdateSettings(),
   now = Date.now(),

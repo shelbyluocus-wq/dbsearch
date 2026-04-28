@@ -85,6 +85,156 @@ body,
   display: none !important;
 }
 
+.welcome-root {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  width: 100vw;
+  height: 100vh;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  pointer-events: none;
+  background: transparent;
+  animation: welcome-window-fade 4200ms ease forwards;
+}
+
+.welcome-stage {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 22px 34px;
+  filter: drop-shadow(0 18px 28px rgba(15, 23, 42, 0.18));
+}
+
+.welcome-word {
+  width: 100%;
+  max-width: 720px;
+  height: 260px;
+  overflow: visible;
+}
+
+.welcome-word text {
+  font-family: "Segoe Script", "Brush Script MT", "Lucida Handwriting", cursive;
+  font-size: var(--welcome-font-size);
+  font-weight: 600;
+  letter-spacing: 0;
+  text-anchor: middle;
+  dominant-baseline: middle;
+}
+
+.welcome-word-stroke {
+  fill: none;
+  stroke: url("#startupWelcomeGradient");
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 980;
+  stroke-dashoffset: 980;
+  animation: welcome-handwrite 2300ms cubic-bezier(0.45, 0, 0.18, 1) forwards;
+}
+
+.welcome-glyph-stroke {
+  fill: none;
+  stroke: url("#startupWelcomeStrokeOrderGradient");
+  stroke-width: 3.2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-dasharray: 380;
+  stroke-dashoffset: 380;
+  opacity: 0;
+  animation: welcome-glyph-handwrite 760ms cubic-bezier(0.45, 0, 0.18, 1) var(--welcome-delay) forwards;
+}
+
+.welcome-glyph-glow {
+  stroke-width: 7.5;
+  opacity: 0;
+  filter: blur(6px);
+  animation-name: welcome-glyph-glow-handwrite;
+}
+
+.welcome-glyph-fill {
+  fill: url("#startupWelcomeStrokeOrderGradient");
+  opacity: 0;
+  animation: welcome-glyph-fill-in 420ms ease calc(var(--welcome-delay) + 520ms) forwards;
+}
+
+.welcome-word-glow {
+  stroke-width: 7.5;
+  opacity: 0.32;
+  filter: blur(6px);
+}
+
+.welcome-word-fill {
+  fill: url("#startupWelcomeGradient");
+  opacity: 0;
+  animation: welcome-fill-in 920ms ease 1900ms forwards;
+}
+
+@keyframes welcome-handwrite {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes welcome-fill-in {
+  to {
+    opacity: 0.95;
+  }
+}
+
+@keyframes welcome-glyph-handwrite {
+  0% {
+    opacity: 1;
+    stroke-dashoffset: 380;
+  }
+  100% {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes welcome-glyph-glow-handwrite {
+  0% {
+    opacity: 0.28;
+    stroke-dashoffset: 380;
+  }
+  100% {
+    opacity: 0.28;
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes welcome-glyph-fill-in {
+  to {
+    opacity: 0.95;
+  }
+}
+
+@keyframes welcome-window-fade {
+  0%,
+  78% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(0.985);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .welcome-root,
+  .welcome-word-stroke,
+  .welcome-word-fill,
+  .welcome-glyph-stroke,
+  .welcome-glyph-fill {
+    animation-duration: 1ms;
+    animation-delay: 0ms;
+  }
+}
+
 .app-shell {
   --panel-shell-radius: 32px;
   position: fixed;
@@ -9975,6 +10125,142 @@ mark {
   flex-wrap: wrap;
   align-items: center;
   gap: 10px;
+}
+
+.update-announcement-root {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100vw;
+  min-height: 100vh;
+  padding: 20px;
+  background:
+    linear-gradient(135deg, #f8fafc 0%, #edf7f0 46%, #fff4e5 100%);
+  color: #1d2430;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans SC", system-ui, sans-serif;
+}
+
+.update-announcement-shell {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 560px);
+  max-height: calc(100vh - 40px);
+  overflow: hidden;
+  border: 1px solid rgba(29, 36, 48, 0.1);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.96);
+  box-shadow: 0 24px 70px rgba(36, 48, 70, 0.18);
+}
+
+.update-announcement-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 24px 24px 16px;
+  border-bottom: 1px solid rgba(29, 36, 48, 0.08);
+}
+
+.update-announcement-kicker {
+  display: block;
+  margin-bottom: 8px;
+  color: #34775a;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.update-announcement-header h1 {
+  margin: 0;
+  color: #111827;
+  font-size: 24px;
+  line-height: 1.25;
+}
+
+.update-announcement-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  border: 1px solid rgba(29, 36, 48, 0.1);
+  border-radius: 8px;
+  background: #ffffff;
+  color: #4b5563;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.update-announcement-close:hover {
+  background: #f3f4f6;
+  color: #111827;
+}
+
+.update-announcement-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  padding: 16px 24px 0;
+}
+
+.update-announcement-meta div {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid rgba(29, 36, 48, 0.08);
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.update-announcement-meta span,
+.update-announcement-notes-title {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.update-announcement-meta strong {
+  color: #111827;
+  font-size: 15px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.update-announcement-notes {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 150px;
+  overflow: auto;
+  margin: 16px 24px 0;
+  padding: 16px;
+  border: 1px solid rgba(52, 119, 90, 0.18);
+  border-radius: 8px;
+  background: #fbfefa;
+}
+
+.update-announcement-notes ul {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding-left: 20px;
+}
+
+.update-announcement-notes li {
+  color: #243044;
+  font-size: 14px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.update-announcement-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding: 18px 24px 24px;
 }
 
 .update-dialog {

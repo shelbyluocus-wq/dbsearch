@@ -10,6 +10,11 @@ import "./styles.css";
 import { resolveSettingsVersionLabel } from "./appIdentity.js";
 import { APP_PACKAGE_VERSION } from "./appVersion.js";
 import DbMigrationWorkspace from "./DbMigrationWorkspace.vue";
+import {
+  buildStartupWelcomeStrokeOrderGlyphs,
+  normalizeStartupWelcomeMode,
+  normalizeStartupWelcomeText,
+} from "./startupWelcome.js";
 import { WeatherEngine } from "./weatherEngine.js";
 import {
   buildFavoritesMenuItems,
@@ -58,9 +63,13 @@ import {
   shouldShowSyncCenterLogDrawer,
 } from "./syncCenter.js";
 import {
+  buildPendingUpdateAnnouncement,
+  normalizeUpdateAnnouncement,
   normalizeUpdateSettings,
+  normalizeUpdateVersion,
   preserveOpaqueInstance,
   reduceUpdateDownloadProgress,
+  resolvePostUpdateAnnouncement,
   shouldAutoRunStartupUpdateCheck,
   summarizeReleaseNotes,
 } from "./updateManager.js";
@@ -342,6 +351,8 @@ const isTauriWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in 
 const windowLabel = ref("browser");
 
 const isPetWindow = computed(() => isTauriWindow && windowLabel.value === "main");
+const isWelcomeWindow = computed(() => isTauriWindow && windowLabel.value === "welcome");
+const isUpdateAnnouncementWindow = computed(() => isTauriWindow && windowLabel.value === "update_announcement");
 const isMenuWindow = computed(() => isTauriWindow && windowLabel.value === "pet_menu");
 const isSyncWorkspaceWindow = computed(() => isTauriWindow && windowLabel.value === "sync_workspace");
 const isDbMigrationWorkspaceWindow = computed(() =>
@@ -442,6 +453,12 @@ const updateReleaseDate = ref("");
 const updateNotesSummary = ref("");
 const updateError = ref("");
 const availableUpdateRef = ref(null);
+const postUpdateAnnouncement = reactive({
+  version: "",
+  notes: "",
+  notesLines: [],
+  pubDate: null,
+});
 const updateProgress = reactive({
   status: "idle",
   downloadedBytes: 0,
@@ -551,11 +568,15 @@ const config = reactive({
     weather_enabled: true,
     background_opacity: 1.0,
     reduce_transparency_mode: false,
+    startup_welcome_text: "Louis",
+    startup_welcome_mode: "handwriting",
     sync_profiles: [],
     default_sync_profile_id: null,
     last_used_sync_profile_id: null,
     auto_check_updates: true,
     last_update_check_at: null,
+    pending_update_announcement: null,
+    last_update_announcement_version: null,
   },
 });
 
@@ -857,6 +878,7 @@ let unlistenPetMoved = null;
 let unlistenSearchFound = null;
 let unlistenPetIdleStatesChanged = null;
 let unlistenPetIdlePreview = null;
+let welcomeCloseTimer = null;
 let copyToastTimer = null;
 let uiScalePersistTimer = null;
 
@@ -1007,11 +1029,28 @@ const settingsDraft = reactive({
   weatherEnabled: true,
   backgroundOpacity: 1.0,
   reduceTransparencyMode: false,
+  startupWelcomeText: "Louis",
+  startupWelcomeMode: "handwriting",
   autoCheckUpdates: true,
 });
 const backgroundOpacityPercent = computed(() =>
   `${Math.round(normalizeBackgroundOpacity(settingsDraft.backgroundOpacity) * 100)}%`,
 );
+const startupWelcomeText = computed(() =>
+  normalizeStartupWelcomeText(config.personal.startup_welcome_text),
+);
+const startupWelcomeMode = computed(() =>
+  normalizeStartupWelcomeMode(config.personal.startup_welcome_mode),
+);
+const startupWelcomeStrokeOrderGlyphs = computed(() =>
+  buildStartupWelcomeStrokeOrderGlyphs(startupWelcomeText.value),
+);
+const startupWelcomeFontSize = computed(() => {
+  const len = startupWelcomeText.value.length;
+  if (len <= 6) return 112;
+  if (len <= 9) return 96;
+  return 80;
+});
 const SYNC_STEP_LABELS = {
   validate: "环境校验",
   launch_tool: "执行转表工具",
@@ -3632,6 +3671,23 @@ onMounted(async () => {
 
   applyTheme(themeId.value)
   await loadConfig();
+
+  if (isWelcomeWindow.value) {
+    welcomeCloseTimer = window.setTimeout(() => {
+      invoke("close_welcome_window").catch(() => {});
+    }, 4300);
+    return;
+  }
+
+  if (isUpdateAnnouncementWindow.value) {
+    await refreshUpdateSettings();
+    refreshPostUpdateAnnouncementFromConfig();
+    if (!postUpdateAnnouncement.version) {
+      await acknowledgePostUpdateAnnouncement();
+    }
+    return;
+  }
+
   await refreshUpdateSettings();
   applyCustomFont();
   await startTableCommentAlignObserver();
@@ -3830,6 +3886,10 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  if (welcomeCloseTimer) {
+    clearTimeout(welcomeCloseTimer);
+    welcomeCloseTimer = null;
+  }
   stopSpriteSheetAnimation();
   destroyWeatherEngine();
   stopWeatherRefreshTimer();
@@ -5074,6 +5134,8 @@ function openSettings(target = null) {
   settingsDraft.weatherEnabled = config.personal.weather_enabled !== false;
   settingsDraft.backgroundOpacity = normalizeBackgroundOpacity(config.personal.background_opacity);
   settingsDraft.reduceTransparencyMode = !!config.personal.reduce_transparency_mode;
+  settingsDraft.startupWelcomeText = normalizeStartupWelcomeText(config.personal.startup_welcome_text);
+  settingsDraft.startupWelcomeMode = normalizeStartupWelcomeMode(config.personal.startup_welcome_mode);
   settingsDraft.autoCheckUpdates = config.personal.auto_check_updates !== false;
   _opacityBeforeSettings = config.personal.background_opacity;
   _reduceTransparencyBeforeSettings = !!config.personal.reduce_transparency_mode;
@@ -5217,6 +5279,8 @@ async function saveSettings() {
   config.personal.weather_enabled = !!settingsDraft.weatherEnabled;
   config.personal.background_opacity = normalizeBackgroundOpacity(settingsDraft.backgroundOpacity);
   config.personal.reduce_transparency_mode = !!settingsDraft.reduceTransparencyMode;
+  config.personal.startup_welcome_text = normalizeStartupWelcomeText(settingsDraft.startupWelcomeText);
+  config.personal.startup_welcome_mode = normalizeStartupWelcomeMode(settingsDraft.startupWelcomeMode);
   config.personal.auto_check_updates = !!settingsDraft.autoCheckUpdates;
   weatherEnabled.value = !!settingsDraft.weatherEnabled;
   fetchWeather();
@@ -6971,9 +7035,21 @@ async function loadConfig() {
     const updateSettings = normalizeUpdateSettings(config.personal);
     config.personal.auto_check_updates = updateSettings.autoCheckUpdates;
     config.personal.last_update_check_at = updateSettings.lastUpdateCheckAt;
+    const pendingAnnouncement = normalizeUpdateAnnouncement(config.personal.pending_update_announcement);
+    config.personal.pending_update_announcement = pendingAnnouncement
+      ? {
+          version: pendingAnnouncement.version,
+          notes: pendingAnnouncement.notes,
+          pub_date: pendingAnnouncement.pubDate,
+        }
+      : null;
+    config.personal.last_update_announcement_version =
+      normalizeUpdateVersion(config.personal.last_update_announcement_version) || null;
   }
   config.personal.background_opacity = normalizeBackgroundOpacity(config.personal.background_opacity);
   config.personal.reduce_transparency_mode = !!config.personal.reduce_transparency_mode;
+  config.personal.startup_welcome_text = normalizeStartupWelcomeText(config.personal.startup_welcome_text);
+  config.personal.startup_welcome_mode = normalizeStartupWelcomeMode(config.personal.startup_welcome_mode);
   {
     const syncSettings = normalizeSyncWorkspaceSettings(config.personal);
     const defaultProfileId = syncSettings.defaultProfileId || syncSettings.profiles[0]?.id || null;
@@ -7269,6 +7345,62 @@ function formatByteCount(value) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function setPostUpdateAnnouncement(announcement) {
+  postUpdateAnnouncement.version = announcement?.version || "";
+  postUpdateAnnouncement.notes = announcement?.notes || "";
+  postUpdateAnnouncement.notesLines = Array.isArray(announcement?.notesLines)
+    ? [...announcement.notesLines]
+    : [];
+  postUpdateAnnouncement.pubDate = announcement?.pubDate || null;
+}
+
+function refreshPostUpdateAnnouncementFromConfig() {
+  setPostUpdateAnnouncement(resolvePostUpdateAnnouncement({
+    currentVersion: updateCurrentVersion.value || APP_VERSION,
+    pendingAnnouncement: config.personal.pending_update_announcement,
+    acknowledgedVersion: config.personal.last_update_announcement_version,
+  }));
+}
+
+async function rememberPendingUpdateAnnouncementForInstall(update) {
+  const announcement = buildPendingUpdateAnnouncement(update, updateNotesSummary.value);
+  if (!announcement) return;
+
+  const payload = {
+    version: announcement.version,
+    notes: announcement.notes,
+    pub_date: announcement.pubDate,
+  };
+  config.personal.pending_update_announcement = payload;
+
+  if (isTauriWindow) {
+    try {
+      await invoke("remember_pending_update_announcement", { announcement: payload });
+      return;
+    } catch (error) {
+      console.error("Failed to remember pending update announcement:", error);
+    }
+  }
+
+  await persistConfig().catch((error) => {
+    console.error("Failed to persist pending update announcement:", error);
+  });
+}
+
+async function acknowledgePostUpdateAnnouncement() {
+  const version = postUpdateAnnouncement.version || updateCurrentVersion.value || APP_VERSION;
+  if (!version) return;
+
+  try {
+    await invoke("acknowledge_update_announcement", { version });
+  } catch (error) {
+    console.error("Failed to acknowledge update announcement:", error);
+    try {
+      await getCurrentWindow().close();
+    } catch {}
+  }
+}
+
 function closeUpdateDialog() {
   if (updateInstalling.value) return;
   updateDialogOpen.value = false;
@@ -7384,6 +7516,7 @@ async function installAvailableUpdate() {
   resetUpdateProgress();
 
   try {
+    await rememberPendingUpdateAnnouncementForInstall(update);
     await update.downloadAndInstall((event) => {
       Object.assign(updateProgress, reduceUpdateDownloadProgress(updateProgress, event));
     }, { timeout: 10 * 60 * 1000 });
@@ -7438,8 +7571,91 @@ function escapeHtml(str) {
 </script>
 
 <template>
+  <div v-if="isWelcomeWindow" class="welcome-root" @contextmenu.prevent>
+    <section
+      class="welcome-stage"
+      :style="{ '--welcome-font-size': `${startupWelcomeFontSize}px` }"
+      :aria-label="startupWelcomeText"
+    >
+      <svg
+        v-if="startupWelcomeMode === 'stroke_order'"
+        class="welcome-word welcome-word--stroke-order"
+        viewBox="0 0 720 260"
+        role="img"
+      >
+        <defs>
+          <linearGradient id="startupWelcomeStrokeOrderGradient" x1="70" y1="52" x2="650" y2="205" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#ff5f57" />
+            <stop offset="24%" stop-color="#ffbd2e" />
+            <stop offset="48%" stop-color="#28c840" />
+            <stop offset="72%" stop-color="#0a84ff" />
+            <stop offset="100%" stop-color="#bf5af2" />
+          </linearGradient>
+        </defs>
+        <g
+          v-for="glyph in startupWelcomeStrokeOrderGlyphs"
+          :key="glyph.id"
+          class="welcome-glyph"
+          :style="{ '--welcome-delay': `${glyph.delayMs}ms` }"
+        >
+          <text class="welcome-glyph-stroke welcome-glyph-glow" :x="glyph.x" y="158">{{ glyph.char }}</text>
+          <text class="welcome-glyph-stroke" :x="glyph.x" y="158">{{ glyph.char }}</text>
+          <text class="welcome-glyph-fill" :x="glyph.x" y="158">{{ glyph.char }}</text>
+        </g>
+      </svg>
+      <svg v-else class="welcome-word" viewBox="0 0 720 260" role="img">
+        <defs>
+          <linearGradient id="startupWelcomeGradient" x1="70" y1="52" x2="650" y2="205" gradientUnits="userSpaceOnUse">
+            <stop offset="0%" stop-color="#ff5f57" />
+            <stop offset="24%" stop-color="#ffbd2e" />
+            <stop offset="48%" stop-color="#28c840" />
+            <stop offset="72%" stop-color="#0a84ff" />
+            <stop offset="100%" stop-color="#bf5af2" />
+          </linearGradient>
+        </defs>
+        <text class="welcome-word-stroke welcome-word-glow" x="360" y="158">{{ startupWelcomeText }}</text>
+        <text class="welcome-word-stroke" x="360" y="158">{{ startupWelcomeText }}</text>
+        <text class="welcome-word-fill" x="360" y="158">{{ startupWelcomeText }}</text>
+      </svg>
+    </section>
+  </div>
+
+  <div v-else-if="isUpdateAnnouncementWindow" class="update-announcement-root" @contextmenu.prevent>
+    <section class="update-announcement-shell" role="dialog" aria-modal="true" aria-labelledby="updateAnnouncementTitle">
+      <header class="update-announcement-header" data-tauri-drag-region>
+        <div>
+          <span class="update-announcement-kicker">更新公告</span>
+          <h1 id="updateAnnouncementTitle">鹰捷已更新到 v{{ postUpdateAnnouncement.version || updateCurrentVersion }}</h1>
+        </div>
+        <button class="update-announcement-close" type="button" aria-label="关闭更新公告" @click="acknowledgePostUpdateAnnouncement">×</button>
+      </header>
+
+      <div class="update-announcement-meta">
+        <div>
+          <span>当前版本</span>
+          <strong>v{{ postUpdateAnnouncement.version || updateCurrentVersion }}</strong>
+        </div>
+        <div v-if="postUpdateAnnouncement.pubDate">
+          <span>发布时间</span>
+          <strong>{{ formatUpdateTimestamp(postUpdateAnnouncement.pubDate) }}</strong>
+        </div>
+      </div>
+
+      <div class="update-announcement-notes">
+        <div class="update-announcement-notes-title">本次更新内容</div>
+        <ul>
+          <li v-for="line in postUpdateAnnouncement.notesLines" :key="line">{{ line }}</li>
+        </ul>
+      </div>
+
+      <footer class="update-announcement-footer">
+        <button class="primary-btn" type="button" @click="acknowledgePostUpdateAnnouncement">知道了</button>
+      </footer>
+    </section>
+  </div>
+
   <main
-    v-if="isPanelWindow"
+    v-else-if="isPanelWindow"
     :class="['app-shell', 'open', 'panel-shell', { 'reduced-transparency': reducedTransparencyEnabled }]"
     id="appShell"
     tabindex="-1"
@@ -9203,6 +9419,21 @@ function escapeHtml(str) {
                 <label class="glass-toggle"><input v-model="settingsDraft.alwaysOnTop" type="checkbox" /><span class="glass-toggle-track"></span>窗口置顶</label>
                 <label class="glass-toggle"><input v-model="settingsDraft.resetOnOpenToAllTables" type="checkbox" /><span class="glass-toggle-track"></span>打开窗口重置为全表</label>
                 <label class="glass-toggle"><input v-model="settingsDraft.autoCheckUpdates" type="checkbox" /><span class="glass-toggle-track"></span>启动时自动检查更新</label>
+                <label class="glass-form-label">启动欢迎文字
+                  <input
+                    v-model="settingsDraft.startupWelcomeText"
+                    type="text"
+                    class="glass-input"
+                    maxlength="12"
+                    placeholder="Louis"
+                  />
+                </label>
+                <label class="glass-form-label">启动欢迎动画
+                  <select v-model="settingsDraft.startupWelcomeMode" class="glass-select">
+                    <option value="handwriting">彩色手写</option>
+                    <option value="stroke_order">按笔画顺序</option>
+                  </select>
+                </label>
                 <div class="update-settings-actions">
                   <button
                     class="glass-btn-secondary"

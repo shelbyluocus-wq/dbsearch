@@ -1,11 +1,11 @@
 {
-  "version": "5.2.0",
-  "notes": "1. Add automatic update\n2. Improve sync center experience\n3. Fix known issues",
-  "pub_date": "2026-04-26T12:00:00+08:00",
+  "version": "5.4.1",
+  "notes": "1. 优化搜索排序算法，让高相关结果更靠前。\n2. 优化界面细节与交互体验，整体使用更清爽顺手。",
+  "pub_date": "2026-04-28T23:32:36+08:00",
   "platforms": {
     "windows-x86_64": {
-      "url": "https://gitee.com/shelbylouis/dbsearch-release/releases/download/v5.2.0/%E9%B9%B0%E6%8D%B7_5.2.0_x64-setup.exe",
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUV2xsOEtpam1zRDZHREdwMDlnaHZRMnUwMDJXbEFReVE3ckgvNXF2Ym5DYVQyY0NCd2ZINGROamh0ZkdsTjF1cWYwMXltczY3R2JvdE9aaXNUMk85TTVveDd1ZVdUeXcwPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3MjA3NDc1CWZpbGU66bmw5o23XzUuMi4wX3g2NC1zZXR1cC5leGUKU2FlbHNDV1dFSHMwZHZXa0syVTFJUGg3WWt4USs0UjZMd0xJSmw2MGJScUdJeC9tZ21wRWp6citBd0xQZXZxVUJhT1NFSEx4N2tVRFQrUWpBM1BxRGc9PQo="
+      "url": "https://gitee.com/shelbylouis/dbsearch-release/releases/download/v5.4.1/%E9%B9%B0%E6%8D%B7_5.4.1_x64-setup.exe",
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUV2xsOEtpam1zRDRDZ2RHcFBLTU50ZFF1SnZscHYwYklGZE90azd1N2JydWowem9xQjQ0aVhZRVdUMHh0WWp3ZUhkamZQZUVCbG9EVjc2VjlabDUvdDN3OXNCSFpmdWdvPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3MzkwMjM0CWZpbGU66bmw5o23XzUuNC4xX3g2NC1zZXR1cC5leGUKTDRCQXIyeVJnV0pBcW5yUjZFL3RURDVwdnN3WGZDUmpValQwUUl4Q1RWS2FoUUdXbjk4ZHZPTlpHbDNKN3RJeUpSVGNUKytKckpvTXhsN2o5bjgwQVE9PQo="
     }
   }
 }
