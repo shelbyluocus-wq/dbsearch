@@ -8,7 +8,12 @@
       "Bash(cmd:*)",
       "Bash(powershell:*)",
       "Bash(python3 -c \" import json, sys data = json.load\\(sys.stdin\\) data['mcpServers'] = data.get\\('mcpServers', {}\\) data['mcpServers']['chrome-devtools'] = { 'command': 'npx', 'args': ['-y', 'chrome-devtools-mcp@latest'], 'scope': 'user', 'disabled': False, 'autoApprove': ['read', 'write', 'execute'] } json.dump\\(data, sys.stdout, indent=2\\) \")",
-      "Bash(mv ~/.claude/settings.json.tmp ~/.claude/settings.json)"
+      "Bash(mv ~/.claude/settings.json.tmp ~/.claude/settings.json)",
+      "Bash(mkdir -p templates)",
+      "Bash(cp ../../../docs/prompt-harness/00-global-rules.md .)",
+      "Bash(cp ../../../docs/prompt-harness/01-orchestrator.md .)",
+      "Bash(cp ../../../docs/prompt-harness/02-planner.md .)",
+      "Bash(cp ../../../docs/prompt-harness/03-executor.md .)"
     ]
   }
 }

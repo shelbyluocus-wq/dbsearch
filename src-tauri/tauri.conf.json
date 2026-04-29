@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "鹰捷V5.5.0",
+        "title": "鹰捷V5.5.2",
         "width": 226,
         "height": 268,
         "decorations": false,
@@ -64,8 +64,7 @@
     "updater": {
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEZBQzM5OEEwQTVGOTZENgpSV1RXbGw4S2lqbXNEOUZRblZtTDhxR1plVUUvT3dvZDZ5TGJvQzUxR244Y2YyNzRVcC9QZTJrRAo=",
       "endpoints": [
-        "https://gitee.com/shelbylouis/dbsearch-release/raw/master/latest.json",
-        "https://github.com/shelbyluocus-wq/dbsearch/releases/latest/download/latest.json"
+        "https://gitee.com/shelbylouis/dbsearch-release/raw/master/latest.json"
       ],
       "windows": {
         "installMode": "passive"

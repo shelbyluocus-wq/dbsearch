@@ -1,5 +1,32 @@
 import { markRaw } from "vue";
 
+export const UPDATE_CHECK_TIMEOUT_MS = 120000;
+export const UPDATE_CHECK_MAX_ATTEMPTS = 10;
+
+export async function checkForUpdateWithRetry(
+  checkForUpdate,
+  {
+    timeout = UPDATE_CHECK_TIMEOUT_MS,
+    maxAttempts = UPDATE_CHECK_MAX_ATTEMPTS,
+  } = {},
+) {
+  const attempts = Number.isFinite(maxAttempts)
+    ? Math.max(1, Math.floor(maxAttempts))
+    : UPDATE_CHECK_MAX_ATTEMPTS;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return await checkForUpdate({ timeout });
+    } catch (error) {
+      if (attempt >= attempts) {
+        throw error;
+      }
+    }
+  }
+
+  return null;
+}
+
 function normalizeIsoTimestamp(value) {
   const text = typeof value === "string" ? value.trim() : "";
   if (!text) return null;

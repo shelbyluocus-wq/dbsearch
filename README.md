@@ -2,7 +2,7 @@
 
 已按设计文档实现一个可运行的 Tauri 工程骨架，包含：
 
-- 像素宠物「鹰劫」悬浮挂件与展开面板
+- 像素宠物「鹰捷」悬浮挂件与展开面板
 - 元信息搜索（表名/字段名/备注）
 - 数据值搜索（手动触发、进度事件、取消）
 - 表详情查看（Schema + 分页）
@@ -82,15 +82,15 @@ npm run tauri dev
 
 ## 自动更新
 
-项目已接入 Tauri updater，客户端会在启动后后台检查 GitHub Releases：
+项目已接入 Tauri updater，客户端会在启动后后台检查 Gitee 更新索引：
 
-- 连不上 GitHub 时静默跳过
+- 连不上 Gitee 时静默跳过
 - 每次打开应用都会检查一次，便于当前阶段测试更新链路
 - 发现新版本时提示用户手动确认下载和安装
 
 更新源配置在 [`src-tauri/tauri.conf.json`](./src-tauri/tauri.conf.json)，当前使用：
 
-- GitHub Releases：`https://github.com/shelbyluocus-wq/dbsearch/releases/latest/download/latest.json`
+- Gitee：`https://gitee.com/shelbylouis/dbsearch-release/raw/master/latest.json`
 - Windows 安装模式：`passive`
 
 ### 首次配置

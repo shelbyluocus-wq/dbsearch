@@ -63,7 +63,9 @@ import {
   shouldShowSyncCenterLogDrawer,
 } from "./syncCenter.js";
 import {
+  UPDATE_CHECK_TIMEOUT_MS,
   buildPendingUpdateAnnouncement,
+  checkForUpdateWithRetry,
   normalizeUpdateAnnouncement,
   normalizeUpdateSettings,
   normalizeUpdateVersion,
@@ -7464,7 +7466,9 @@ async function runAppUpdateCheck({ manual = false } = {}) {
       return;
     }
 
-    const update = await checkForAppUpdate({ timeout: 8000 });
+    const update = await checkForUpdateWithRetry(checkForAppUpdate, {
+      timeout: UPDATE_CHECK_TIMEOUT_MS,
+    });
     if (!update) {
       if (manual) {
         showCopyToast("当前已是最新版本", "success");

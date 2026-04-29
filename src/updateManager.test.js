@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import { ref } from "vue";
 
 import {
+  UPDATE_CHECK_MAX_ATTEMPTS,
+  UPDATE_CHECK_TIMEOUT_MS,
+  checkForUpdateWithRetry,
   normalizeUpdateSettings,
   buildPendingUpdateAnnouncement,
   normalizeUpdateAnnouncement,
@@ -14,6 +17,45 @@ import {
   splitReleaseNotes,
   summarizeReleaseNotes,
 } from "./updateManager.js";
+
+test("update checks wait long enough for slow Gitee responses", () => {
+  assert.equal(UPDATE_CHECK_TIMEOUT_MS, 120000);
+});
+
+test("update checks retry transient failures before giving up", async () => {
+  assert.equal(UPDATE_CHECK_MAX_ATTEMPTS, 10);
+
+  const attempts = [];
+  const update = { version: "5.5.2" };
+  const result = await checkForUpdateWithRetry(async (options) => {
+    attempts.push(options);
+    if (attempts.length < 3) {
+      throw new Error("Gitee timeout");
+    }
+    return update;
+  });
+
+  assert.equal(result, update);
+  assert.equal(attempts.length, 3);
+  assert.deepEqual(
+    attempts.map((options) => options.timeout),
+    [UPDATE_CHECK_TIMEOUT_MS, UPDATE_CHECK_TIMEOUT_MS, UPDATE_CHECK_TIMEOUT_MS],
+  );
+});
+
+test("update checks stop after the configured retry budget", async () => {
+  const attempts = [];
+
+  await assert.rejects(
+    checkForUpdateWithRetry(async (options) => {
+      attempts.push(options);
+      throw new Error("Gitee still unavailable");
+    }),
+    /Gitee still unavailable/,
+  );
+
+  assert.equal(attempts.length, UPDATE_CHECK_MAX_ATTEMPTS);
+});
 
 test("normalizeUpdateSettings defaults auto checks on and drops invalid timestamps", () => {
   const settings = normalizeUpdateSettings({

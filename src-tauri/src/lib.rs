@@ -666,17 +666,6 @@ struct UpdateCheckPlan {
     current_version: String,
 }
 
-fn parse_update_check_at(value: Option<&str>) -> Option<DateTime<Utc>> {
-    let text = value?.trim();
-    if text.is_empty() {
-        return None;
-    }
-
-    DateTime::parse_from_rfc3339(text)
-        .ok()
-        .map(|parsed| parsed.with_timezone(&Utc))
-}
-
 fn normalize_update_announcement_version(version: &str) -> String {
     version
         .trim()
@@ -728,11 +717,8 @@ fn should_show_update_announcement(personal: &PersonalConfig, current_version: &
         != Some(current_version.as_str())
 }
 
-const UPDATE_CHECK_COOLDOWN_SECS: i64 = 30 * 60;
-
 fn build_update_check_plan(
     auto_check_updates: bool,
-    last_update_check_at: Option<&str>,
     now: DateTime<Utc>,
     manual: bool,
 ) -> UpdateCheckPlan {
@@ -752,18 +738,6 @@ fn build_update_check_plan(
             checked_at: None,
             current_version: String::new(),
         };
-    }
-
-    if let Some(last) = parse_update_check_at(last_update_check_at) {
-        let elapsed = (now - last).num_seconds();
-        if elapsed >= 0 && elapsed < UPDATE_CHECK_COOLDOWN_SECS {
-            return UpdateCheckPlan {
-                should_check: false,
-                reason: "too-recent".into(),
-                checked_at: None,
-                current_version: String::new(),
-            };
-        }
     }
 
     UpdateCheckPlan {
@@ -1726,7 +1700,6 @@ async fn prepare_startup_update_check(
     let mut rt = state.runtime.lock().await;
     let mut plan = build_update_check_plan(
         rt.config.personal.auto_check_updates,
-        rt.config.personal.last_update_check_at.as_deref(),
         now,
         false,
     );
@@ -1750,7 +1723,6 @@ async fn check_for_updates_now(
     let mut rt = state.runtime.lock().await;
     let mut plan = build_update_check_plan(
         rt.config.personal.auto_check_updates,
-        rt.config.personal.last_update_check_at.as_deref(),
         now,
         true,
     );
@@ -4167,7 +4139,7 @@ mod tests {
         let now = DateTime::parse_from_rfc3339("2026-03-20T08:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let plan = build_update_check_plan(true, None, now, false);
+        let plan = build_update_check_plan(true, now, false);
 
         assert!(plan.should_check);
         assert_eq!(plan.reason, "startup-due");
@@ -4179,7 +4151,7 @@ mod tests {
         let now = DateTime::parse_from_rfc3339("2026-03-20T08:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let plan = build_update_check_plan(true, Some("2026-03-20T04:00:00Z"), now, false);
+        let plan = build_update_check_plan(true, now, false);
 
         assert!(plan.should_check);
         assert_eq!(plan.reason, "startup-due");
@@ -4187,11 +4159,11 @@ mod tests {
     }
 
     #[test]
-    fn update_check_plan_manual_mode_bypasses_auto_and_throttle() {
+    fn update_check_plan_manual_mode_bypasses_auto_setting() {
         let now = DateTime::parse_from_rfc3339("2026-03-20T08:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let plan = build_update_check_plan(false, Some("2026-03-20T07:59:00Z"), now, true);
+        let plan = build_update_check_plan(false, now, true);
 
         assert!(plan.should_check);
         assert_eq!(plan.reason, "manual");
@@ -4199,23 +4171,23 @@ mod tests {
     }
 
     #[test]
-    fn update_check_plan_skips_when_too_recent() {
+    fn update_check_plan_ignores_recent_check_on_startup() {
         let now = DateTime::parse_from_rfc3339("2026-03-20T08:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let plan = build_update_check_plan(true, Some("2026-03-20T07:45:00Z"), now, false);
+        let plan = build_update_check_plan(true, now, false);
 
-        assert!(!plan.should_check);
-        assert_eq!(plan.reason, "too-recent");
-        assert!(plan.checked_at.is_none());
+        assert!(plan.should_check);
+        assert_eq!(plan.reason, "startup-due");
+        assert_eq!(plan.checked_at.as_deref(), Some("2026-03-20T08:00:00+00:00"));
     }
 
     #[test]
-    fn update_check_plan_runs_after_cooldown_expires() {
+    fn update_check_plan_runs_on_startup_after_older_checks() {
         let now = DateTime::parse_from_rfc3339("2026-03-20T08:00:00Z")
             .unwrap()
             .with_timezone(&Utc);
-        let plan = build_update_check_plan(true, Some("2026-03-20T07:29:00Z"), now, false);
+        let plan = build_update_check_plan(true, now, false);
 
         assert!(plan.should_check);
         assert_eq!(plan.reason, "startup-due");
@@ -4248,13 +4220,6 @@ mod tests {
         });
 
         assert!(!should_show_update_announcement(&personal, "5.5.0"));
-    }
-
-    #[test]
-    fn parse_update_check_at_rejects_invalid_values() {
-        assert!(parse_update_check_at(None).is_none());
-        assert!(parse_update_check_at(Some("")).is_none());
-        assert!(parse_update_check_at(Some("not-a-date")).is_none());
     }
 
     #[test]

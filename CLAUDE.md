@@ -46,37 +46,43 @@ export INCLUDE="E:\\Program Files (x86)\\ms\\VC\\Tools\\MSVC\\14.44.35207\\inclu
 ### Single-file-heavy design
 
 The codebase intentionally uses very large single files rather than many small modules:
-- `src/App.vue` (~80KB) — entire frontend UI, all three window modes in one component
-- `src-tauri/src/lib.rs` (~44KB) — all Rust backend logic: Tauri commands, DB operations, search, window management
+- `src/App.vue` (~380KB) — entire frontend UI, all seven window modes in one component
+- `src-tauri/src/lib.rs` (~152KB) — all Rust backend logic: Tauri commands, DB operations, search, window management
 - `src/styles.css` — all CSS with design system custom properties
 
 ### Multi-window structure
 
-Four Tauri windows, all rendered by the same `App.vue` which branches on `getCurrentWindow().label`:
+Seven Tauri windows (one static in config, six created dynamically), all rendered by the same `App.vue` which branches on `getCurrentWindow().label`:
 
 | Window label | Purpose |
 |---|---|
 | `main` | Floating pixel pet widget (always-on-top, transparent, borderless) |
+| `welcome` | Startup welcome screen |
+| `update_announcement` | Update announcement popup |
 | `panel` | Main search/results panel (780×860) |
 | `pet_menu` | Pet right-click context menu (212×184) |
 | `sync_workspace` | Sync workspace panel (760×640) |
+| `db_migration_workspace` | DB migration workspace panel |
 
-`App.vue` uses `isPetWindow`, `isPanelWindow`, `isMenuWindow`, `isSyncWindow` flags to conditionally render the appropriate UI.
+`App.vue` uses `isPetWindow`, `isPanelWindow`, `isMenuWindow`, `isSyncWorkspaceWindow`, `isWelcomeWindow`, `isUpdateAnnouncementWindow`, `isDbMigrationWorkspaceWindow` flags to conditionally render the appropriate UI.
 
 ### Frontend → Backend communication
 
 All DB/system operations go through Tauri IPC: frontend calls `invoke()` from `@tauri-apps/api/core`, backend handlers are `#[tauri::command]` async functions in `lib.rs`. Search progress and sync progress are pushed back via Tauri events (`listen()`).
 
-Key command groups in `lib.rs`:
+Key command groups in `lib.rs` (58 commands total):
 - **DB**: `connect_db`, `disconnect_db`, `get_connection_status`, `refresh_schema`
 - **Search**: `search` (cancelable with progress events), `cancel_search`
 - **Data**: `get_table_data`, `save_table_changes`, `list_tables`
 - **Export**: `export_tables_xlsx`, `export_tables_xlsx_batch`
 - **Config**: `get_config`, `save_config`
-- **Windows**: `show_panel_window`, `hide_panel_window`, `toggle_panel_window`, `show_pet_menu`, `hide_pet_menu`, `show_sync_workspace_window`, etc.
-- **Hotkeys**: `register_hotkey`, `register_quick_date_hotkey`, `register_sync_window_hotkey`
-- **Pet skins**: `detect_sprite_dimensions`, `import_skin_sprites`, `list_custom_skins`, `delete_custom_skin`
-- **Sync**: `run_sync_profile` (in `sync_workspace.rs`)
+- **Update**: `get_update_settings`, `prepare_startup_update_check`, `check_for_updates_now`, `remember_pending_update_announcement`, `acknowledge_update_announcement`
+- **Windows**: `show_panel_window`, `hide_panel_window`, `toggle_panel_window`, `close_welcome_window`, `consume_panel_open_settings`, `set_panel_always_on_top`, `show_pet_menu`, `hide_pet_menu`, `hide_pet_window`, `toggle_pet_lock`, `save_pet_position`, `resize_pet_window`, `update_pet_hitbox`, `open_directory_in_explorer`, `open_gitee_release_page`
+- **Sync workspace**: `show_sync_workspace_window`, `hide_sync_workspace_window`, `toggle_sync_workspace_window`, `run_sync_profile` (in `sync_workspace.rs`)
+- **DB Migration**: `show_db_migration_window`, `hide_db_migration_window`, `toggle_db_migration_window`, `get_db_migration_workspace_state`, `save_db_migration_workspace_state`, `connect_db_migration_server`, `run_db_migration`
+- **Hotkeys**: `register_hotkey`, `register_quick_date_hotkey`, `register_sync_window_hotkey`, `register_db_migration_window_hotkey`
+- **Pet skins**: `detect_sprite_dimensions`, `import_skin_sprites`, `save_skin_manifest`, `list_custom_skins`, `delete_custom_skin`, `get_skin_base_path`
+- **System**: `set_autostart`
 - **Weather**: `get_weather`
 
 ### Rust state management
@@ -85,8 +91,12 @@ Key command groups in `lib.rs`:
 - `pool`: `Option<MySqlPool>` (sqlx connection pool)
 - `schema_cache`: cached table/column metadata
 - `config`: `AppConfig` (persisted to `config.json` in app data dir)
-- `registered_hotkey` / `registered_quick_date_hotkey` / `registered_sync_window_hotkey`: currently registered global shortcuts
+- `registered_hotkey` / `registered_quick_date_hotkey` / `registered_sync_window_hotkey` / `registered_db_migration_window_hotkey`: currently registered global shortcuts
 - `sync_running`: prevents concurrent sync operations
+
+Additional Rust files beyond `lib.rs`:
+- `src-tauri/src/sync_workspace.rs` — sync profile execution
+- `src-tauri/src/db_migration.rs` — DB migration logic
 
 Cancel tokens for search use a separate `AtomicU64` (`cancel_seq`) outside the mutex.
 
@@ -101,8 +111,21 @@ Pure logic extracted from `App.vue` for testability:
 - `src/weatherSkin.js` — weather category mapping, skin state resolution, weather presentation (colors/classes per theme+weather)
 - `src/weatherEngine.js` — Canvas 2D particle engine for rain/snow/sun/cloud effects (class `WeatherEngine`)
 - `src/syncWorkspace.js` — sync profile normalization, hotkey normalization, timeline event reduction
+- `src/syncCenter.js` — sync center UI state, profile management helpers
+- `src/appIdentity.js` — app identification/version utilities
+- `src/appVersion.js` — version parsing and comparison
+- `src/cellViewer.js` — cell detail viewer state and formatting
+- `src/columnCollapse.js` — column collapse/expand logic for table views
+- `src/dbMigrationWorkspace.js` — DB migration workspace state management
+- `src/petMenu.js` — pet right-click menu items and actions
+- `src/startupWelcome.js` — startup welcome screen state
+- `src/tableDialogLayout.js` — table dialog layout computation
+- `src/tableFind.js` — in-table find/search state management
+- `src/tableTabDrag.js` — table tab drag-and-drop logic
+- `src/tableTabsOrder.js` — table tab ordering persistence
+- `src/updateManager.js` — update check, download, install state
 
-Tests (Node built-in `node:test`) exist for `panelChrome`, `weatherSkin`, and `syncWorkspace`.
+Tests (Node built-in `node:test`) exist for most modules (see `src/*.test.js`).
 
 ### Config persistence
 
@@ -111,7 +134,7 @@ Tests (Node built-in `node:test`) exist for `panelChrome`, `weatherSkin`, and `s
 ## Adding a new Tauri command
 
 1. Define an `async fn` with `#[tauri::command]` in `src-tauri/src/lib.rs`
-2. Register it in `.invoke_handler(tauri::generate_handler![...])` (around line 2546)
+2. Register it in `.invoke_handler(tauri::generate_handler![...])` (around line 4027)
 3. Call from frontend with `invoke('command_name', { args })`
 4. If the command needs window permissions, add to `src-tauri/capabilities/default.json`
 
