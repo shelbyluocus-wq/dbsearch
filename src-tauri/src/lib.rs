@@ -728,9 +728,11 @@ fn should_show_update_announcement(personal: &PersonalConfig, current_version: &
         != Some(current_version.as_str())
 }
 
+const UPDATE_CHECK_COOLDOWN_SECS: i64 = 30 * 60;
+
 fn build_update_check_plan(
     auto_check_updates: bool,
-    _last_update_check_at: Option<&str>,
+    last_update_check_at: Option<&str>,
     now: DateTime<Utc>,
     manual: bool,
 ) -> UpdateCheckPlan {
@@ -750,6 +752,18 @@ fn build_update_check_plan(
             checked_at: None,
             current_version: String::new(),
         };
+    }
+
+    if let Some(last) = parse_update_check_at(last_update_check_at) {
+        let elapsed = (now - last).num_seconds();
+        if elapsed >= 0 && elapsed < UPDATE_CHECK_COOLDOWN_SECS {
+            return UpdateCheckPlan {
+                should_check: false,
+                reason: "too-recent".into(),
+                checked_at: None,
+                current_version: String::new(),
+            };
+        }
     }
 
     UpdateCheckPlan {
@@ -4182,6 +4196,29 @@ mod tests {
         assert!(plan.should_check);
         assert_eq!(plan.reason, "manual");
         assert_eq!(plan.checked_at.as_deref(), Some("2026-03-20T08:00:00+00:00"));
+    }
+
+    #[test]
+    fn update_check_plan_skips_when_too_recent() {
+        let now = DateTime::parse_from_rfc3339("2026-03-20T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let plan = build_update_check_plan(true, Some("2026-03-20T07:45:00Z"), now, false);
+
+        assert!(!plan.should_check);
+        assert_eq!(plan.reason, "too-recent");
+        assert!(plan.checked_at.is_none());
+    }
+
+    #[test]
+    fn update_check_plan_runs_after_cooldown_expires() {
+        let now = DateTime::parse_from_rfc3339("2026-03-20T08:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let plan = build_update_check_plan(true, Some("2026-03-20T07:29:00Z"), now, false);
+
+        assert!(plan.should_check);
+        assert_eq!(plan.reason, "startup-due");
     }
 
     #[test]

@@ -453,6 +453,7 @@ const updateReleaseDate = ref("");
 const updateNotesSummary = ref("");
 const updateError = ref("");
 const availableUpdateRef = ref(null);
+let updateCheckTimer = null;
 const postUpdateAnnouncement = reactive({
   version: "",
   notes: "",
@@ -3775,6 +3776,7 @@ onMounted(async () => {
     setTimeout(() => {
       runAppUpdateCheck({ manual: false }).catch(() => {});
     }, 600);
+    startPeriodicUpdateCheck();
   }
 
   if (isPetWindow.value) {
@@ -3949,6 +3951,7 @@ onBeforeUnmount(() => {
   clearTimeout(idleStateTimer);
   clearTimeout(copyToastTimer);
   clearTimeout(uiScalePersistTimer);
+  stopPeriodicUpdateCheck();
   disposeAvailableUpdate();
   stopTableTabsCompressionMeasure();
   stopPanelTabsCompressionMeasure();
@@ -7504,6 +7507,20 @@ async function runAppUpdateCheck({ manual = false } = {}) {
     console.error("Failed to check for updates:", error);
   } finally {
     updateChecking.value = false;
+  }
+}
+
+function startPeriodicUpdateCheck() {
+  if (updateCheckTimer) return;
+  updateCheckTimer = setInterval(() => {
+    runAppUpdateCheck({ manual: false }).catch(() => {});
+  }, 3600000);
+}
+
+function stopPeriodicUpdateCheck() {
+  if (updateCheckTimer) {
+    clearInterval(updateCheckTimer);
+    updateCheckTimer = null;
   }
 }
 
