@@ -3419,6 +3419,15 @@ mark {
 
 .data-table td {
   overflow: hidden;
+  position: relative;
+}
+
+.table-modal.edit-mode-active .data-table td:not(.edit-checkbox-col) {
+  cursor: text;
+}
+
+.table-modal.edit-mode-active .data-table td:not(.edit-checkbox-col):hover {
+  background: color-mix(in srgb, var(--accent-soft) 52%, transparent);
 }
 
 .td-clip {
@@ -4830,17 +4839,22 @@ mark {
 
 /* Cell editing input */
 .edit-cell-input {
-  width: 100%;
-  height: 100%;
+  position: absolute;
+  inset: 2px;
+  width: calc(100% - 4px);
+  height: calc(100% - 4px);
+  box-sizing: border-box;
   border: 1.5px solid var(--accent-ring);
   border-radius: 3px;
   background: var(--bg-panel);
   color: var(--text-main);
   font-size: 12px;
   font-family: inherit;
-  padding: 2px 6px;
+  line-height: 18px;
+  padding: 0 6px;
   outline: none;
   box-shadow: 0 0 0 2px var(--accent-soft);
+  z-index: 2;
 }
 .edit-cell-input:focus {
   border-color: var(--accent);
@@ -4860,8 +4874,19 @@ mark {
 .edit-modified > td:first-child {
   box-shadow: inset 3px 0 0 var(--accent);
 }
+.edit-selected:not(.edit-deleted) td {
+  background: color-mix(in srgb, var(--accent-soft) 62%, transparent);
+}
+.edit-selected:not(.edit-deleted) .edit-checkbox-col {
+  box-shadow: inset 3px 0 0 var(--accent);
+}
 .edit-cell-modified {
   background: var(--accent-soft) !important;
+}
+.edit-cell-active {
+  position: relative;
+  background: color-mix(in srgb, var(--accent-soft) 76%, transparent) !important;
+  box-shadow: inset 0 0 0 1px var(--accent-ring);
 }
 
 /* New row */
@@ -4905,6 +4930,46 @@ mark {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.edit-toolbar-left {
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.edit-batch-tools {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.edit-selection-count {
+  min-width: 36px;
+  color: var(--text-muted);
+  font-size: 12px;
+  text-align: right;
+}
+.edit-batch-select,
+.edit-batch-input {
+  height: 28px;
+  border: 1px solid var(--border-glass);
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.edit-batch-select {
+  max-width: 150px;
+  padding: 0 22px 0 8px;
+}
+.edit-batch-input {
+  width: 150px;
+  padding: 0 8px;
+}
+.edit-batch-select:disabled,
+.edit-batch-input:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
 }
 .edit-dirty-badge {
   display: inline-flex;

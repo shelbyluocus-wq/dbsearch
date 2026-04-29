@@ -99,9 +99,17 @@ import {
   resolveTabStripDropIndex,
 } from "./tableTabDrag.js";
 import { resolveAdaptiveTablePageSize } from "./tableDialogLayout.js";
+import { resolveEditNavigation } from "./tableEditNavigation.js";
+import {
+  buildBatchCellChanges,
+  buildSelectedRowsTsv,
+  resolveRowSelection,
+  resolveSelectAllRowKeys,
+} from "./tableEditSelection.js";
 
 const APP_VERSION = APP_PACKAGE_VERSION;
 const VERSION_DISPLAY_LABEL = resolveSettingsVersionLabel(APP_VERSION);
+const DEMO_FEATURE_TEST_TABLE = "demo_feature_test";
 
 function createTabStripDragState() {
   return {
@@ -391,6 +399,9 @@ const editChanges = reactive({
   deletes: new Set(),
 })
 const editSelectedRows = reactive(new Set())
+const editSelectionAnchorIndex = ref(-1)
+const editBatchColumn = ref("")
+const editBatchValue = ref("")
 const editingCell = reactive({ active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
 const editNoPkWarningShown = ref(false)
 const editSaveDialogOpen = ref(false)
@@ -398,7 +409,6 @@ const editUnsavedDialogOpen = ref(false)
 const editUnsavedCallback = ref(null)
 const editDateSuccessCallback = ref(null)
 let editGlowTimer = null
-let pendingCellEditTimer = null
 
 const CELL_VIEWER_LANGUAGE_OPTIONS = [
   { value: "auto", label: "自动" },
@@ -408,7 +418,6 @@ const CELL_VIEWER_LANGUAGE_OPTIONS = [
   { value: "python", label: "Python" },
   { value: "plaintext", label: "文本" },
 ]
-const CELL_EDIT_DELAY_MS = 220
 
 const cellViewerOpen = ref(false)
 const cellViewerDiscardDialogOpen = ref(false)
@@ -980,6 +989,25 @@ const tableView = reactive({
   hitNavCursor: -1,
   focusedHitLocalIndex: null,
 });
+const editPageRowKeys = computed(() =>
+  tableView.rows.map((row, idx) => computeRowKey(row, idx)),
+);
+const editDeletedRowKeys = computed(() =>
+  tableView.rows
+    .map((row, idx) => (isRowDeleted(row, idx) ? computeRowKey(row, idx) : ""))
+    .filter(Boolean),
+);
+const editCurrentPageSelectedCount = computed(() => {
+  const deleted = new Set(editDeletedRowKeys.value);
+  return editPageRowKeys.value.filter((key) => editSelectedRows.has(key) && !deleted.has(key)).length;
+});
+const editSelectableRowCount = computed(() => Math.max(0, editPageRowKeys.value.length - editDeletedRowKeys.value.length));
+const editAllPageRowsSelected = computed(() =>
+  editSelectableRowCount.value > 0 && editCurrentPageSelectedCount.value === editSelectableRowCount.value,
+);
+const editBatchCanApply = computed(() =>
+  editCurrentPageSelectedCount.value > 0 && String(editBatchColumn.value || "").length > 0,
+);
 const tableFindFocus = reactive({
   type: "none",
   schemaKey: "",
@@ -1664,7 +1692,12 @@ const skinEditorCanvasRefs = ref([]);
 const totalMetaCount = computed(() =>
   sortedSearchTableResults.value.length + results.column.length + results.comment.length,
 );
-const canSearchData = computed(() => dbConnected.value && keyword.value.trim().length > 0);
+const offlineDemoMode = computed(() => !dbConnected.value);
+const canEditCurrentTable = computed(() =>
+  dbConnected.value ||
+  (offlineDemoMode.value && tableView.tableName === DEMO_FEATURE_TEST_TABLE),
+);
+const canSearchData = computed(() => (dbConnected.value || offlineDemoMode.value) && keyword.value.trim().length > 0);
 const isKeywordEmpty = computed(() => keyword.value.trim().length === 0);
 // ── 表整理：持久化 ──
 function orgStorageKey() {
@@ -2669,6 +2702,7 @@ const activeFolderName = computed(() => {
 });
 
 function ensureDbConnectedForSearch() {
+  if (offlineDemoMode.value) return true;
   if (dbConnected.value) return true;
   summaryText.value = "当前数据库未连接";
   return false;
@@ -2676,17 +2710,14 @@ function ensureDbConnectedForSearch() {
 
 function syncSummaryForDefaultTableBrowse() {
   if (!isPanelWindow.value || !isKeywordEmpty.value) return;
-  if (!dbConnected.value) {
-    summaryText.value = "当前数据库未连接";
-    return;
-  }
   const total = (Array.isArray(tableOptions.value) ? tableOptions.value : []).length;
   const shown = defaultTableResults.value.length;
   if (activeFolder.value === "all") {
-    summaryText.value = `共 ${total} 张表`;
+    summaryText.value = offlineDemoMode.value ? `离线演示：共 ${total} 张表` : `共 ${total} 张表`;
   } else {
     const folderName = activeFolder.value === "starred" ? "星标" : (tableFolders.value.find((f) => f.id === activeFolder.value)?.name || "文件夹");
-    summaryText.value = `${folderName}：${shown} 张表（共 ${total}）`;
+    const prefix = offlineDemoMode.value ? "离线演示 · " : "";
+    summaryText.value = `${prefix}${folderName}：${shown} 张表（共 ${total}）`;
   }
 }
 
@@ -4699,6 +4730,36 @@ function onWindowKeydown(event) {
     }
   }
 
+  if (tableOpen.value && editMode.value && withPrimary && !event.altKey && !event.shiftKey && lower === "a" && !isEditableTarget(event.target)) {
+    event.preventDefault();
+    selectAllPageRows();
+    return;
+  }
+
+  if (
+    tableOpen.value &&
+    editMode.value &&
+    withPrimary &&
+    !event.altKey &&
+    !event.shiftKey &&
+    lower === "c" &&
+    !isEditableTarget(event.target) &&
+    editCurrentPageSelectedCount.value > 0
+  ) {
+    event.preventDefault();
+    copySelectedRows().catch(() => {})
+    return;
+  }
+
+  if (tableOpen.value && editMode.value && withPrimary && !event.altKey && lower === "s") {
+    event.preventDefault();
+    confirmCellEdit();
+    if (editDirty.value) {
+      openSaveDialog();
+    }
+    return;
+  }
+
   if (tableOpen.value && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
     event.preventDefault();
     openTableFind();
@@ -6431,6 +6492,7 @@ async function loadTablePage(options = {}) {
     tableView.rows = payload.rows || [];
     tableView.totalRows = payload.totalRows || 0;
     tableView.tableComment = payload.tableComment || "";
+    syncEditSelectionToCurrentPage();
     if (resetFocus) {
       tableView.focusedHitLocalIndex = null;
     }
@@ -6511,26 +6573,6 @@ function doCloseTableDialog() {
 }
 
 // ── 编辑模式：工具函数 ──
-function clearPendingCellEditTimer() {
-  if (pendingCellEditTimer) {
-    clearTimeout(pendingCellEditTimer)
-    pendingCellEditTimer = null
-  }
-}
-
-function scheduleCellEditStart(rowIndex, columnName, isInsert = false) {
-  if (!editMode.value) return
-  clearPendingCellEditTimer()
-  pendingCellEditTimer = setTimeout(() => {
-    pendingCellEditTimer = null
-    if (isInsert) {
-      startNewRowCellEdit(rowIndex, columnName)
-      return
-    }
-    startCellEdit(rowIndex, columnName)
-  }, CELL_EDIT_DELAY_MS)
-}
-
 function forceCloseCellViewer() {
   cellViewerOpen.value = false
   cellViewerDiscardDialogOpen.value = false
@@ -6578,7 +6620,6 @@ function openCellViewer({
   isInsert = false,
   sourceKind = "page",
 } = {}) {
-  clearPendingCellEditTimer()
   confirmCellEdit()
   Object.assign(cellViewer, {
     rowIndex,
@@ -6628,18 +6669,22 @@ function openHitCellViewer(item, columnName) {
 }
 
 function onPageCellClick(rowIndex, columnName) {
-  scheduleCellEditStart(rowIndex, columnName, false)
+  if (!editMode.value) return
+  startCellEdit(rowIndex, columnName)
 }
 
 function onPageCellDoubleClick(rowIndex, columnName) {
+  if (editMode.value) return
   openPageCellViewer(rowIndex, columnName)
 }
 
 function onInsertCellClick(insertIndex, columnName) {
-  scheduleCellEditStart(insertIndex, columnName, true)
+  if (!editMode.value) return
+  startNewRowCellEdit(insertIndex, columnName)
 }
 
 function onInsertCellDoubleClick(insertIndex, columnName) {
+  if (editMode.value) return
   openInsertCellViewer(insertIndex, columnName)
 }
 
@@ -6662,6 +6707,10 @@ function enterCellViewerEditMode() {
 
 function requestEditModeAccess(onSuccess) {
   if (editMode.value) {
+    onSuccess()
+    return
+  }
+  if (offlineDemoMode.value) {
     onSuccess()
     return
   }
@@ -6785,14 +6834,23 @@ function resetEditChanges() {
   editChanges.inserts.splice(0)
   editChanges.deletes.clear()
   editSelectedRows.clear()
+  editSelectionAnchorIndex.value = -1
+  editBatchColumn.value = ""
+  editBatchValue.value = ""
   editDirty.value = false
   Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
 }
 function enterEditMode() {
   resetEditChanges()
+  tableDetailView.value = "full"
+  dataCollapsed.value = false
   editMode.value = true
   editNoPkWarningShown.value = !hasTablePrimaryKey()
   triggerEditGlow()
+  nextTick(() => {
+    startTableLayoutObserver().catch(() => {})
+    scheduleAdaptiveTablePageSize()
+  })
 }
 function exitEditMode() {
   cancelCellEdit()
@@ -6838,7 +6896,6 @@ function triggerExitGlow(callback) {
 
 // ── 编辑模式：单元格编辑 ──
 function startCellEdit(rowIndex, columnName) {
-  clearPendingCellEditTimer()
   if (!editMode.value) return
   const key = computeRowKey(tableView.rows[rowIndex], rowIndex)
   if (editChanges.deletes.has(key)) return
@@ -6860,24 +6917,84 @@ function confirmCellEdit() {
 function cancelCellEdit() {
   Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
 }
+function getEditColumnNames() {
+  return tableView.columns.map(c => c.column_name).filter(Boolean)
+}
+function navigatePageCellAfterConfirm(action) {
+  const target = resolveEditNavigation({
+    rowIndex: editingCell.rowIndex,
+    columnName: editingCell.columnName,
+    columns: getEditColumnNames(),
+    rowCount: tableView.rows.length,
+    action,
+  })
+  confirmCellEdit()
+  if (target) {
+    nextTick(() => startCellEdit(target.rowIndex, target.columnName))
+  }
+}
+function navigateInsertCellAfterConfirm(insertIdx, action) {
+  const target = resolveEditNavigation({
+    rowIndex: insertIdx,
+    columnName: editingCell.columnName,
+    columns: getEditColumnNames(),
+    rowCount: editChanges.inserts.length,
+    action,
+  })
+  confirmNewRowCellEdit(insertIdx)
+  if (target) {
+    nextTick(() => startNewRowCellEdit(target.rowIndex, target.columnName))
+  }
+}
+function openActivePageCellViewer() {
+  if (!editingCell.active) return
+  const rowIndex = editingCell.rowIndex
+  const columnName = editingCell.columnName
+  confirmCellEdit()
+  openPageCellViewer(rowIndex, columnName)
+}
+function openActiveInsertCellViewer(insertIdx) {
+  if (!editingCell.active) return
+  const columnName = editingCell.columnName
+  confirmNewRowCellEdit(insertIdx)
+  openInsertCellViewer(insertIdx, columnName)
+}
+function requestSaveFromCellEdit(confirmActiveEdit) {
+  confirmActiveEdit()
+  if (editDirty.value) {
+    openSaveDialog()
+  }
+}
 function onCellEditKeydown(e) {
-  if (e.key === 'Enter') { e.preventDefault(); confirmCellEdit() }
-  else if (e.key === 'Escape') { e.preventDefault(); cancelCellEdit() }
-  else if (e.key === 'Tab') {
+  const lower = String(e.key || "").toLowerCase()
+  const withPrimary = e.ctrlKey || e.metaKey
+  if (withPrimary && !e.altKey && lower === "enter") {
     e.preventDefault()
-    const curRow = editingCell.rowIndex
-    const curCol = editingCell.columnName
-    confirmCellEdit()
-    const colNames = tableView.columns.map(c => c.column_name)
-    const curColIdx = colNames.indexOf(curCol)
-    const nextColIdx = curColIdx + 1
-    if (nextColIdx < colNames.length && curRow >= 0) {
-      startCellEdit(curRow, colNames[nextColIdx])
-    }
+    e.stopPropagation()
+    openActivePageCellViewer()
+    return
+  }
+  if (withPrimary && !e.altKey && lower === "s") {
+    e.preventDefault()
+    e.stopPropagation()
+    requestSaveFromCellEdit(confirmCellEdit)
+    return
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    e.stopPropagation()
+    navigatePageCellAfterConfirm(e.shiftKey ? "shift-enter" : "enter")
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    e.stopPropagation()
+    cancelCellEdit()
+  } else if (e.key === 'Tab') {
+    e.preventDefault()
+    e.stopPropagation()
+    navigatePageCellAfterConfirm(e.shiftKey ? "shift-tab" : "tab")
   }
 }
 function startNewRowCellEdit(insertIdx, columnName) {
-  clearPendingCellEditTimer()
   if (!editMode.value) return
   const original = String(editChanges.inserts[insertIdx]?.[columnName] ?? '')
   // Use a special index for new rows: offset by existing rows count
@@ -6895,26 +7012,116 @@ function confirmNewRowCellEdit(insertIdx) {
   Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
 }
 function onNewRowCellEditKeydown(e, insertIdx) {
-  if (e.key === 'Enter') { e.preventDefault(); confirmNewRowCellEdit(insertIdx) }
-  else if (e.key === 'Escape') { e.preventDefault(); cancelCellEdit() }
+  const lower = String(e.key || "").toLowerCase()
+  const withPrimary = e.ctrlKey || e.metaKey
+  if (withPrimary && !e.altKey && lower === "enter") {
+    e.preventDefault()
+    e.stopPropagation()
+    openActiveInsertCellViewer(insertIdx)
+    return
+  }
+  if (withPrimary && !e.altKey && lower === "s") {
+    e.preventDefault()
+    e.stopPropagation()
+    requestSaveFromCellEdit(() => confirmNewRowCellEdit(insertIdx))
+    return
+  }
+  if (e.key === 'Enter') {
+    e.preventDefault()
+    e.stopPropagation()
+    navigateInsertCellAfterConfirm(insertIdx, e.shiftKey ? "shift-enter" : "enter")
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    e.stopPropagation()
+    cancelCellEdit()
+  } else if (e.key === 'Tab') {
+    e.preventDefault()
+    e.stopPropagation()
+    navigateInsertCellAfterConfirm(insertIdx, e.shiftKey ? "shift-tab" : "tab")
+  }
 }
 
 // ── 编辑模式：行操作 ──
-function toggleRowSelection(idx) {
-  const key = computeRowKey(tableView.rows[idx], idx)
-  if (editChanges.deletes.has(key)) return
-  if (editSelectedRows.has(key)) editSelectedRows.delete(key)
-  else editSelectedRows.add(key)
+function setEditSelectedRowKeys(keys = []) {
+  editSelectedRows.clear()
+  for (const key of (Array.isArray(keys) ? keys : [])) {
+    if (key) editSelectedRows.add(key)
+  }
+}
+function syncEditSelectionToCurrentPage() {
+  const current = new Set(editPageRowKeys.value)
+  const deleted = new Set(editDeletedRowKeys.value)
+  const next = [...editSelectedRows].filter((key) => current.has(key) && !deleted.has(key))
+  if (next.length !== editSelectedRows.size) {
+    setEditSelectedRowKeys(next)
+  }
+  if (editSelectionAnchorIndex.value >= tableView.rows.length || editCurrentPageSelectedCount.value === 0) {
+    editSelectionAnchorIndex.value = -1
+  }
+}
+function toggleRowSelection(idx, event = {}) {
+  confirmCellEdit()
+  const result = resolveRowSelection({
+    rowKeys: editPageRowKeys.value,
+    selectedKeys: [...editSelectedRows],
+    deletedKeys: editDeletedRowKeys.value,
+    rowIndex: idx,
+    anchorIndex: editSelectionAnchorIndex.value,
+    shiftKey: !!event.shiftKey,
+    additiveKey: !event.shiftKey || !!event.ctrlKey || !!event.metaKey,
+  })
+  setEditSelectedRowKeys(result.selectedKeys)
+  editSelectionAnchorIndex.value = result.anchorIndex
 }
 function toggleSelectAll() {
-  const selectableKeys = tableView.rows
-    .map((row, idx) => computeRowKey(row, idx))
-    .filter(k => !editChanges.deletes.has(k))
-  if (editSelectedRows.size > 0 && editSelectedRows.size === selectableKeys.length) {
-    editSelectedRows.clear()
-  } else {
-    selectableKeys.forEach(k => editSelectedRows.add(k))
+  confirmCellEdit()
+  setEditSelectedRowKeys(resolveSelectAllRowKeys({
+    rowKeys: editPageRowKeys.value,
+    selectedKeys: [...editSelectedRows],
+    deletedKeys: editDeletedRowKeys.value,
+  }))
+  editSelectionAnchorIndex.value = editSelectedRows.size > 0 ? 0 : -1
+}
+function selectAllPageRows() {
+  confirmCellEdit()
+  setEditSelectedRowKeys(resolveSelectAllRowKeys({
+    rowKeys: editPageRowKeys.value,
+    selectedKeys: [],
+    deletedKeys: editDeletedRowKeys.value,
+  }))
+  editSelectionAnchorIndex.value = editSelectedRows.size > 0 ? 0 : -1
+}
+async function copySelectedRows() {
+  confirmCellEdit()
+  const text = buildSelectedRowsTsv({
+    rows: tableView.rows,
+    columns: getEditColumnNames(),
+    rowKeys: editPageRowKeys.value,
+    selectedKeys: [...editSelectedRows],
+  })
+  if (!text) return
+  try {
+    await navigator.clipboard.writeText(text)
+    showCopyToast(`已复制 ${editCurrentPageSelectedCount.value} 行`, "success")
+  } catch {
+    showCopyToast("复制失败", "error")
   }
+}
+function applyBatchEditToSelectedRows() {
+  confirmCellEdit()
+  const changes = buildBatchCellChanges({
+    rowKeys: editPageRowKeys.value,
+    selectedKeys: [...editSelectedRows],
+    deletedKeys: editDeletedRowKeys.value,
+    columnName: editBatchColumn.value,
+    value: editBatchValue.value,
+  })
+  if (changes.length === 0) return
+  changes.forEach(({ rowKey, columnName, value }) => {
+    const rowIndex = tableView.rows.findIndex((row, idx) => computeRowKey(row, idx) === rowKey)
+    if (rowIndex >= 0) applyRowCellChange(rowIndex, columnName, value)
+  })
+  showCopyToast(`已批量修改 ${changes.length} 行`, "success")
 }
 function addNewRow() {
   const newRow = {}
@@ -6927,16 +7134,21 @@ function removeNewRow(insertIdx) {
   editDirty.value = editChanges.updates.size > 0 || editChanges.inserts.length > 0 || editChanges.deletes.size > 0
 }
 function deleteSelectedRows() {
-  editSelectedRows.forEach(key => {
+  confirmCellEdit()
+  for (const key of [...editSelectedRows]) {
     editChanges.deletes.add(key)
     // Remove any pending updates for deleted rows
     editChanges.updates.delete(key)
-  })
+  }
   editSelectedRows.clear()
+  editSelectionAnchorIndex.value = -1
   editDirty.value = true
 }
 function isRowDeleted(row, idx) {
   return editChanges.deletes.has(computeRowKey(row, idx))
+}
+function isRowSelected(row, idx) {
+  return editSelectedRows.has(computeRowKey(row, idx))
 }
 function isRowModified(row, idx) {
   return editChanges.updates.has(computeRowKey(row, idx))
@@ -8871,8 +9083,8 @@ function escapeHtml(str) {
           <button class="small-btn" @click="toggleTableDetailView">{{ tableDetailView === 'full' ? '只看命中(Tab)' : '返回原页(Tab)' }}</button>
           <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏(W)' : '全屏查看(W)' }}</button>
           <button :class="['small-btn', 'edit-toggle-btn', { active: editMode }]"
-            :disabled="!dbConnected" @click="onEditToggleClick"
-            :title="editMode ? '退出编辑模式' : '进入编辑模式'">
+            :disabled="!canEditCurrentTable" @click="onEditToggleClick"
+            :title="editMode ? '退出编辑模式' : (offlineDemoMode ? '进入离线演示编辑模式' : '进入编辑模式')">
             {{ editMode ? '退出编辑(\`)' : '编辑(\`)' }}
           </button>
           <button class="icon-btn" @click="closeTableDialog">✕</button>
@@ -9015,8 +9227,8 @@ function escapeHtml(str) {
                 <thead>
                   <tr>
                     <th v-if="editMode" class="edit-checkbox-col">
-                      <input type="checkbox" @change="toggleSelectAll"
-                        :checked="editSelectedRows.size > 0 && editSelectedRows.size === tableView.rows.filter((r,i) => !isRowDeleted(r,i)).length" />
+                      <input type="checkbox" title="选择当前页" @click.stop.prevent="toggleSelectAll"
+                        :checked="editAllPageRowsSelected" />
                     </th>
                     <th
                       v-for="col in tableView.columns"
@@ -9051,6 +9263,7 @@ function escapeHtml(str) {
                       'find-active-row': tableFindFocus.type === 'data' && tableFindFocus.page === tableView.page && tableFindFocus.localIndex === idx,
                       'edit-deleted': editMode && isRowDeleted(row, idx),
                       'edit-modified': editMode && isRowModified(row, idx),
+                      'edit-selected': editMode && isRowSelected(row, idx),
                     }"
                     @contextmenu.prevent="copyRow(row)"
                   >
@@ -9058,7 +9271,7 @@ function escapeHtml(str) {
                       <input type="checkbox"
                         :checked="editSelectedRows.has(computeRowKey(row, idx))"
                         :disabled="isRowDeleted(row, idx)"
-                        @change="toggleRowSelection(idx)" />
+                        @click.stop.prevent="toggleRowSelection(idx, $event)" />
                     </td>
                     <td
                       v-for="col in tableView.columns"
@@ -9076,6 +9289,7 @@ function escapeHtml(str) {
                           tableFindFocus.localIndex === idx &&
                           tableFindFocus.columnName === col.column_name,
                         'edit-cell-modified': editMode && isCellModified(row, idx, col.column_name),
+                        'edit-cell-active': editingCell.active && editingCell.rowIndex === idx && editingCell.columnName === col.column_name,
                       }"
                       @click="onPageCellClick(idx, col.column_name)"
                       @dblclick="onPageCellDoubleClick(idx, col.column_name)"
@@ -9098,6 +9312,7 @@ function escapeHtml(str) {
                     <td v-for="col in tableView.columns" :key="col.column_name"
                       :data-column-name="col.column_name"
                       :style="getColumnStyle(col.column_name)"
+                      :class="{ 'edit-cell-active': editingCell.active && editingCell.rowIndex === (tableView.rows.length + nIdx) && editingCell.columnName === col.column_name }"
                       @click="onInsertCellClick(nIdx, col.column_name)"
                       @dblclick="onInsertCellDoubleClick(nIdx, col.column_name)"
                     >
@@ -9118,8 +9333,26 @@ function escapeHtml(str) {
             <div v-if="editMode" class="edit-toolbar">
               <div class="edit-toolbar-left">
                 <button class="small-btn" @click="addNewRow">+ 添加行</button>
-                <button class="small-btn danger" :disabled="editSelectedRows.size === 0"
-                  @click="deleteSelectedRows">删除选中 ({{ editSelectedRows.size }})</button>
+                <button class="small-btn danger" :disabled="editCurrentPageSelectedCount === 0"
+                  @click="deleteSelectedRows">删除选中 ({{ editCurrentPageSelectedCount }})</button>
+                <button class="small-btn" :disabled="editCurrentPageSelectedCount === 0" @click="copySelectedRows">复制</button>
+                <div class="edit-batch-tools">
+                  <span class="edit-selection-count">{{ editCurrentPageSelectedCount }} 行</span>
+                  <select v-model="editBatchColumn" class="edit-batch-select" :disabled="editCurrentPageSelectedCount === 0">
+                    <option value="">选择字段</option>
+                    <option v-for="col in tableView.columns" :key="col.column_name" :value="col.column_name">
+                      {{ col.column_name }}
+                    </option>
+                  </select>
+                  <input
+                    v-model="editBatchValue"
+                    class="edit-batch-input"
+                    :disabled="editCurrentPageSelectedCount === 0"
+                    placeholder="值"
+                    @keydown.enter.prevent="applyBatchEditToSelectedRows"
+                  />
+                  <button class="small-btn" :disabled="!editBatchCanApply" @click="applyBatchEditToSelectedRows">应用</button>
+                </div>
               </div>
               <div class="edit-toolbar-right">
                 <span v-if="editDirty" class="edit-dirty-badge">

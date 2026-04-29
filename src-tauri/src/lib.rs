@@ -79,6 +79,7 @@ impl Default for AppState {
 struct RuntimeState {
     pool: Option<MySqlPool>,
     schema_cache: SchemaCache,
+    demo_rows: HashMap<String, Vec<HashMap<String, String>>>,
     config: AppConfig,
     panel_open_settings_pending: bool,
     registered_hotkey: Option<String>,
@@ -118,6 +119,7 @@ const DB_MIGRATION_WORKSPACE_WIDTH: f64 = 1120.0;
 const DB_MIGRATION_WORKSPACE_HEIGHT: f64 = 760.0;
 const DB_MIGRATION_WORKSPACE_MIN_WIDTH: f64 = 980.0;
 const DB_MIGRATION_WORKSPACE_MIN_HEIGHT: f64 = 660.0;
+const DEMO_FEATURE_TEST_TABLE: &str = "demo_feature_test";
 const DEFAULT_DB_MIGRATION_WINDOW_HOTKEY: &str = "Shift+S";
 const APP_DISPLAY_NAME: &str = "鹰捷";
 const TRAY_ICON_ID: &str = "main_tray";
@@ -1017,9 +1019,7 @@ async fn connect_db(
         .connect_with(opts)
         .await
         .map_err(|e| format!("数据库连接失败: {e}"))?;
-    let schema = load_schema_from_database(&pool, &config.database)
-        .await
-        .unwrap_or_else(|_| mock_schema_cache());
+    let schema = load_schema_from_database(&pool, &config.database).await?;
     let mut runtime = state.runtime.lock().await;
     runtime.pool = Some(pool);
     runtime.schema_cache = schema;
@@ -1083,16 +1083,14 @@ async fn search(
     }
     let token = state.cancel_seq.fetch_add(1, Ordering::SeqCst) + 1;
     let terms = split_terms(&keyword);
-    let (pool, schema, cfg) = {
+    let (pool, schema, cfg, demo_rows) = {
         let rt = state.runtime.lock().await;
+        let pool = rt.pool.clone();
         (
-            rt.pool.clone(),
-            if rt.schema_cache.tables.is_empty() {
-                mock_schema_cache()
-            } else {
-                rt.schema_cache.clone()
-            },
+            pool.clone(),
+            resolve_runtime_schema(pool.is_some(), &rt.schema_cache),
             rt.config.clone(),
+            rt.demo_rows.clone(),
         )
     };
     let mut targets = params.target_tables.clone().unwrap_or_default();
@@ -1173,7 +1171,12 @@ async fn search(
                 )
                 .await?
             } else {
-                search_table_data_in_mock(table, &terms, cfg.shared.search.per_table_max_rows)
+                search_table_data_in_mock(
+                    table,
+                    &terms,
+                    cfg.shared.search.per_table_max_rows,
+                    &demo_rows,
+                )
             };
             if let Some(item) = item {
                 data_results.push(item);
@@ -1208,21 +1211,20 @@ async fn get_table_data(
 ) -> Result<TableData, String> {
     let page = page.max(1);
     let page_size = page_size.max(1).min(200);
-    let (pool, schema) = {
+    let (pool, schema, demo_rows) = {
         let rt = state.runtime.lock().await;
-        (rt.pool.clone(), rt.schema_cache.clone())
+        let pool = rt.pool.clone();
+        (
+            pool.clone(),
+            resolve_runtime_schema(pool.is_some(), &rt.schema_cache),
+            rt.demo_rows.clone(),
+        )
     };
     let table = schema
         .tables
         .iter()
         .find(|t| t.table_name == table_name)
         .cloned()
-        .or_else(|| {
-            mock_schema_cache()
-                .tables
-                .into_iter()
-                .find(|t| t.table_name == table_name)
-        })
         .ok_or_else(|| "目标表不存在".to_string())?;
     if let Some(pool) = pool {
         let total_sql = format!(
@@ -1268,7 +1270,7 @@ async fn get_table_data(
             page_size,
         });
     }
-    let data = mock_rows_for_table(&table_name);
+    let data = demo_rows_for_table(&demo_rows, &table_name);
     let total_rows = data.len() as u64;
     let s = (page.saturating_sub(1) * page_size) as usize;
     let e = (s + page_size as usize).min(data.len());
@@ -1295,9 +1297,11 @@ async fn save_table_changes(
 ) -> Result<SaveResult, String> {
     let pool = {
         let rt = state.runtime.lock().await;
-        rt.pool
-            .clone()
-            .ok_or_else(|| "数据库未连接".to_string())?
+        rt.pool.clone()
+    };
+    let Some(pool) = pool else {
+        let mut rt = state.runtime.lock().await;
+        return save_table_changes_to_demo_rows(&mut rt.demo_rows, &changeset);
     };
     let table = escape_ident(&changeset.table_name);
     let has_pk = !changeset.primary_keys.is_empty();
@@ -1456,11 +1460,7 @@ fn build_where_from_all(
 async fn list_tables(state: State<'_, AppState>) -> Result<Vec<TableOption>, String> {
     let schema = {
         let rt = state.runtime.lock().await;
-        if rt.schema_cache.tables.is_empty() {
-            mock_schema_cache()
-        } else {
-            rt.schema_cache.clone()
-        }
+        resolve_runtime_schema(rt.pool.is_some(), &rt.schema_cache)
     };
     let mut out = schema
         .tables
@@ -3154,8 +3154,9 @@ fn search_table_data_in_mock(
     table: &TableMeta,
     terms: &[String],
     max_rows: u32,
+    demo_rows: &HashMap<String, Vec<HashMap<String, String>>>,
 ) -> Option<DataSearchResult> {
-    let source = mock_rows_for_table(&table.table_name);
+    let source = demo_rows_for_table(demo_rows, &table.table_name);
     let mut rows = vec![];
     let mut cols: Vec<String> = vec![];
     let mut first = None;
@@ -3190,6 +3191,14 @@ fn search_table_data_in_mock(
         truncated: false,
         first_row_index: first,
     })
+}
+
+fn resolve_runtime_schema(connected: bool, schema_cache: &SchemaCache) -> SchemaCache {
+    if connected {
+        schema_cache.clone()
+    } else {
+        mock_schema_cache()
+    }
 }
 fn meta_search(schema: &SchemaCache, terms: &[String]) -> Vec<MetaSearchResult> {
     let mut out = vec![];
@@ -3365,77 +3374,286 @@ async fn load_schema_from_database(
 fn mock_schema_cache() -> SchemaCache {
     SchemaCache {
         last_refresh: Some(Utc::now()),
-        tables: vec![
-            TableMeta {
-                table_name: "t_hero_config".into(),
-                table_comment: "英雄配置表".into(),
-                columns: vec![
-                    ColumnMeta {
-                        column_name: "id".into(),
-                        column_type: "int(11)".into(),
-                        column_comment: "主键ID".into(),
-                        is_primary_key: true,
-                        is_nullable: false,
-                    },
-                    ColumnMeta {
-                        column_name: "name".into(),
-                        column_type: "varchar(64)".into(),
-                        column_comment: "英雄名称".into(),
-                        is_primary_key: false,
-                        is_nullable: false,
-                    },
-                    ColumnMeta {
-                        column_name: "atk".into(),
-                        column_type: "int(11)".into(),
-                        column_comment: "基础攻击力".into(),
-                        is_primary_key: false,
-                        is_nullable: false,
-                    },
-                ],
+        tables: vec![demo_feature_test_table_meta()],
+    }
+}
+
+fn demo_feature_test_table_meta() -> TableMeta {
+    TableMeta {
+        table_name: DEMO_FEATURE_TEST_TABLE.into(),
+        table_comment: "离线功能测试演示表：覆盖搜索、备注、分页、单击编辑、插入、删除和 JSON 长文本查看".into(),
+        columns: vec![
+            ColumnMeta {
+                column_name: "id".into(),
+                column_type: "int(11)".into(),
+                column_comment: "主键ID，用于稳定保存和删除演示行".into(),
+                is_primary_key: true,
+                is_nullable: false,
             },
-            TableMeta {
-                table_name: "t_hero_skill".into(),
-                table_comment: "英雄技能表".into(),
-                columns: vec![
-                    ColumnMeta {
-                        column_name: "id".into(),
-                        column_type: "int(11)".into(),
-                        column_comment: "主键ID".into(),
-                        is_primary_key: true,
-                        is_nullable: false,
-                    },
-                    ColumnMeta {
-                        column_name: "hero_id".into(),
-                        column_type: "int(11)".into(),
-                        column_comment: "关联英雄ID".into(),
-                        is_primary_key: false,
-                        is_nullable: false,
-                    },
-                    ColumnMeta {
-                        column_name: "skill_name".into(),
-                        column_type: "varchar(64)".into(),
-                        column_comment: "技能名".into(),
-                        is_primary_key: false,
-                        is_nullable: false,
-                    },
-                ],
+            ColumnMeta {
+                column_name: "feature_name".into(),
+                column_type: "varchar(80)".into(),
+                column_comment: "功能名称，可直接单击编辑".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "owner".into(),
+                column_type: "varchar(40)".into(),
+                column_comment: "负责人或测试角色".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "priority".into(),
+                column_type: "int(11)".into(),
+                column_comment: "优先级数字，验证数字列编辑".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "enabled".into(),
+                column_type: "tinyint(1)".into(),
+                column_comment: "是否启用，1 表示启用，0 表示停用".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "due_date".into(),
+                column_type: "date".into(),
+                column_comment: "计划验证日期，覆盖日期格式展示".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "updated_at".into(),
+                column_type: "datetime".into(),
+                column_comment: "最后更新时间，覆盖时间列展示".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "remark".into(),
+                column_type: "text".into(),
+                column_comment: "详细备注，包含较长文本用于测试列宽和搜索".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "payload_json".into(),
+                column_type: "json".into(),
+                column_comment: "JSON 配置片段，用于测试大文本查看器和高亮".into(),
+                is_primary_key: false,
+                is_nullable: false,
             },
         ],
     }
 }
+
+fn default_demo_rows() -> HashMap<String, Vec<HashMap<String, String>>> {
+    let mut out = HashMap::new();
+    out.insert(
+        DEMO_FEATURE_TEST_TABLE.into(),
+        vec![
+            map_row(&[
+                ("id", "1"),
+                ("feature_name", "单击编辑体验"),
+                ("owner", "产品测试"),
+                ("priority", "1"),
+                ("enabled", "1"),
+                ("due_date", "2026-05-01"),
+                ("updated_at", "2026-04-29 09:15:00"),
+                ("remark", "用于验证进入编辑模式后单击单元格立即聚焦，Enter 保存并移动到下一行。"),
+                ("payload_json", r#"{"module":"table-edit","shortcut":"Ctrl+Enter","status":"ready"}"#),
+            ]),
+            map_row(&[
+                ("id", "2"),
+                ("feature_name", "大文本查看器"),
+                ("owner", "前端联调"),
+                ("priority", "2"),
+                ("enabled", "1"),
+                ("due_date", "2026-05-03"),
+                ("updated_at", "2026-04-29 10:30:00"),
+                ("remark", "双击在非编辑模式打开详情；编辑模式使用 Ctrl+Enter 打开完整内容。"),
+                ("payload_json", r#"{"viewer":"cell","language":"json","note":"支持长文本预览"}"#),
+            ]),
+            map_row(&[
+                ("id", "3"),
+                ("feature_name", "数据值搜索"),
+                ("owner", "搜索验证"),
+                ("priority", "2"),
+                ("enabled", "1"),
+                ("due_date", "2026-05-06"),
+                ("updated_at", "2026-04-29 11:45:00"),
+                ("remark", "搜索关键词 JSON、备注、负责人或日期，都应该能在离线演示表中命中。"),
+                ("payload_json", r#"{"search":["JSON","备注","日期"],"scope":"offline-demo"}"#),
+            ]),
+            map_row(&[
+                ("id", "4"),
+                ("feature_name", "新增行保存"),
+                ("owner", "回归测试"),
+                ("priority", "3"),
+                ("enabled", "1"),
+                ("due_date", "2026-05-10"),
+                ("updated_at", "2026-04-29 13:00:00"),
+                ("remark", "用于测试添加行后保存到内存，刷新当前页仍能看到新增内容。"),
+                ("payload_json", r#"{"operation":"insert","persistence":"memory-only","restart":"reset"}"#),
+            ]),
+            map_row(&[
+                ("id", "5"),
+                ("feature_name", "删除行演练"),
+                ("owner", "安全验证"),
+                ("priority", "4"),
+                ("enabled", "0"),
+                ("due_date", "2026-05-12"),
+                ("updated_at", "2026-04-29 14:20:00"),
+                ("remark", "用于验证勾选行、删除选中、保存后从当前会话移除。"),
+                ("payload_json", r#"{"operation":"delete","guard":"primary-key","demo":true}"#),
+            ]),
+            map_row(&[
+                ("id", "6"),
+                ("feature_name", "列备注完整性"),
+                ("owner", "Schema 检查"),
+                ("priority", "5"),
+                ("enabled", "1"),
+                ("due_date", "2026-05-15"),
+                ("updated_at", "2026-04-29 15:40:00"),
+                ("remark", "打开 Schema 区域时，每个字段都应有备注，不再出现空内容测试尴尬。"),
+                ("payload_json", r#"{"schema":"complete","columns":9,"comments":"all-present"}"#),
+            ]),
+        ],
+    );
+    out
+}
+
 fn mock_rows_for_table(table: &str) -> Vec<HashMap<String, String>> {
-    match table {
-        "t_hero_config" => vec![
-            map_row(&[("id", "1"), ("name", "火焰英雄"), ("atk", "350")]),
-            map_row(&[("id", "2"), ("name", "冰霜法师"), ("atk", "280")]),
-            map_row(&[("id", "3"), ("name", "雷鸣骑士"), ("atk", "410")]),
-        ],
-        "t_hero_skill" => vec![
-            map_row(&[("id", "1001"), ("hero_id", "1"), ("skill_name", "炎爆冲锋")]),
-            map_row(&[("id", "1002"), ("hero_id", "2"), ("skill_name", "极寒结界")]),
-        ],
-        _ => vec![],
+    demo_rows_for_table(&default_demo_rows(), table)
+}
+
+fn demo_rows_for_table(
+    demo_rows: &HashMap<String, Vec<HashMap<String, String>>>,
+    table: &str,
+) -> Vec<HashMap<String, String>> {
+    demo_rows
+        .get(table)
+        .cloned()
+        .unwrap_or_else(|| default_demo_rows().remove(table).unwrap_or_default())
+}
+
+fn ensure_demo_rows(
+    demo_rows: &mut HashMap<String, Vec<HashMap<String, String>>>,
+) -> &mut Vec<HashMap<String, String>> {
+    demo_rows
+        .entry(DEMO_FEATURE_TEST_TABLE.into())
+        .or_insert_with(|| mock_rows_for_table(DEMO_FEATURE_TEST_TABLE))
+}
+
+fn row_matches_keys(row: &HashMap<String, String>, keys: &HashMap<String, String>) -> bool {
+    !keys.is_empty()
+        && keys
+            .iter()
+            .all(|(column, expected)| row.get(column).map(String::as_str) == Some(expected.as_str()))
+}
+
+fn next_demo_id(rows: &[HashMap<String, String>]) -> String {
+    rows.iter()
+        .filter_map(|row| row.get("id")?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(0)
+        .saturating_add(1)
+        .to_string()
+}
+
+fn normalize_demo_insert_row(
+    row: &HashMap<String, String>,
+    existing_rows: &[HashMap<String, String>],
+) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for column in demo_feature_test_table_meta().columns {
+        let value = row
+            .get(&column.column_name)
+            .cloned()
+            .unwrap_or_else(|| {
+                if column.column_name == "id" {
+                    next_demo_id(existing_rows)
+                } else {
+                    String::new()
+                }
+            });
+        out.insert(column.column_name, value);
     }
+    if out.get("id").map(|value| value.trim().is_empty()).unwrap_or(true) {
+        out.insert("id".into(), next_demo_id(existing_rows));
+    }
+    out
+}
+
+fn save_table_changes_to_demo_rows(
+    demo_rows: &mut HashMap<String, Vec<HashMap<String, String>>>,
+    changeset: &TableChangeSet,
+) -> Result<SaveResult, String> {
+    if changeset.table_name != DEMO_FEATURE_TEST_TABLE {
+        return Err("离线演示模式仅支持 demo_feature_test".into());
+    }
+
+    let rows = ensure_demo_rows(demo_rows);
+    let has_pk = !changeset.primary_keys.is_empty();
+    let mut updated = 0;
+    let mut inserted = 0;
+    let mut deleted = 0;
+
+    for update in &changeset.updates {
+        if update.changes.is_empty() {
+            continue;
+        }
+        let keys = if has_pk {
+            changeset
+                .primary_keys
+                .iter()
+                .filter_map(|column| update.where_keys.get(column).map(|value| (column.clone(), value.clone())))
+                .collect::<HashMap<_, _>>()
+        } else {
+            update.where_keys.clone()
+        };
+        if let Some(row) = rows.iter_mut().find(|row| row_matches_keys(row, &keys)) {
+            for (column, value) in &update.changes {
+                row.insert(column.clone(), value.clone());
+            }
+            updated += 1;
+        }
+    }
+
+    for delete in &changeset.deletes {
+        let keys = if has_pk {
+            changeset
+                .primary_keys
+                .iter()
+                .filter_map(|column| delete.get(column).map(|value| (column.clone(), value.clone())))
+                .collect::<HashMap<_, _>>()
+        } else {
+            delete.clone()
+        };
+        if let Some(index) = rows.iter().position(|row| row_matches_keys(row, &keys)) {
+            rows.remove(index);
+            deleted += 1;
+        }
+    }
+
+    for insert in &changeset.inserts {
+        if insert.is_empty() {
+            continue;
+        }
+        let normalized = normalize_demo_insert_row(insert, rows);
+        rows.push(normalized);
+        inserted += 1;
+    }
+
+    Ok(SaveResult {
+        updated,
+        inserted,
+        deleted,
+        warnings: vec!["离线演示保存仅保留在当前会话，重启后恢复默认数据".into()],
+    })
 }
 fn map_row(input: &[(&str, &str)]) -> HashMap<String, String> {
     let mut m = HashMap::new();
@@ -4256,6 +4474,109 @@ mod tests {
 
         assert_eq!(size.width, 1240.0);
         assert_eq!(size.height, 820.0);
+    }
+
+    #[test]
+    fn offline_demo_schema_has_complete_feature_test_table() {
+        let schema = mock_schema_cache();
+        let table = schema
+            .tables
+            .iter()
+            .find(|item| item.table_name == "demo_feature_test")
+            .expect("demo_feature_test should be available offline");
+
+        assert!(!table.table_comment.trim().is_empty());
+        assert!(
+            table.columns.len() >= 9,
+            "demo table should cover common editable data types"
+        );
+        assert!(table.columns.iter().any(|column| column.is_primary_key));
+        assert!(table
+            .columns
+            .iter()
+            .all(|column| !column.column_comment.trim().is_empty()));
+
+        let rows = mock_rows_for_table("demo_feature_test");
+        assert!(rows.len() >= 5, "demo table should have enough rows to test editing");
+        for (row_index, row) in rows.iter().enumerate() {
+            for column in &table.columns {
+                let value = row
+                    .get(&column.column_name)
+                    .unwrap_or_else(|| panic!("row {row_index} is missing {}", column.column_name));
+                assert!(
+                    !value.trim().is_empty(),
+                    "row {row_index} column {} should not be empty",
+                    column.column_name
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_schema_uses_demo_only_when_disconnected() {
+        let empty_schema = SchemaCache {
+            tables: vec![],
+            last_refresh: None,
+        };
+
+        let connected_schema = resolve_runtime_schema(true, &empty_schema);
+        assert!(connected_schema.tables.is_empty());
+
+        let disconnected_schema = resolve_runtime_schema(false, &empty_schema);
+        assert!(disconnected_schema
+            .tables
+            .iter()
+            .any(|item| item.table_name == "demo_feature_test"));
+    }
+
+    #[test]
+    fn offline_demo_save_applies_update_insert_and_delete_in_memory() {
+        let mut demo_rows = default_demo_rows();
+        let insert_row = map_row(&[
+            ("id", "900"),
+            ("feature_name", "新增行演练"),
+            ("owner", "测试员"),
+            ("priority", "4"),
+            ("enabled", "1"),
+            ("due_date", "2026-05-20"),
+            ("updated_at", "2026-04-29 21:30:00"),
+            ("remark", "新增行用于验证离线演示保存会写入内存"),
+            ("payload_json", r#"{"action":"insert","source":"test"}"#),
+        ]);
+
+        let result = save_table_changes_to_demo_rows(
+            &mut demo_rows,
+            &TableChangeSet {
+                table_name: "demo_feature_test".into(),
+                primary_keys: vec!["id".into()],
+                updates: vec![RowUpdate {
+                    where_keys: map_row(&[("id", "1")]),
+                    changes: map_row(&[("feature_name", "单击编辑已保存")]),
+                }],
+                inserts: vec![insert_row.clone()],
+                deletes: vec![map_row(&[("id", "2")])],
+            },
+        )
+        .expect("offline demo save should succeed");
+
+        assert_eq!(result.updated, 1);
+        assert_eq!(result.inserted, 1);
+        assert_eq!(result.deleted, 1);
+
+        let rows = demo_rows
+            .remove("demo_feature_test")
+            .expect("demo table rows should exist");
+        assert!(rows
+            .iter()
+            .any(|row| row.get("id").map(String::as_str) == Some("1")
+                && row.get("feature_name").map(String::as_str) == Some("单击编辑已保存")));
+        assert!(!rows
+            .iter()
+            .any(|row| row.get("id").map(String::as_str) == Some("2")));
+        assert!(rows
+            .iter()
+            .any(|row| row.get("id").map(String::as_str) == Some("900")
+                && row.get("payload_json") == insert_row.get("payload_json")));
     }
 
     #[test]
