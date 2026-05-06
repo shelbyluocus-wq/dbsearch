@@ -97,6 +97,7 @@ const PANEL_WINDOW_LABEL: &str = "panel";
 const PET_MENU_WINDOW_LABEL: &str = "pet_menu";
 const SYNC_WORKSPACE_WINDOW_LABEL: &str = "sync_workspace";
 const DB_MIGRATION_WORKSPACE_WINDOW_LABEL: &str = "db_migration_workspace";
+const ART_TEXT_SEARCH_WINDOW_LABEL: &str = "art_text_search";
 const WELCOME_WINDOW_WIDTH: f64 = 720.0;
 const WELCOME_WINDOW_HEIGHT: f64 = 320.0;
 const UPDATE_ANNOUNCEMENT_WINDOW_WIDTH: f64 = 620.0;
@@ -106,9 +107,9 @@ const PANEL_HEIGHT: f64 = 860.0;
 const PANEL_MIN_WIDTH: f64 = 680.0;
 const PANEL_MIN_HEIGHT: f64 = 720.0;
 const PET_MENU_WIDTH: f64 = 252.0;
-const PET_MENU_HEIGHT: f64 = 332.0;
-const PET_MENU_BUTTON_COUNT: f64 = 5.0;
-const PET_MENU_CHILD_COUNT: f64 = 6.0;
+const PET_MENU_HEIGHT: f64 = 376.0;
+const PET_MENU_BUTTON_COUNT: f64 = 6.0;
+const PET_MENU_CHILD_COUNT: f64 = 7.0;
 const PET_MENU_BUTTON_HEIGHT: f64 = 44.0;
 const PET_MENU_ROW_GAP: f64 = 6.0;
 const PET_MENU_DIVIDER_BLOCK_HEIGHT: f64 = 5.0;
@@ -119,6 +120,8 @@ const DB_MIGRATION_WORKSPACE_WIDTH: f64 = 1120.0;
 const DB_MIGRATION_WORKSPACE_HEIGHT: f64 = 760.0;
 const DB_MIGRATION_WORKSPACE_MIN_WIDTH: f64 = 980.0;
 const DB_MIGRATION_WORKSPACE_MIN_HEIGHT: f64 = 660.0;
+const ART_TEXT_SEARCH_WIDTH: f64 = 620.0;
+const ART_TEXT_SEARCH_HEIGHT: f64 = 520.0;
 const DEMO_FEATURE_TEST_TABLE: &str = "demo_feature_test";
 const DEFAULT_DB_MIGRATION_WINDOW_HOTKEY: &str = "Shift+S";
 const APP_DISPLAY_NAME: &str = "鹰捷";
@@ -171,7 +174,7 @@ fn resolve_tray_menu_action(id: impl AsRef<str>) -> Option<TrayMenuAction> {
 
 fn close_request_action_for_window(label: &str) -> WindowCloseAction {
     match label {
-        PANEL_WINDOW_LABEL | SYNC_WORKSPACE_WINDOW_LABEL | DB_MIGRATION_WORKSPACE_WINDOW_LABEL => {
+        PANEL_WINDOW_LABEL | SYNC_WORKSPACE_WINDOW_LABEL | DB_MIGRATION_WORKSPACE_WINDOW_LABEL | ART_TEXT_SEARCH_WINDOW_LABEL => {
             WindowCloseAction::HideToTray
         }
         _ => WindowCloseAction::HideWindow,
@@ -289,6 +292,8 @@ struct PersonalConfig {
     pending_update_announcement: Option<UpdateAnnouncement>,
     #[serde(default)]
     last_update_announcement_version: Option<String>,
+    #[serde(default)]
+    art_text_search_dirs: Vec<String>,
 }
 fn default_true() -> bool {
     true
@@ -647,6 +652,7 @@ impl Default for PersonalConfig {
             last_update_check_at: None,
             pending_update_announcement: None,
             last_update_announcement_version: None,
+            art_text_search_dirs: Vec::new(),
         }
     }
 }
@@ -2129,6 +2135,389 @@ async fn run_db_migration(
     result
 }
 
+// ── Art Text Search ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ArtTextIndexEntry {
+    text: String,
+    path: String,
+    #[serde(rename = "fileName")]
+    file_name: String,
+    #[serde(rename = "lastModified")]
+    last_modified: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ArtTextIndexError {
+    path: String,
+    reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+struct ArtTextIndex {
+    version: u32,
+    entries: Vec<ArtTextIndexEntry>,
+    errors: Vec<ArtTextIndexError>,
+    #[serde(rename = "builtAt")]
+    built_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ArtTextSearchResult {
+    text: String,
+    path: String,
+    #[serde(rename = "fileName")]
+    file_name: String,
+}
+
+async fn download_ocr_models(models_dir: &std::path::Path) -> Result<(), String> {
+    fs::create_dir_all(models_dir).map_err(|e| format!("创建模型目录失败: {e}"))?;
+
+    let models = [
+        (
+            "pp-ocrv5_mobile_det.onnx",
+            "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_mobile_det.onnx",
+        ),
+        (
+            "pp-ocrv5_mobile_rec.onnx",
+            "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_mobile_rec.onnx",
+        ),
+        (
+            "ppocrv5_dict.txt",
+            "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/ppocrv5_dict.txt",
+        ),
+    ];
+
+    // Map local filenames expected by the engine
+    let local_names = ["det.onnx", "rec.onnx", "ppocr_keys_v1.txt"];
+
+    for (i, (filename, url)) in models.iter().enumerate() {
+        let dest = models_dir.join(local_names[i]);
+        if dest.exists() {
+            continue;
+        }
+        // Download to temp file first, then rename
+        let temp = models_dir.join(format!("{filename}.downloading"));
+        let response = reqwest::get(*url)
+            .await
+            .map_err(|e| format!("下载模型 {filename} 失败: {e}"))?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "下载模型 {filename} 失败，HTTP {}，请手动下载: {url}",
+                response.status()
+            ));
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|e| format!("读取模型 {filename} 数据失败: {e}"))?;
+        fs::write(&temp, &bytes).map_err(|e| format!("写入模型文件失败: {e}"))?;
+        fs::rename(&temp, &dest).map_err(|e| format!("重命名模型文件失败: {e}"))?;
+    }
+
+    Ok(())
+}
+
+fn art_text_index_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app
+        .path()
+        .app_config_dir()
+        .map_err(|e| format!("配置目录失败: {e}"))?;
+    fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
+    Ok(dir.join("art_text_index.json"))
+}
+
+fn load_art_text_index(app: &tauri::AppHandle) -> ArtTextIndex {
+    let Ok(path) = art_text_index_path(app) else {
+        return ArtTextIndex::default();
+    };
+    let Ok(data) = fs::read_to_string(&path) else {
+        return ArtTextIndex::default();
+    };
+    serde_json::from_str(&data).unwrap_or_default()
+}
+
+fn save_art_text_index(app: &tauri::AppHandle, index: &ArtTextIndex) -> Result<(), String> {
+    let path = art_text_index_path(app)?;
+    fs::write(
+        path,
+        serde_json::to_string_pretty(index).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| format!("保存索引失败: {e}"))
+}
+
+const ART_TEXT_IMAGE_EXTENSIONS: &[&str] = &["png", "jpg", "jpeg", "bmp", "webp"];
+
+fn is_art_text_image(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|e| e.to_str())
+        .map(|e| ART_TEXT_IMAGE_EXTENSIONS.contains(&e.to_lowercase().as_str()))
+        .unwrap_or(false)
+}
+
+#[tauri::command]
+async fn get_art_text_search_dirs(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let rt = state.runtime.lock().await;
+    Ok(rt.config.personal.art_text_search_dirs.clone())
+}
+
+#[tauri::command]
+async fn save_art_text_search_dirs(
+    dirs: Vec<String>,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let mut rt = state.runtime.lock().await;
+    rt.config.personal.art_text_search_dirs = dirs;
+    save_config_to_disk(&app, &rt.config)
+}
+
+#[tauri::command]
+async fn build_art_text_index(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<ArtTextIndex, String> {
+    let dirs = {
+        let rt = state.runtime.lock().await;
+        rt.config.personal.art_text_search_dirs.clone()
+    };
+    if dirs.is_empty() {
+        return Err("请先添加扫描目录".into());
+    }
+
+    let mut existing = load_art_text_index(&app);
+    let existing_map: HashMap<String, ArtTextIndexEntry> = existing
+        .entries
+        .drain(..)
+        .map(|e| (e.path.clone(), e))
+        .collect();
+
+    // Collect all image files
+    let mut all_files: Vec<PathBuf> = Vec::new();
+    for dir_str in &dirs {
+        let dir = PathBuf::from(dir_str);
+        if !dir.exists() || !dir.is_dir() {
+            continue;
+        }
+        if let Ok(entries) = fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() && is_art_text_image(&path) {
+                    all_files.push(path);
+                }
+            }
+        }
+    }
+
+    let total = all_files.len() as u64;
+    let _ = app.emit(
+        "art-text-index-progress",
+        serde_json::json!({ "current": 0u64, "total": total, "currentFile": "" }),
+    );
+
+    // Initialize OCR engine - resolve model paths relative to app data dir
+    let models_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("获取数据目录失败: {e}"))?
+        .join("models");
+    let det_path = models_dir.join("det.onnx");
+    let rec_path = models_dir.join("rec.onnx");
+    let dict_path = models_dir.join("ppocr_keys_v1.txt");
+
+    if !det_path.exists() || !rec_path.exists() || !dict_path.exists() {
+        // Auto-download models on first use
+        download_ocr_models(&models_dir).await?;
+    }
+
+    let engine = oar_ocr::prelude::OAROCRBuilder::new(
+        det_path.to_str().unwrap_or(""),
+        rec_path.to_str().unwrap_or(""),
+        dict_path.to_str().unwrap_or(""),
+    )
+    .build()
+    .map_err(|e| format!("初始化OCR引擎失败: {e}"))?;
+
+    let mut new_entries: Vec<ArtTextIndexEntry> = Vec::new();
+    let mut errors: Vec<ArtTextIndexError> = Vec::new();
+
+    for (i, file_path) in all_files.iter().enumerate() {
+        let path_str = file_path.to_string_lossy().to_string();
+        let file_name = file_path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+
+        // Check if file was already indexed and unchanged
+        let last_modified = fs::metadata(file_path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        if let Some(existing_entry) = existing_map.get(&path_str) {
+            if existing_entry.last_modified == last_modified {
+                new_entries.push(existing_entry.clone());
+                let _ = app.emit(
+                    "art-text-index-progress",
+                    serde_json::json!({ "current": (i as u64) + 1, "total": total, "currentFile": file_name }),
+                );
+                continue;
+            }
+        }
+
+        let _ = app.emit(
+            "art-text-index-progress",
+            serde_json::json!({ "current": (i as u64) + 1, "total": total, "currentFile": file_name }),
+        );
+
+        // Run OCR
+        match oar_ocr::prelude::load_image(file_path) {
+            Ok(image) => match engine.predict(vec![image]) {
+                Ok(results) => {
+                    let text = results
+                        .first()
+                        .map(|r| r.concatenated_text(" "))
+                        .unwrap_or_default();
+                    if !text.is_empty() {
+                        new_entries.push(ArtTextIndexEntry {
+                            text,
+                            path: path_str,
+                            file_name,
+                            last_modified,
+                        });
+                    }
+                }
+                Err(e) => {
+                    errors.push(ArtTextIndexError {
+                        path: path_str,
+                        reason: format!("OCR识别失败: {e}"),
+                    });
+                }
+            },
+            Err(e) => {
+                errors.push(ArtTextIndexError {
+                    path: path_str,
+                    reason: format!("加载图片失败: {e}"),
+                });
+            }
+        }
+    }
+
+    let index = ArtTextIndex {
+        version: 1,
+        entries: new_entries,
+        errors,
+        built_at: Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()),
+    };
+    save_art_text_index(&app, &index)?;
+    Ok(index)
+}
+
+#[derive(Serialize)]
+struct ArtTextIndexInfo {
+    #[serde(rename = "builtAt")]
+    built_at: Option<String>,
+    #[serde(rename = "entryCount")]
+    entry_count: usize,
+}
+
+#[tauri::command]
+async fn get_art_text_index_info(app: tauri::AppHandle) -> Result<ArtTextIndexInfo, String> {
+    let index = load_art_text_index(&app);
+    Ok(ArtTextIndexInfo {
+        built_at: index.built_at,
+        entry_count: index.entries.len(),
+    })
+}
+
+#[tauri::command]
+async fn search_art_text(
+    text: String,
+    app: tauri::AppHandle,
+) -> Result<Vec<ArtTextSearchResult>, String> {
+    if text.trim().is_empty() {
+        return Ok(vec![]);
+    }
+    let index = load_art_text_index(&app);
+    let query = text.to_lowercase();
+    let mut results: Vec<ArtTextSearchResult> = index
+        .entries
+        .iter()
+        .filter(|e| e.text.to_lowercase().contains(&query))
+        .map(|e| ArtTextSearchResult {
+            text: e.text.clone(),
+            path: e.path.clone(),
+            file_name: e.file_name.clone(),
+        })
+        .collect();
+    results.sort_by(|a, b| a.text.len().cmp(&b.text.len()));
+    results.truncate(50);
+    Ok(results)
+}
+
+#[tauri::command]
+async fn open_file_in_explorer(path: String) -> Result<(), String> {
+    let path = PathBuf::from(path.trim());
+    if path.as_os_str().is_empty() {
+        return Err("目标路径不能为空".into());
+    }
+    if !path.exists() {
+        return Err(format!("目标文件不存在: {}", path.display()));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer")
+            .arg("/select,")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("打开资源管理器失败: {e}"))?;
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        return Err("当前系统暂不支持打开文件管理器".into());
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+async fn show_art_text_search_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = ensure_art_text_search_window(&app)?;
+    window.show().map_err(|e| e.to_string())?;
+    let _ = window.unminimize();
+    window.set_focus().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn hide_art_text_search_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(ART_TEXT_SEARCH_WINDOW_LABEL) {
+        window.hide().map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn toggle_art_text_search_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(ART_TEXT_SEARCH_WINDOW_LABEL) {
+        let visible = window.is_visible().map_err(|e| e.to_string())?;
+        if visible {
+            window.hide().map_err(|e| e.to_string())?;
+            return Ok(());
+        }
+        window.show().map_err(|e| e.to_string())?;
+        let _ = window.unminimize();
+        window.set_focus().map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    show_art_text_search_window(app).await
+}
+
 #[tauri::command]
 async fn open_directory_in_explorer(path: String) -> Result<(), String> {
     let path = PathBuf::from(path.trim());
@@ -2759,6 +3148,43 @@ fn ensure_db_migration_workspace_window(app: &tauri::AppHandle) -> Result<Webvie
             schedule_db_migration_window_size_save(app_handle.clone());
         }
         _ => {}
+    });
+
+    Ok(window)
+}
+
+fn ensure_art_text_search_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(ART_TEXT_SEARCH_WINDOW_LABEL) {
+        return Ok(window);
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        ART_TEXT_SEARCH_WINDOW_LABEL,
+        WebviewUrl::App("index.html".into()),
+    )
+    .title(format_window_title(app, Some("美术字搜索")))
+    .inner_size(ART_TEXT_SEARCH_WIDTH, ART_TEXT_SEARCH_HEIGHT)
+    .resizable(true)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(false)
+    .skip_taskbar(false)
+    .visible(false)
+    .build()
+    .map_err(|e| format!("failed to create art text search window: {e}"))?;
+
+    let window_for_events = window.clone();
+    window.on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            match close_request_action_for_window(ART_TEXT_SEARCH_WINDOW_LABEL) {
+                WindowCloseAction::HideToTray | WindowCloseAction::HideWindow => {
+                    let _ = window_for_events.hide();
+                }
+            }
+        }
     });
 
     Ok(window)
@@ -4244,6 +4670,15 @@ pub fn run() {
             save_db_migration_workspace_state,
             connect_db_migration_server,
             run_db_migration,
+            get_art_text_search_dirs,
+            save_art_text_search_dirs,
+            build_art_text_index,
+            get_art_text_index_info,
+            search_art_text,
+            open_file_in_explorer,
+            show_art_text_search_window,
+            hide_art_text_search_window,
+            toggle_art_text_search_window,
             open_directory_in_explorer,
             open_gitee_release_page,
             run_sync_profile,

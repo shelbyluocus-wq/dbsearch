@@ -11,6 +11,8 @@ export async function runPetMenuAction(action, deps) {
       await invoke("show_panel_window", { openSettings: false });
     } else if (action === "sync" || action === "sync_center" || action === "file_sync" || action === "db_sync") {
       await invoke("toggle_sync_workspace_window");
+    } else if (action === "art_text_search") {
+      await invoke("toggle_art_text_search_window");
     } else if (action === "settings") {
       await invoke("show_panel_window", { openSettings: true });
     } else if (action === "hide_pet") {

@@ -368,6 +368,7 @@ const isSyncWorkspaceWindow = computed(() => isTauriWindow && windowLabel.value 
 const isDbMigrationWorkspaceWindow = computed(() =>
   isTauriWindow && windowLabel.value === "db_migration_workspace",
 );
+const isArtTextSearchWindow = computed(() => isTauriWindow && windowLabel.value === "art_text_search");
 const isPanelWindow = computed(() => !isTauriWindow || windowLabel.value === "browser" || windowLabel.value === "panel");
 const FIXED_WEATHER_CITY = "厦门市";
 
@@ -1660,6 +1661,145 @@ function startSyncCenterSidebarResize(event) {
   window.addEventListener("pointermove", onPointerMove);
   window.addEventListener("pointerup", stopResize);
   window.addEventListener("pointercancel", stopResize);
+}
+
+// ── Art Text Search ──────────────────────────────────────────────────────────
+const artTextDirs = ref([]);
+const artTextQuery = ref("");
+const artTextResults = ref([]);
+const artTextSearching = ref(false);
+const artTextBuilding = ref(false);
+const artTextIndexBuiltAt = ref("");
+const artTextProgressCurrent = ref(0);
+const artTextProgressTotal = ref(0);
+const artTextProgressFile = ref("");
+const artTextMessage = ref("");
+let artTextSearchDebounce = null;
+
+const artTextProgressPercent = computed(() => {
+  if (artTextProgressTotal.value <= 0) return 0;
+  return Math.round((artTextProgressCurrent.value / artTextProgressTotal.value) * 100);
+});
+
+async function loadArtTextDirs() {
+  try {
+    artTextDirs.value = await invoke("get_art_text_search_dirs");
+  } catch { /* ignore */ }
+}
+
+async function loadArtTextIndexInfo() {
+  try {
+    const info = await invoke("get_art_text_index_info");
+    artTextIndexBuiltAt.value = info.builtAt || "";
+  } catch { /* ignore */ }
+}
+
+async function addArtTextDir() {
+  try {
+    const dir = await open({ directory: true, multiple: false });
+    if (dir && !artTextDirs.value.includes(dir)) {
+      artTextDirs.value.push(dir);
+      await invoke("save_art_text_search_dirs", { dirs: artTextDirs.value });
+    }
+  } catch (e) {
+    console.warn("Failed to add directory:", e);
+  }
+}
+
+async function removeArtTextDir(index) {
+  artTextDirs.value.splice(index, 1);
+  try {
+    await invoke("save_art_text_search_dirs", { dirs: artTextDirs.value });
+  } catch { /* ignore */ }
+}
+
+async function buildArtTextIndex() {
+  artTextBuilding.value = true;
+  artTextMessage.value = "";
+  artTextProgressCurrent.value = 0;
+  artTextProgressTotal.value = 0;
+  artTextProgressFile.value = "";
+  try {
+    const index = await invoke("build_art_text_index");
+    artTextIndexBuiltAt.value = index.builtAt || "";
+    artTextMessage.value = `索引构建完成，共 ${index.entries.length} 条记录`;
+  } catch (e) {
+    artTextMessage.value = String(e);
+    console.warn("Build index failed:", e);
+  } finally {
+    artTextBuilding.value = false;
+  }
+}
+
+function onArtTextSearchInput() {
+  if (artTextSearchDebounce) clearTimeout(artTextSearchDebounce);
+  const query = artTextQuery.value.trim();
+  if (!query) {
+    artTextResults.value = [];
+    artTextSearching.value = false;
+    return;
+  }
+  artTextSearching.value = true;
+  artTextSearchDebounce = setTimeout(async () => {
+    try {
+      artTextResults.value = await invoke("search_art_text", { text: query });
+    } catch {
+      artTextResults.value = [];
+    } finally {
+      artTextSearching.value = false;
+    }
+  }, 300);
+}
+
+async function openArtTextFile(path) {
+  try {
+    await invoke("open_file_in_explorer", { path });
+  } catch (e) {
+    console.warn("Failed to open file:", e);
+  }
+}
+
+async function closeArtTextSearchWindow() {
+  if (!isTauriWindow || !isArtTextSearchWindow.value) return;
+  await invoke("hide_art_text_search_window").catch(() => {});
+}
+
+async function artTextSearchMinimize() {
+  if (!isTauriWindow || !isArtTextSearchWindow.value) return;
+  await getCurrentWindow().minimize().catch(() => {});
+}
+
+async function artTextSearchToggleMaximize() {
+  if (!isTauriWindow || !isArtTextSearchWindow.value) return;
+  const appWindow = getCurrentWindow();
+  const maximized = await appWindow.isMaximized().catch(() => false);
+  if (maximized) {
+    await appWindow.unmaximize().catch(() => {});
+  } else {
+    await appWindow.maximize().catch(() => {});
+  }
+}
+
+function artTextSearchHeaderPointerDown(event) {
+  if (event.button !== 0 || !isTauriWindow || !isArtTextSearchWindow.value) return;
+  const target = event.target;
+  if (target instanceof Element && target.closest("button, input, textarea, select, label, a")) {
+    return;
+  }
+  getCurrentWindow().startDragging().catch(() => {});
+}
+
+// Load art text dirs on mount if in art text search window
+if (isArtTextSearchWindow.value) {
+  loadArtTextDirs();
+  loadArtTextIndexInfo();
+  // Listen for progress events
+  listen("art-text-index-progress", (event) => {
+    const { current, total, currentFile } = event.payload;
+    artTextProgressCurrent.value = current;
+    artTextProgressTotal.value = total;
+    artTextProgressFile.value = currentFile || "";
+  });
 }
 
 async function openSyncTargetDir() {
@@ -8971,6 +9111,65 @@ function escapeHtml(str) {
 
   <DbMigrationWorkspace v-else-if="isDbMigrationWorkspaceWindow" />
 
+  <main v-else-if="isArtTextSearchWindow" class="ats-root" @contextmenu.prevent>
+    <div class="ats-wallpaper" aria-hidden="true"></div>
+    <div class="ats-drag-strip" aria-hidden="true" @pointerdown="artTextSearchHeaderPointerDown"></div>
+    <div class="ats-chrome">
+      <div class="traffic-lights" @dblclick.stop @pointerdown.stop>
+        <button class="traffic-btn traffic-red" title="关闭" aria-label="关闭美术字搜索" @click="closeArtTextSearchWindow" />
+        <button class="traffic-btn traffic-yellow" title="最小化" aria-label="最小化美术字搜索" @click="artTextSearchMinimize" />
+        <button class="traffic-btn traffic-green" title="最大化/还原" aria-label="最大化或还原美术字搜索" @click="artTextSearchToggleMaximize" />
+      </div>
+      <span class="ats-title">美术字搜索</span>
+    </div>
+    <div class="ats-body">
+      <div class="glass-card ats-card">
+        <h4 class="glass-card-title">扫描目录</h4>
+        <div class="ats-dirs">
+          <span v-for="(dir, i) in artTextDirs" :key="dir" class="ats-dir-chip">
+            {{ dir }}
+            <button class="ats-dir-remove" @click="removeArtTextDir(i)" title="移除">×</button>
+          </span>
+          <span v-if="artTextDirs.length === 0" class="ats-dirs-empty">未配置扫描目录</span>
+        </div>
+        <div class="ats-dir-actions">
+          <button class="glass-btn-primary ats-btn-sm" @click="addArtTextDir">+ 添加目录</button>
+          <button class="glass-btn-primary" :disabled="artTextBuilding || artTextDirs.length === 0" @click="buildArtTextIndex">
+            {{ artTextBuilding ? '构建中...' : '开始构建索引' }}
+          </button>
+          <span v-if="artTextIndexBuiltAt" class="ats-built-at">上次更新: {{ artTextIndexBuiltAt }}</span>
+        </div>
+        <div v-if="artTextBuilding" class="ats-progress-wrap">
+          <div class="ats-progress-bar">
+            <div class="ats-progress-fill" :style="{ width: artTextProgressPercent + '%' }"></div>
+          </div>
+          <span class="ats-progress-text">{{ artTextProgressCurrent }}/{{ artTextProgressTotal }} {{ artTextProgressFile }}</span>
+        </div>
+      </div>
+      <div v-if="artTextMessage" class="ats-message" :class="{ 'ats-message-error': artTextMessage.startsWith('初始化') || artTextMessage.startsWith('请先') }">{{ artTextMessage }}</div>
+      <input
+        v-model="artTextQuery"
+        type="text"
+        class="glass-input ats-search-input"
+        placeholder="输入搜索文本..."
+        @input="onArtTextSearchInput"
+      />
+      <div v-if="artTextQuery.trim() && !artTextSearching" class="ats-results-header">
+        结果 ({{ artTextResults.length }}):
+      </div>
+      <div v-if="artTextSearching" class="ats-searching">搜索中...</div>
+      <div v-else-if="artTextQuery.trim() && artTextResults.length === 0" class="ats-no-results">无结果</div>
+      <div v-else-if="artTextResults.length > 0" class="ats-results">
+        <div v-for="r in artTextResults" :key="r.path" class="glass-card ats-result-card">
+          <div class="ats-result-name">{{ r.fileName }}</div>
+          <div class="ats-result-text">识别: "{{ r.text }}"</div>
+          <div class="ats-result-path">{{ r.path }}</div>
+          <button class="glass-btn-primary ats-btn-sm ats-result-open" @click="openArtTextFile(r.path)">打开</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
   <div v-else-if="isMenuWindow" class="pet-menu-root">
     <section :class="['pet-menu-window', { 'reduced-transparency': reducedTransparencyEnabled }]">
       <button class="pet-menu-btn" @click="contextAction('open')">
@@ -8988,6 +9187,10 @@ function escapeHtml(str) {
       <button class="pet-menu-btn" @click="contextAction('settings')">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.036-.31.06-.62.06-.94s-.024-.63-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.12 7.12 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 14.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54c-.58.23-1.12.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L3.7 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.046.31-.07.62-.07.94s.024.63.07.94L3.82 14.16a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.05.72 1.63.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54c.58-.23 1.12-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" fill="currentColor"/></svg>
         <span>设置</span>
+      </button>
+      <button class="pet-menu-btn" @click="contextAction('art_text_search')">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 1 0 4.031 11.604l4.433 4.433 1.414-1.414-4.433-4.433A6.5 6.5 0 0 0 10.5 4Zm0 2a4.5 4.5 0 1 1 0 9a4.5 4.5 0 0 1 0-9Z" fill="currentColor"/><text x="8" y="15" font-size="8" font-weight="bold" fill="currentColor">字</text></svg>
+        <span>美术字搜索</span>
       </button>
       <button class="pet-menu-btn" @click="contextAction('hide_pet')">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6.75 4.5 5.25 19.5 20.25 18 21.75l-3.07-3.07A11.54 11.54 0 0 1 12 19.5C6.75 19.5 2.27 16.24.5 12c.91-2.17 2.49-4.05 4.5-5.45L3 6.75Zm6.31 6.31a3.75 3.75 0 0 0 5.63 1.63l-1.55-1.55a1.75 1.75 0 0 1-2.53-2.53l-1.55-1.55ZM12 4.5c5.25 0 9.73 3.26 11.5 7.5a12.12 12.12 0 0 1-3.88 4.87l-1.45-1.45A9.76 9.76 0 0 0 21.26 12C19.68 8.76 16.09 6.5 12 6.5c-1.1 0-2.17.16-3.18.46L7.2 5.34A11.8 11.8 0 0 1 12 4.5Zm-.07 3.01A4.5 4.5 0 0 1 16.43 12c0 .41-.06.81-.16 1.19l-4.3-4.31c.38-.1.78-.16 1.18-.16Z" fill="currentColor"/></svg>
