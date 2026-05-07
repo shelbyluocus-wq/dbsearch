@@ -15065,12 +15065,12 @@ mark {
 }
 .quick-paste-header {
   position: relative;
-  min-height: 88px;
+  min-height: 64px;
   display: grid;
-  grid-template-columns: 86px 1fr auto;
-  align-items: start;
-  gap: 12px;
-  padding: 16px 18px 8px;
+  grid-template-columns: 78px minmax(260px, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 18px 6px;
   background: rgba(255, 255, 255, 0.94);
   border-bottom: 0;
   box-shadow: none;
@@ -15087,7 +15087,46 @@ mark {
   -webkit-app-region: no-drag;
 }
 .quick-paste-title-block {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
   -webkit-app-region: drag;
+}
+.quick-paste-logo-mark {
+  display: block;
+  flex: 0 0 auto;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  object-fit: cover;
+  user-select: none;
+}
+.quick-paste-wordmark {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+  line-height: 1;
+  transform: translateY(0);
+}
+.quick-paste-wordmark strong {
+  display: block;
+  color: #101828;
+  font-size: 22px;
+  font-weight: 650;
+  letter-spacing: 0;
+  line-height: 1.08;
+  white-space: nowrap;
+}
+.quick-paste-wordmark small {
+  display: block;
+  color: #344054;
+  font-family: Arial, sans-serif;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 2.8px;
+  line-height: 1.1;
+  white-space: nowrap;
 }
 .quick-paste-traffic-lights { display: flex; align-items: center; gap: 9px; }
 
@@ -15126,10 +15165,8 @@ mark {
 .quick-paste-traffic--close::before { content: "×"; }
 .quick-paste-traffic--minimize::before { content: "−"; transform: translate(-50%, -58%); }
 .quick-paste-traffic--zoom::before { content: "+"; font-size: 10px; transform: translate(-50%, -52%); }
-.quick-paste-kicker { display: block; font-size: 10px; letter-spacing: 0.13em; text-transform: uppercase; color: rgba(29, 29, 31, 0.45); font-weight: 750; }
-.quick-paste-title-block h1 { margin: 2px 0 0; color: #1d1d1f; font-size: 21px; font-weight: 760; letter-spacing: -0.04em; }
 .quick-paste-preview h2, .quick-paste-modal h2 { margin: 0; color: #1d1d1f; font-weight: 760; letter-spacing: -0.03em; }
-.quick-paste-title-block p, .quick-paste-preview p { margin: 3px 0 0; color: rgba(60, 60, 67, 0.62); font-size: 12px; }
+.quick-paste-preview p { margin: 3px 0 0; color: rgba(60, 60, 67, 0.62); font-size: 12px; }
 .quick-paste-shell input,
 .quick-paste-shell textarea {
   caret-color: auto;
@@ -15139,8 +15176,8 @@ mark {
   caret-color: transparent;
 }
 .quick-paste-header-actions, .quick-paste-preview-actions, .quick-paste-modal-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.quick-paste-body { min-height: 0; flex: 1; display: grid; gap: 0 6px; padding: 8px 14px 14px; background: rgba(246, 247, 249, 0.58); }
-.quick-paste-sidebar, .quick-paste-list-pane, .quick-paste-preview { min-height: 0; border-radius: 22px; background: rgba(255, 255, 255, 0.68); border: 0; box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.86), 0 10px 26px rgba(0, 0, 0, 0.06); }
+.quick-paste-body { min-height: 0; flex: 1; display: grid; gap: 0 12px; padding: 6px 16px 16px; background: rgba(246, 247, 249, 0.72); }
+.quick-paste-sidebar, .quick-paste-list-pane, .quick-paste-preview { min-height: 0; border-radius: 22px; background: rgba(255, 255, 255, 0.9); border: 1px solid rgba(0, 0, 0, 0.04); box-shadow: 0 10px 24px rgba(0, 0, 0, 0.045); }
 .quick-paste-pane-resizer {
   position: relative;
   min-height: 0;
@@ -15254,7 +15291,51 @@ mark {
 .quick-paste-item-badges small { padding: 3px 8px; border-radius: 999px; background: rgba(0, 122, 255, 0.12); color: #007aff; font-weight: 720; }
 .quick-paste-preview { display: flex; flex-direction: column; padding: 16px; overflow: hidden; }
 .quick-paste-preview-header { display: flex; justify-content: space-between; gap: 12px; }
-.quick-paste-content-preview { flex: 1; overflow: auto; margin: 14px 0; padding: 16px; border-radius: 18px; background: rgba(255, 255, 255, 0.64); border: 1px solid rgba(255, 255, 255, 0.74); color: #1d1d1f; white-space: pre-wrap; word-break: break-word; font-family: "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif; font-size: 15px; line-height: 1.7; }
+.quick-paste-title-input {
+  width: 100%;
+  border: 0;
+  border-radius: 10px;
+  padding: 0;
+  background: transparent;
+  color: #1d1d1f;
+  font-size: 25px;
+  font-weight: 760;
+  letter-spacing: -0.03em;
+  outline: none;
+}
+.quick-paste-title-input:focus {
+  background: transparent;
+  box-shadow: none;
+}
+.quick-paste-note-editor {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  margin: 14px 0;
+  padding: 12px 18px;
+  color: #1d1d1f;
+  white-space: normal;
+  word-break: break-word;
+  font-family: "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+  font-size: 15px;
+  line-height: 1.7;
+  outline: none;
+}
+.quick-paste-note-editor:empty::before {
+  content: attr(data-placeholder);
+  color: rgba(60, 60, 67, 0.42);
+}
+.quick-paste-note-editor p {
+  margin: 0 0 10px;
+}
+.quick-paste-note-editor img {
+  display: block;
+  width: auto;
+  max-width: none;
+  height: auto;
+  margin: 8px 0 12px;
+  border-radius: 0;
+}
 .quick-paste-preview-actions button,
 .quick-paste-empty button,
 .quick-paste-modal-actions button[type="submit"] {
@@ -15287,11 +15368,16 @@ mark {
 }
 .quick-paste-preview-actions .danger { color: #ff3b30; background: rgba(255, 59, 48, 0.12); box-shadow: none; }
 .quick-paste-preview-actions .danger:hover { background: rgba(255, 59, 48, 0.18); }
-.quick-paste-empty, .quick-paste-empty-list { margin: auto; text-align: center; color: rgba(60, 60, 67, 0.62); }
-.quick-paste-modal-backdrop { position: fixed; inset: 0; display: grid; place-items: center; background: rgba(29, 29, 31, 0.22); backdrop-filter: blur(10px); }
-.quick-paste-modal { width: min(460px, calc(100vw - 36px)); display: grid; gap: 12px; padding: 18px; border-radius: 24px; background: rgba(255, 255, 255, 0.94); border: 1px solid rgba(255, 255, 255, 0.76); box-shadow: 0 22px 60px rgba(0, 0, 0, 0.22); }
+.quick-paste-empty, .quick-paste-empty-list { height: 100%; display: grid; place-content: center; gap: 8px; text-align: center; color: rgba(60, 60, 67, 0.62); }
+.quick-paste-empty h2 { margin: 0; font-size: 24px; }
+.quick-paste-empty p { max-width: 220px; margin: 0 auto; line-height: 1.5; }
+.quick-paste-modal-backdrop { position: fixed; z-index: 20; inset: 0; display: grid; place-items: center; background: rgba(29, 29, 31, 0.22); backdrop-filter: blur(10px); }
+.quick-paste-modal { position: relative; z-index: 21; width: min(460px, calc(100vw - 36px)); display: grid; gap: 12px; padding: 18px; border-radius: 24px; background: rgba(255, 255, 255, 0.94); border: 1px solid rgba(255, 255, 255, 0.76); box-shadow: 0 22px 60px rgba(0, 0, 0, 0.22); }
 .quick-paste-modal label { display: grid; gap: 6px; color: rgba(29, 29, 31, 0.74); font-size: 13px; }
-.quick-paste-modal input, .quick-paste-modal textarea { box-sizing: border-box; width: 100%; border: 0; border-radius: 14px; padding: 11px; font: inherit; background: rgba(118, 118, 128, 0.12); box-shadow: inset 0 0 0 1px rgba(60, 60, 67, 0.08); }
+.quick-paste-modal input, .quick-paste-modal textarea, .quick-paste-modal select { box-sizing: border-box; width: 100%; border: 0; border-radius: 14px; padding: 11px; font: inherit; background: rgba(118, 118, 128, 0.12); box-shadow: inset 0 0 0 1px rgba(60, 60, 67, 0.08); }
+.quick-paste-paste-target { min-height: 190px; display: grid; place-items: center; padding: 14px; border-radius: 16px; color: rgba(60, 60, 67, 0.58); background: rgba(118, 118, 128, 0.1); box-shadow: inset 0 0 0 1px rgba(60, 60, 67, 0.08); text-align: center; outline: none; }
+.quick-paste-paste-target:focus { box-shadow: inset 0 0 0 2px rgba(0, 122, 255, 0.38); }
+.quick-paste-draft-image { max-width: 100%; max-height: 180px; object-fit: contain; border-radius: 14px; background: rgba(118, 118, 128, 0.12); }
 .quick-paste-check { display: flex !important; grid-template-columns: auto 1fr; align-items: center; }
 .quick-paste-check input { width: auto; }
 .quick-paste-toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); padding: 9px 14px; border-radius: 999px; color: #fff; background: rgba(29, 29, 31, 0.86); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.18); }

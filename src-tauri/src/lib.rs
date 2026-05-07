@@ -11,7 +11,7 @@ use crate::db_migration::{
     DbMigrationRequest,
 };
 use chrono::{DateTime, Local, Utc};
-use enigo::{Enigo, Keyboard, Settings};
+use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use mouse_position::mouse_position::Mouse;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -130,10 +130,10 @@ const DB_MIGRATION_WORKSPACE_MIN_WIDTH: f64 = 980.0;
 const DB_MIGRATION_WORKSPACE_MIN_HEIGHT: f64 = 660.0;
 const ART_TEXT_SEARCH_WIDTH: f64 = 620.0;
 const ART_TEXT_SEARCH_HEIGHT: f64 = 520.0;
-const QUICK_PASTE_WINDOW_WIDTH: f64 = 740.0;
-const QUICK_PASTE_WINDOW_HEIGHT: f64 = 570.0;
-const QUICK_PASTE_WINDOW_MIN_WIDTH: f64 = 740.0;
-const QUICK_PASTE_WINDOW_MIN_HEIGHT: f64 = 570.0;
+const QUICK_PASTE_WINDOW_WIDTH: f64 = 818.0;
+const QUICK_PASTE_WINDOW_HEIGHT: f64 = 569.0;
+const QUICK_PASTE_WINDOW_MIN_WIDTH: f64 = 818.0;
+const QUICK_PASTE_WINDOW_MIN_HEIGHT: f64 = 569.0;
 const DEMO_FEATURE_TEST_TABLE: &str = "demo_feature_test";
 const DEFAULT_DB_MIGRATION_WINDOW_HOTKEY: &str = "Shift+S";
 const DEFAULT_QUICK_PASTE_OPEN_HOTKEY: &str = "F7";
@@ -401,6 +401,9 @@ fn sanitize_quick_paste_snippet(mut snippet: QuickPasteSnippet) -> Option<QuickP
     }
     if snippet.title.is_empty() || snippet.content.is_empty() {
         return None;
+    }
+    if snippet.category != "image" && snippet.category != "rich" {
+        snippet.category = "text".into();
     }
     Some(snippet)
 }
@@ -1841,6 +1844,97 @@ async fn save_quick_paste_config(
     Ok(next)
 }
 
+fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
+    fn value(byte: u8) -> Option<u8> {
+        match byte {
+            b'A'..=b'Z' => Some(byte - b'A'),
+            b'a'..=b'z' => Some(byte - b'a' + 26),
+            b'0'..=b'9' => Some(byte - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+
+    let mut out = Vec::with_capacity(input.len() * 3 / 4);
+    let mut chunk = [0u8; 4];
+    let mut len = 0usize;
+    for byte in input.bytes().filter(|b| !b"\r\n\t ".contains(b)) {
+        if byte == b'=' {
+            chunk[len] = 64;
+        } else {
+            chunk[len] = value(byte).ok_or_else(|| "图片 base64 数据无效".to_string())?;
+        }
+        len += 1;
+        if len == 4 {
+            out.push((chunk[0] << 2) | (chunk[1] >> 4));
+            if chunk[2] != 64 {
+                out.push((chunk[1] << 4) | (chunk[2] >> 2));
+            }
+            if chunk[3] != 64 {
+                out.push((chunk[2] << 6) | chunk[3]);
+            }
+            len = 0;
+        }
+    }
+    if len != 0 {
+        return Err("图片 base64 数据长度无效".into());
+    }
+    Ok(out)
+}
+
+fn sanitize_quick_paste_image_ext(mime: &str) -> &'static str {
+    match mime {
+        "image/jpeg" => "jpg",
+        "image/webp" => "webp",
+        "image/gif" => "gif",
+        "image/bmp" => "bmp",
+        _ => "png",
+    }
+}
+
+#[tauri::command]
+async fn save_quick_paste_image(
+    app: tauri::AppHandle,
+    data_url: String,
+    file_name: String,
+) -> Result<String, String> {
+    let comma = data_url.find(',').ok_or_else(|| "图片数据格式无效".to_string())?;
+    let meta = &data_url[..comma];
+    let payload = &data_url[comma + 1..];
+    if !meta.starts_with("data:image/") || !meta.contains(";base64") {
+        return Err("只支持 base64 图片数据".into());
+    }
+
+    let mime = meta
+        .strip_prefix("data:")
+        .and_then(|value| value.split(';').next())
+        .unwrap_or("image/png");
+    let ext = sanitize_quick_paste_image_ext(mime);
+    let safe_stem: String = file_name
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        .take(60)
+        .collect();
+    let stem = safe_stem.trim_matches('.');
+    let final_name = if stem.is_empty() {
+        format!("quick-paste-{}.{}", Utc::now().timestamp_millis(), ext)
+    } else {
+        format!("{}-{}.{}", stem, Utc::now().timestamp_millis(), ext)
+    };
+
+    let dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("获取数据目录失败: {e}"))?
+        .join("quick-paste-images");
+    fs::create_dir_all(&dir).map_err(|e| format!("创建图片目录失败: {e}"))?;
+    let path = dir.join(final_name);
+    let bytes = base64_decode(payload)?;
+    fs::write(&path, bytes).map_err(|e| format!("保存图片失败: {e}"))?;
+    Ok(path.to_string_lossy().to_string())
+}
+
 #[tauri::command]
 async fn upsert_quick_paste_snippet(
     app: tauri::AppHandle,
@@ -1915,7 +2009,7 @@ async fn output_quick_paste_snippet(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<(), String> {
-    let content = {
+    let (content, category) = {
         let rt = state.runtime.lock().await;
         rt.config
             .personal
@@ -1923,13 +2017,12 @@ async fn output_quick_paste_snippet(
             .snippets
             .iter()
             .find(|snippet| snippet.id == id)
-            .map(|snippet| snippet.content.clone())
-    }
-    .ok_or_else(|| "找不到要输出的文本".to_string())?;
+            .map(|snippet| (snippet.content.clone(), snippet.category.clone()))
+            .ok_or_else(|| "找不到要输出的内容".to_string())?
+    };
 
-    hide_quick_paste_window(app).await?;
-    pause_before_global_text_input().await;
-    input_text_globally(&content)
+    let steps = quick_paste_output_steps(&category, is_quick_paste_window_visible(&app));
+    run_quick_paste_output_steps(app, steps, &content).await
 }
 
 #[tauri::command]
@@ -2565,6 +2658,7 @@ struct ArtTextSearchResult {
     file_name: String,
 }
 
+#[cfg(feature = "ocr")]
 async fn download_ocr_models(models_dir: &std::path::Path) -> Result<(), String> {
     fs::create_dir_all(models_dir).map_err(|e| format!("创建模型目录失败: {e}"))?;
 
@@ -2664,7 +2758,6 @@ fn file_content_hash(path: &std::path::Path) -> Option<String> {
     buf.extend_from_slice(&header[..n]);
 
     if size > 8192 {
-        use std::io::Seek;
         let _ = std::io::Seek::seek(&mut f, std::io::SeekFrom::End(-8192));
         let mut tail = [0u8; 8192];
         let n2 = std::io::Read::read(&mut f, &mut tail).unwrap_or(0);
@@ -2987,72 +3080,84 @@ async fn build_art_text_index(
     );
     tokio::task::yield_now().await;
 
+    #[cfg(feature = "ocr")]
     let mut new_count: usize = 0;
+    #[cfg(not(feature = "ocr"))]
+    let new_count: usize = 0;
+    #[cfg(feature = "ocr")]
     let mut errors: Vec<ArtTextIndexError> = Vec::new();
+    #[cfg(not(feature = "ocr"))]
+    let errors: Vec<ArtTextIndexError> = Vec::new();
 
     if !files_to_ocr.is_empty() {
-        // Initialize OCR engine
-        let models_dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|e| format!("获取数据目录失败: {e}"))?
-            .join("models");
-        let det_path = models_dir.join("det.onnx");
-        let rec_path = models_dir.join("rec.onnx");
-        let dict_path = models_dir.join("ppocr_keys_v1.txt");
+        #[cfg(not(feature = "ocr"))]
+        return Err("OCR 功能未启用。开发启动请继续使用 npm run tauri dev；如需美术字 OCR，请先解决 ONNX Runtime 下载问题后执行 cargo build --features ocr。".into());
 
-        if !det_path.exists() || !rec_path.exists() || !dict_path.exists() {
-            download_ocr_models(&models_dir).await?;
-        }
+        #[cfg(feature = "ocr")]
+        {
+            // Initialize OCR engine
+            let models_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|e| format!("获取数据目录失败: {e}"))?
+                .join("models");
+            let det_path = models_dir.join("det.onnx");
+            let rec_path = models_dir.join("rec.onnx");
+            let dict_path = models_dir.join("ppocr_keys_v1.txt");
 
-        let engine = oar_ocr::prelude::OAROCRBuilder::new(
-            det_path.to_str().unwrap_or(""),
-            rec_path.to_str().unwrap_or(""),
-            dict_path.to_str().unwrap_or(""),
-        )
-        .build()
-        .map_err(|e| format!("初始化OCR引擎失败: {e}"))?;
+            if !det_path.exists() || !rec_path.exists() || !dict_path.exists() {
+                download_ocr_models(&models_dir).await?;
+            }
 
-        for (i, (file_path, hash, file_name)) in files_to_ocr.iter().enumerate() {
-            let path_str = file_path.to_string_lossy().to_string();
+            let engine = oar_ocr::prelude::OAROCRBuilder::new(
+                det_path.to_str().unwrap_or(""),
+                rec_path.to_str().unwrap_or(""),
+                dict_path.to_str().unwrap_or(""),
+            )
+            .build()
+            .map_err(|e| format!("初始化OCR引擎失败: {e}"))?;
 
-            let _ = app.emit(
-                "art-text-index-progress",
-                serde_json::json!({ "current": (i as u64) + 1, "total": ocr_total, "currentFile": file_name, "phase": "ocr" }),
-            );
+            for (i, (file_path, hash, file_name)) in files_to_ocr.iter().enumerate() {
+                let path_str = file_path.to_string_lossy().to_string();
 
-            // Yield every file so OCR progress is visible
-            tokio::task::yield_now().await;
+                let _ = app.emit(
+                    "art-text-index-progress",
+                    serde_json::json!({ "current": (i as u64) + 1, "total": ocr_total, "currentFile": file_name, "phase": "ocr" }),
+                );
 
-            match oar_ocr::prelude::load_image(file_path) {
-                Ok(image) => match engine.predict(vec![image]) {
-                    Ok(results) => {
-                        let text = results
-                            .first()
-                            .map(|r| r.concatenated_text(" "))
-                            .unwrap_or_default();
-                        if !text.is_empty() {
-                            kept_entries.push(ArtTextIndexEntry {
-                                text,
-                                path: path_str,
-                                file_name: file_name.clone(),
-                                hash: hash.clone(),
-                            });
-                            new_count += 1;
+                // Yield every file so OCR progress is visible
+                tokio::task::yield_now().await;
+
+                match oar_ocr::prelude::load_image(file_path) {
+                    Ok(image) => match engine.predict(vec![image]) {
+                        Ok(results) => {
+                            let text = results
+                                .first()
+                                .map(|r| r.concatenated_text(" "))
+                                .unwrap_or_default();
+                            if !text.is_empty() {
+                                kept_entries.push(ArtTextIndexEntry {
+                                    text,
+                                    path: path_str,
+                                    file_name: file_name.clone(),
+                                    hash: hash.clone(),
+                                });
+                                new_count += 1;
+                            }
                         }
-                    }
+                        Err(e) => {
+                            errors.push(ArtTextIndexError {
+                                path: path_str,
+                                reason: format!("OCR识别失败: {e}"),
+                            });
+                        }
+                    },
                     Err(e) => {
                         errors.push(ArtTextIndexError {
                             path: path_str,
-                            reason: format!("OCR识别失败: {e}"),
+                            reason: format!("加载图片失败: {e}"),
                         });
                     }
-                },
-                Err(e) => {
-                    errors.push(ArtTextIndexError {
-                        path: path_str,
-                        reason: format!("加载图片失败: {e}"),
-                    });
                 }
             }
         }
@@ -3130,9 +3235,9 @@ async fn open_file_in_explorer(path: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
+        let select_arg = format!("/select,{}", path.display());
         std::process::Command::new("explorer")
-            .arg("/select,")
-            .arg(&path)
+            .arg(&select_arg)
             .spawn()
             .map_err(|e| format!("打开资源管理器失败: {e}"))?;
     }
@@ -4211,7 +4316,8 @@ fn output_default_quick_paste_from_global_shortcut(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let state = app.state::<AppState>().inner().clone();
         if let Err(e) = output_default_quick_paste_text(app.clone(), state).await {
-            eprintln!("failed to output quick paste default: {e}");
+            eprintln!("[F8] failed to output quick paste default: {e}");
+            let _ = app.emit("quick-paste-toast", format!("F8 输出失败: {e}"));
         }
     });
 }
@@ -4228,6 +4334,55 @@ async fn pause_before_global_text_input() {
     tokio::time::sleep(Duration::from_millis(180)).await;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuickPasteOutputStep {
+    CopyImageToClipboard,
+    CopyHtmlToClipboard,
+    HideQuickPasteWindow,
+    PauseBeforeGlobalInput,
+    PasteClipboard,
+    InputTextGlobally,
+}
+
+fn quick_paste_output_steps(
+    category: &str,
+    quick_paste_window_visible: bool,
+) -> Vec<QuickPasteOutputStep> {
+    let mut steps = Vec::new();
+    if category == "rich" {
+        steps.push(QuickPasteOutputStep::CopyHtmlToClipboard);
+        if quick_paste_window_visible {
+            steps.push(QuickPasteOutputStep::HideQuickPasteWindow);
+        }
+        steps.push(QuickPasteOutputStep::PauseBeforeGlobalInput);
+        steps.push(QuickPasteOutputStep::PasteClipboard);
+        return steps;
+    }
+
+    if category == "image" {
+        steps.push(QuickPasteOutputStep::CopyImageToClipboard);
+        if quick_paste_window_visible {
+            steps.push(QuickPasteOutputStep::HideQuickPasteWindow);
+        }
+        steps.push(QuickPasteOutputStep::PauseBeforeGlobalInput);
+        steps.push(QuickPasteOutputStep::PasteClipboard);
+        return steps;
+    }
+
+    if quick_paste_window_visible {
+        steps.push(QuickPasteOutputStep::HideQuickPasteWindow);
+        steps.push(QuickPasteOutputStep::PauseBeforeGlobalInput);
+    }
+    steps.push(QuickPasteOutputStep::InputTextGlobally);
+    steps
+}
+
+fn is_quick_paste_window_visible(app: &tauri::AppHandle) -> bool {
+    app.get_webview_window(QUICK_PASTE_WINDOW_LABEL)
+        .and_then(|window| window.is_visible().ok())
+        .unwrap_or(false)
+}
+
 fn input_text_globally(text: &str) -> Result<(), String> {
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| format!("failed to init input driver: {e}"))?;
     enigo
@@ -4235,29 +4390,121 @@ fn input_text_globally(text: &str) -> Result<(), String> {
         .map_err(|e| format!("failed to input text: {e}"))
 }
 
+fn paste_clipboard_globally() -> Result<(), String> {
+    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| format!("failed to init input driver: {e}"))?;
+    enigo
+        .key(Key::Control, Direction::Press)
+        .map_err(|e| format!("failed to press paste shortcut: {e}"))?;
+    let paste_result = enigo.key(Key::Unicode('v'), Direction::Click);
+    let release_result = enigo.key(Key::Control, Direction::Release);
+    paste_result.map_err(|e| format!("failed to paste clipboard: {e}"))?;
+    release_result.map_err(|e| format!("failed to release paste shortcut: {e}"))?;
+    Ok(())
+}
+
+fn html_to_plain_text(html: &str) -> String {
+    let mut text = html
+        .replace("<br>", "\n")
+        .replace("<br/>", "\n")
+        .replace("<br />", "\n")
+        .replace("</p>", "\n")
+        .replace("</div>", "\n");
+    let tag_re = Regex::new(r"(?s)<[^>]*>").unwrap();
+    text = tag_re.replace_all(&text, "").to_string();
+    text.replace("&nbsp;", " ")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .trim()
+        .to_string()
+}
+
+fn copy_html_to_clipboard(content: &str) -> Result<(), String> {
+    let alt_text = html_to_plain_text(content);
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("访问剪贴板失败: {e}"))?;
+    clipboard
+        .set_html(content, Some(alt_text.as_str()))
+        .map_err(|e| format!("复制笔记内容到剪贴板失败: {e}"))?;
+    Ok(())
+}
+
+async fn run_quick_paste_output_steps(
+    app: tauri::AppHandle,
+    steps: Vec<QuickPasteOutputStep>,
+    content: &str,
+) -> Result<(), String> {
+    for step in steps {
+        match step {
+            QuickPasteOutputStep::CopyImageToClipboard => copy_image_to_clipboard(content)?,
+            QuickPasteOutputStep::CopyHtmlToClipboard => copy_html_to_clipboard(content)?,
+            QuickPasteOutputStep::HideQuickPasteWindow => hide_quick_paste_window(app.clone()).await?,
+            QuickPasteOutputStep::PauseBeforeGlobalInput => pause_before_global_text_input().await,
+            QuickPasteOutputStep::PasteClipboard => paste_clipboard_globally()?,
+            QuickPasteOutputStep::InputTextGlobally => input_text_globally(content)?,
+        }
+    }
+    Ok(())
+}
+
+fn copy_image_to_clipboard(content: &str) -> Result<(), String> {
+    let img_data: Vec<u8> = if content.starts_with("data:image/") {
+        let comma = content.find(',').ok_or_else(|| "图片数据格式无效".to_string())?;
+        let meta = &content[..comma];
+        let payload = &content[comma + 1..];
+        if !meta.contains(";base64") {
+            return Err("只支持 base64 图片数据".into());
+        }
+        base64_decode(payload)?
+    } else {
+        let file_path = PathBuf::from(content);
+        if !file_path.exists() {
+            return Err(format!("图片文件不存在: {}", file_path.display()));
+        }
+        fs::read(&file_path).map_err(|e| format!("读取图片失败: {e}"))?
+    };
+
+    let img = image::ImageReader::new(std::io::Cursor::new(&img_data))
+        .with_guessed_format()
+        .map_err(|e| format!("识别图片格式失败: {e}"))?
+        .decode()
+        .map_err(|e| format!("解码图片失败: {e}"))?
+        .to_rgba8();
+    let (w, h) = img.dimensions();
+    eprintln!("[F8] image decoded: {w}x{h}");
+    let rgba = img.into_raw();
+
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("访问剪贴板失败: {e}"))?;
+    clipboard
+        .set_image(arboard::ImageData {
+            width: w as usize,
+            height: h as usize,
+            bytes: rgba.into(),
+        })
+        .map_err(|e| format!("复制图片到剪贴板失败: {e}"))?;
+    Ok(())
+}
+
 async fn output_default_quick_paste_text(
     app: tauri::AppHandle,
     state: AppState,
 ) -> Result<(), String> {
-    let content = {
+    let (content, category) = {
         let rt = state.runtime.lock().await;
         let snippets = &rt.config.personal.quick_paste.snippets;
-        snippets
+        match snippets
             .iter()
             .find(|snippet| snippet.is_default)
             .or_else(|| snippets.first())
-            .map(|snippet| snippet.content.clone())
+        {
+            Some(snippet) => (snippet.content.clone(), snippet.category.clone()),
+            None => return Err("请先新建一条快捷内容".into()),
+        }
     };
 
-    let Some(content) = content else {
-        return Err("请先新建一条快捷文本".into());
-    };
+    eprintln!("[F8] category={category}, content_len={}, content_start={:?}", content.len(), &content[..content.len().min(60)]);
 
-    if app.get_webview_window(QUICK_PASTE_WINDOW_LABEL).is_some() {
-        hide_quick_paste_window(app.clone()).await?;
-        pause_before_global_text_input().await;
-    }
-    input_text_globally(&content)
+    let steps = quick_paste_output_steps(&category, is_quick_paste_window_visible(&app));
+    run_quick_paste_output_steps(app, steps, &content).await
 }
 
 fn input_today_date_globally() -> Result<(), String> {
@@ -5436,6 +5683,7 @@ pub fn run() {
             get_config,
             get_quick_paste_config,
             save_quick_paste_config,
+            save_quick_paste_image,
             upsert_quick_paste_snippet,
             delete_quick_paste_snippet,
             set_default_quick_paste_snippet,
@@ -5707,6 +5955,38 @@ mod tests {
     #[test]
     fn db_migration_hotkey_defaults_to_shift_s() {
         assert_eq!(default_db_migration_window_hotkey(), "Shift+S");
+    }
+
+    #[test]
+    fn quick_paste_image_output_plan_pastes_clipboard_image() {
+        assert_eq!(
+            quick_paste_output_steps("image", false),
+            vec![
+                QuickPasteOutputStep::CopyImageToClipboard,
+                QuickPasteOutputStep::PauseBeforeGlobalInput,
+                QuickPasteOutputStep::PasteClipboard,
+            ]
+        );
+    }
+
+    #[test]
+    fn quick_paste_text_output_plan_keeps_direct_text_input() {
+        assert_eq!(
+            quick_paste_output_steps("text", false),
+            vec![QuickPasteOutputStep::InputTextGlobally]
+        );
+    }
+
+    #[test]
+    fn quick_paste_rich_output_plan_pastes_html_clipboard_content() {
+        assert_eq!(
+            quick_paste_output_steps("rich", false),
+            vec![
+                QuickPasteOutputStep::CopyHtmlToClipboard,
+                QuickPasteOutputStep::PauseBeforeGlobalInput,
+                QuickPasteOutputStep::PasteClipboard,
+            ]
+        );
     }
 
     #[test]

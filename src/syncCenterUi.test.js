@@ -109,6 +109,14 @@ test("embedded database workspace can hide its own sidebar and report sidebar st
   assert.match(dbMigrationWorkspaceSource, /defineExpose\(\{[\s\S]*activateProfile/);
 });
 
+test("quick paste preview supports inline editing without an edit button", () => {
+  assert.match(appVueSource, /quick-paste-title-input/);
+  assert.match(appVueSource, /quick-paste-note-editor/);
+  assert.match(appVueSource, /handleQuickPasteInlinePaste/);
+  assert.doesNotMatch(appVueSource, /\{ key: "default", label: "默认" \}/);
+  assert.doesNotMatch(appVueSource, /openQuickPasteEdit\(selectedQuickPasteSnippet\)/);
+});
+
 test("sync center uses one stable resizable sidebar for both modes", () => {
   const syncWorkspaceMarkup = sliceSyncWorkspaceMarkup();
 

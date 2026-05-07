@@ -414,13 +414,16 @@ const quickPaste = reactive({
     isDefault: false,
     createdAt: "",
     updatedAt: "",
+    imageUrl: "",
   },
 });
+
+let quickPasteInlineSaveTimer = 0;
 
 function normalizeQuickPasteSnippets(snippets) {
   return (Array.isArray(snippets) ? snippets : []).map((snippet) => ({
     id: String(snippet.id || ""),
-    title: String(snippet.title || "未命名文本"),
+    title: String(snippet.title || "未命名内容"),
     content: String(snippet.content || ""),
     category: String(snippet.category || "text"),
     favorite: Boolean(snippet.favorite),
@@ -446,24 +449,22 @@ function toQuickPasteSnippetPayload(snippet) {
 const quickPasteCategories = computed(() => [
   { key: "all", label: "全部" },
   { key: "text", label: "文本" },
+  { key: "image", label: "图片" },
   { key: "favorite", label: "常用" },
-  { key: "default", label: "默认" },
 ]);
 
 function getQuickPasteCategoryCount(category) {
   if (category === "all") return quickPaste.config.snippets.length;
   if (category === "favorite") return quickPaste.config.snippets.filter((snippet) => snippet.favorite).length;
-  if (category === "default") return quickPaste.config.snippets.filter((snippet) => snippet.isDefault).length;
   return quickPaste.config.snippets.filter((snippet) => snippet.category === category).length;
 }
 
 const filteredQuickPasteSnippets = computed(() => {
   const query = quickPaste.query.trim().toLowerCase();
-  return quickPaste.config.snippets.filter((snippet) => {
+  const filtered = quickPaste.config.snippets.filter((snippet) => {
     const matchesCategory =
       quickPaste.activeCategory === "all" ||
       (quickPaste.activeCategory === "favorite" && snippet.favorite) ||
-      (quickPaste.activeCategory === "default" && snippet.isDefault) ||
       snippet.category === quickPaste.activeCategory;
     const matchesQuery =
       !query ||
@@ -471,6 +472,10 @@ const filteredQuickPasteSnippets = computed(() => {
       snippet.content.toLowerCase().includes(query);
     return matchesCategory && matchesQuery;
   });
+  // Sort: default snippet first, then rest in original order
+  const def = filtered.filter((s) => s.isDefault);
+  const rest = filtered.filter((s) => !s.isDefault);
+  return [...def, ...rest];
 });
 
 const selectedQuickPasteSnippet = computed(() =>
@@ -558,25 +563,19 @@ function showQuickPasteToast(text, tone = "success") {
 }
 
 function openQuickPasteCreate() {
-  quickPaste.editorMode = "create";
-  Object.assign(quickPaste.draft, {
+  upsertQuickPasteDraft({
     id: "",
-    title: "",
-    content: "",
+    title: "新内容",
+    content: "在这里输入内容",
     category: "text",
     favorite: false,
     isDefault: false,
     createdAt: "",
     updatedAt: "",
-  });
-  quickPaste.editorOpen = true;
-}
-
-function openQuickPasteEdit(snippet) {
-  if (!snippet) return;
-  quickPaste.editorMode = "edit";
-  Object.assign(quickPaste.draft, { ...snippet });
-  quickPaste.editorOpen = true;
+  }).then(() => {
+    quickPaste.activeCategory = "all";
+    showQuickPasteToast("已新建，可直接编辑");
+  }).catch((error) => showQuickPasteToast(String(error), "error"));
 }
 
 async function saveQuickPasteSnippet() {
@@ -584,18 +583,18 @@ async function saveQuickPasteSnippet() {
     showQuickPasteToast("请输入标题", "error");
     return;
   }
-  if (!quickPaste.draft.content.trim()) {
+  if (!quickPaste.draft.content.trim() && quickPaste.draft.category !== "image") {
     showQuickPasteToast("请输入文本内容", "error");
+    return;
+  }
+  if (quickPaste.draft.category === "image" && !quickPaste.draft.imageUrl && !quickPaste.draft.content.trim()) {
+    showQuickPasteToast("请粘贴图片", "error");
     return;
   }
   quickPaste.saving = true;
   try {
-    const snippets = await invoke("upsert_quick_paste_snippet", {
-      snippet: toQuickPasteSnippetPayload(quickPaste.draft),
-    });
-    quickPaste.config.snippets = normalizeQuickPasteSnippets(snippets);
-    const selected = quickPaste.config.snippets.find((item) => item.title === quickPaste.draft.title && item.content === quickPaste.draft.content);
-    quickPaste.selectedId = quickPaste.draft.id || selected?.id || quickPaste.selectedId;
+    const draft = { ...quickPaste.draft };
+    await upsertQuickPasteDraft(draft);
     quickPaste.editorOpen = false;
     showQuickPasteToast("已保存");
   } catch (error) {
@@ -644,12 +643,24 @@ async function setQuickPasteDefault(snippet) {
 
 async function copyQuickPasteSnippet(snippet) {
   if (!snippet?.content) {
-    showQuickPasteToast("没有可复制的文本", "error");
+    showQuickPasteToast("没有可复制的内容", "error");
     return false;
   }
   try {
+    if (snippet.category === "rich") {
+      const html = snippet.content;
+      const text = html.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]+>/g, "").trim();
+      await navigator.clipboard.write([
+        new ClipboardItem({
+          "text/html": new Blob([html], { type: "text/html" }),
+          "text/plain": new Blob([text], { type: "text/plain" }),
+        }),
+      ]);
+      showQuickPasteToast("已复制内容");
+      return true;
+    }
     await navigator.clipboard.writeText(snippet.content);
-    showQuickPasteToast("已复制文本");
+    showQuickPasteToast("已复制内容");
     return true;
   } catch (error) {
     showQuickPasteToast(String(error), "error");
@@ -669,7 +680,260 @@ async function outputQuickPasteSnippet(snippet = selectedQuickPasteSnippet.value
   }
 }
 
+function isQuickPasteImageSnippet(snippet) {
+  return snippet?.category === "image";
+}
+
+function quickPasteImageSrc(snippet) {
+  if (!isQuickPasteImageSnippet(snippet) || !snippet.content) return "";
+  if (/^(data:|blob:|https?:)/i.test(snippet.content)) return snippet.content;
+  return convertFileSrc(snippet.content);
+}
+
+function quickPasteNoteHtml(snippet) {
+  if (!snippet) return "";
+  if (snippet.category === "rich") return snippet.content || "";
+  if (isQuickPasteImageSnippet(snippet)) {
+    const src = quickPasteImageSrc(snippet);
+    return src ? `<p><img src="${src}" alt="${snippet.title || "图片"}"></p>` : "";
+  }
+  return String(snippet.content || "")
+    .split(/\r?\n/)
+    .map((line) => line || "<br>")
+    .map((line) => `<p>${line === "<br>" ? line : escapeHtml(line)}</p>`)
+    .join("");
+}
+
+function fileToDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("读取图片失败"));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function persistQuickPasteImage(dataUrl, title) {
+  if (!String(dataUrl || "").startsWith("data:image/")) return dataUrl;
+  return await invoke("save_quick_paste_image", {
+    dataUrl,
+    fileName: title || "clipboard-image",
+  });
+}
+
+async function upsertQuickPasteDraft(draft) {
+  if (draft.category === "image") {
+    draft.content = await persistQuickPasteImage(draft.content, draft.title);
+  }
+  const snippets = await invoke("upsert_quick_paste_snippet", {
+    snippet: toQuickPasteSnippetPayload(draft),
+  });
+  quickPaste.config.snippets = normalizeQuickPasteSnippets(snippets);
+  const selected = quickPaste.config.snippets.find((item) => item.title === draft.title && item.content === draft.content);
+  quickPaste.selectedId = draft.id || selected?.id || quickPaste.selectedId;
+  return snippets;
+}
+
+async function saveQuickPasteInlineSnippet(snippet, patch = {}) {
+  if (!snippet?.id) return;
+  const next = { ...snippet, ...patch };
+  if (!next.title.trim()) {
+    showQuickPasteToast("请输入标题", "error");
+    return;
+  }
+  if (!next.content.trim()) {
+    showQuickPasteToast(next.category === "image" ? "请粘贴图片" : "请输入文本内容", "error");
+    return;
+  }
+  try {
+    await upsertQuickPasteDraft(next);
+  } catch (error) {
+    showQuickPasteToast(String(error), "error");
+  }
+}
+
+function scheduleQuickPasteInlineSave(snippet, patch = {}) {
+  if (quickPasteInlineSaveTimer) clearTimeout(quickPasteInlineSaveTimer);
+  quickPasteInlineSaveTimer = setTimeout(() => {
+    quickPasteInlineSaveTimer = 0;
+    saveQuickPasteInlineSnippet(snippet, patch);
+  }, 360);
+}
+
+function handleQuickPasteNoteInput(event, snippet = selectedQuickPasteSnippet.value) {
+  if (!snippet?.id) return;
+  const html = event.currentTarget?.innerHTML || "";
+  snippet.content = html;
+  snippet.category = "rich";
+  scheduleQuickPasteInlineSave(snippet, { content: html, category: "rich" });
+}
+
+function handleQuickPasteNoteBlur(event, snippet = selectedQuickPasteSnippet.value) {
+  if (!snippet?.id || snippet.category !== "rich") return;
+  saveQuickPasteInlineSnippet(snippet, {
+    content: event.currentTarget?.innerHTML || "",
+    category: "rich",
+  });
+}
+
+function insertHtmlAtSelection(html) {
+  document.execCommand("insertHTML", false, html);
+}
+
+async function handleQuickPasteInlinePaste(event, snippet = selectedQuickPasteSnippet.value) {
+  if (!snippet?.id) return;
+  const files = Array.from(event.clipboardData?.files || []);
+  const image = files.find((file) => file.type.startsWith("image/"));
+  const text = event.clipboardData?.getData("text/plain") || "";
+  try {
+    if (image) {
+      event.preventDefault();
+      const dataUrl = await fileToDataUrl(image);
+      insertHtmlAtSelection(`<img src="${dataUrl}" alt="${image.name || "图片"}">`);
+      const editor = event.currentTarget;
+      const html = editor?.innerHTML || `${snippet.content || ""}<p><img src="${dataUrl}" alt="${image.name || "图片"}"></p>`;
+      snippet.content = html;
+      snippet.category = "rich";
+      await saveQuickPasteInlineSnippet(snippet, {
+        content: html,
+        category: "rich",
+      });
+      showQuickPasteToast("已插入图片");
+      return;
+    }
+  } catch (error) {
+    showQuickPasteToast(String(error), "error");
+  }
+}
+
+
+async function createQuickPasteImageFromFile(file) {
+  if (!file?.type?.startsWith("image/")) return false;
+  const dataUrl = await fileToDataUrl(file);
+  const title = file.name || `剪贴板图片-${new Date().toLocaleTimeString()}`;
+  await upsertQuickPasteDraft({
+    id: "",
+    title,
+    content: dataUrl,
+    category: "image",
+    favorite: false,
+    isDefault: false,
+    createdAt: "",
+    updatedAt: "",
+  });
+  quickPaste.activeCategory = "all";
+  showQuickPasteToast("已保存图片");
+  return true;
+}
+
+async function createQuickPasteTextFromClipboard(text) {
+  const content = text.trim();
+  if (!content) return false;
+  await upsertQuickPasteDraft({
+    id: "",
+    title: content.slice(0, 24) || "剪贴板文本",
+    content,
+    category: "text",
+    favorite: false,
+    isDefault: false,
+    createdAt: "",
+    updatedAt: "",
+  });
+  quickPaste.activeCategory = "all";
+  showQuickPasteToast("已保存文本");
+  return true;
+}
+
+async function setQuickPasteDraftImage(file) {
+  if (!file?.type?.startsWith("image/")) return false;
+  quickPaste.draft.category = "image";
+  quickPaste.draft.content = await fileToDataUrl(file);
+  quickPaste.draft.imageUrl = quickPaste.draft.content;
+  if (!quickPaste.draft.title.trim()) quickPaste.draft.title = file.name || "剪贴板图片";
+  return true;
+}
+
+async function handleQuickPastePaste(event) {
+  const files = Array.from(event.clipboardData?.files || []);
+  const image = files.find((file) => file.type.startsWith("image/"));
+  const text = event.clipboardData?.getData("text/plain") || "";
+  try {
+    if (quickPaste.editorOpen) {
+      if (image && await setQuickPasteDraftImage(image)) {
+        event.preventDefault();
+        showQuickPasteToast("已粘贴图片");
+      }
+      return;
+    }
+    if (image && await createQuickPasteImageFromFile(image)) {
+      event.preventDefault();
+      return;
+    }
+    if (text.trim() && await createQuickPasteTextFromClipboard(text)) {
+      event.preventDefault();
+    }
+  } catch (error) {
+    showQuickPasteToast(String(error), "error");
+  }
+}
+
+
+async function handleQuickPasteContextMenu() {
+  try {
+    const items = await navigator.clipboard.read();
+    for (const item of items) {
+      const imageType = item.types.find((type) => type.startsWith("image/"));
+      if (imageType) {
+        const blob = await item.getType(imageType);
+        await createQuickPasteImageFromFile(new File([blob], `剪贴板图片-${Date.now()}.png`, { type: imageType }));
+        return;
+      }
+    }
+    const text = await navigator.clipboard.readText();
+    if (await createQuickPasteTextFromClipboard(text)) return;
+    showQuickPasteToast("剪贴板没有可保存的内容", "error");
+  } catch (error) {
+    showQuickPasteToast("请用 Ctrl+V 粘贴保存", "error");
+  }
+}
+
+async function openImageFileLocation(snippet) {
+  const content = snippet?.content;
+  if (!content || !isQuickPasteImageSnippet(snippet)) return;
+  // Only works for local file paths, not data: URLs
+  if (content.startsWith("data:")) {
+    showQuickPasteToast("剪贴板图片未保存到本地", "error");
+    return;
+  }
+  try {
+    await invoke("open_file_in_explorer", { path: content });
+  } catch (error) {
+    showQuickPasteToast(String(error), "error");
+  }
+}
+
+async function copyQuickPasteImage(snippet) {
+  if (!snippet?.content) {
+    showQuickPasteToast("没有可复制的图片", "error");
+    return false;
+  }
+  try {
+    const response = await fetch(quickPasteImageSrc(snippet));
+    const blob = await response.blob();
+    await navigator.clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })]);
+    showQuickPasteToast("已复制图片");
+    return true;
+  } catch (error) {
+    showQuickPasteToast(`复制图片失败: ${String(error)}`, "error");
+    return false;
+  }
+}
+
 async function outputOrCopyQuickPasteSnippet(snippet = selectedQuickPasteSnippet.value) {
+  if (isQuickPasteImageSnippet(snippet)) {
+    await copyQuickPasteImage(snippet);
+    return;
+  }
   if (!snippet?.id) {
     showQuickPasteToast("请选择要输出的文本", "error");
     return;
@@ -4275,6 +4539,13 @@ onMounted(async () => {
     if (isTauriWindow) {
       await listen("quick-paste-toast", (event) => {
         showQuickPasteToast(String(event.payload || ""), "error");
+      }).catch(() => null);
+      await listen("quick-paste-copy-image", async (event) => {
+        const content = event.payload?.content;
+        if (!content) return;
+        const snippet = { content, category: "image" };
+        await copyQuickPasteImage(snippet);
+        await invoke("hide_quick_paste_window").catch(() => {});
       }).catch(() => null);
     }
     return;
@@ -8452,6 +8723,8 @@ function escapeHtml(str) {
     class="quick-paste-shell"
     tabindex="0"
     @keydown="handleQuickPasteKeydown"
+    @paste="handleQuickPastePaste"
+    @contextmenu.prevent="handleQuickPasteContextMenu"
   >
     <header class="quick-paste-header" data-tauri-drag-region>
       <div class="quick-paste-traffic-lights" @pointerdown.stop>
@@ -8478,9 +8751,11 @@ function escapeHtml(str) {
         ></button>
       </div>
       <div class="quick-paste-title-block">
-        <span class="quick-paste-kicker">Quick Paste</span>
-        <h1>快捷粘贴</h1>
-        <p>F7 打开，F8 输出默认文本</p>
+        <img class="quick-paste-logo-mark" src="/quick-paste-logo.png" alt="" draggable="false" />
+        <span class="quick-paste-wordmark" aria-label="快捷粘贴 Quick Paste">
+          <strong>快捷粘贴</strong>
+          <small>QUICK PASTE</small>
+        </span>
       </div>
       <div class="quick-paste-header-actions">
         <button type="button" class="quick-paste-ghost-button" @click="openQuickPasteCreate">新建</button>
@@ -8541,8 +8816,9 @@ function escapeHtml(str) {
             @keydown.enter.stop
           >★</button>
           <span class="quick-paste-item-title">{{ snippet.title }}</span>
-          <span class="quick-paste-item-preview">{{ snippet.content }}</span>
+          <span class="quick-paste-item-preview">{{ isQuickPasteImageSnippet(snippet) ? '图片' : snippet.content }}</span>
           <span class="quick-paste-item-badges">
+            <small v-if="isQuickPasteImageSnippet(snippet)">图片</small>
             <small v-if="snippet.favorite">常用</small>
             <small v-if="snippet.isDefault">默认</small>
           </span>
@@ -8561,37 +8837,40 @@ function escapeHtml(str) {
         <template v-if="selectedQuickPasteSnippet">
           <div class="quick-paste-preview-header">
             <div>
-              <h2>{{ selectedQuickPasteSnippet.title }}</h2>
+              <input
+                v-model="selectedQuickPasteSnippet.title"
+                class="quick-paste-title-input"
+                aria-label="标题"
+                @change="saveQuickPasteInlineSnippet(selectedQuickPasteSnippet)"
+                @blur="saveQuickPasteInlineSnippet(selectedQuickPasteSnippet)"
+              />
               <p>{{ selectedQuickPasteSnippet.category || 'text' }}</p>
             </div>
           </div>
-          <pre class="quick-paste-content-preview">{{ selectedQuickPasteSnippet.content }}</pre>
+          <div
+            :key="selectedQuickPasteSnippet.id"
+            class="quick-paste-note-editor"
+            contenteditable="true"
+            role="textbox"
+            aria-label="内容"
+            data-placeholder="输入文本，或直接粘贴图片"
+            v-html="quickPasteNoteHtml(selectedQuickPasteSnippet)"
+            @input="handleQuickPasteNoteInput($event, selectedQuickPasteSnippet)"
+            @paste="handleQuickPasteInlinePaste($event, selectedQuickPasteSnippet)"
+            @blur="handleQuickPasteNoteBlur($event, selectedQuickPasteSnippet)"
+          ></div>
           <div class="quick-paste-preview-actions">
             <button type="button" @click="setQuickPasteDefault(selectedQuickPasteSnippet)">设为默认</button>
-            <button type="button" @click="openQuickPasteEdit(selectedQuickPasteSnippet)">编辑</button>
+            <button type="button" @click="copyQuickPasteSnippet(selectedQuickPasteSnippet)">复制内容</button>
           </div>
         </template>
         <div v-else class="quick-paste-empty">
-          <h2>暂无文本</h2>
-          <p>新建一条常用文本后，可用 F8 快速输出默认内容。</p>
-          <button type="button" @click="openQuickPasteCreate">新建文本</button>
+          <h2>暂无内容</h2>
+          <p>新建文本，或复制图片后按 Ctrl+V 快速保存。</p>
+          <button type="button" @click="openQuickPasteCreate">新建</button>
         </div>
       </section>
     </main>
-
-    <div v-if="quickPaste.editorOpen" class="quick-paste-modal-backdrop">
-      <form class="quick-paste-modal" @submit.prevent="saveQuickPasteSnippet">
-        <h2>{{ quickPaste.editorMode === 'create' ? '新建文本' : '编辑文本' }}</h2>
-        <label>标题<input v-model="quickPaste.draft.title" placeholder="例如：客服问候语" /></label>
-        <label>内容<textarea v-model="quickPaste.draft.content" rows="8" placeholder="输入要快速输出的文本"></textarea></label>
-        <label class="quick-paste-check"><input v-model="quickPaste.draft.favorite" type="checkbox" /> 设为常用</label>
-        <label class="quick-paste-check"><input v-model="quickPaste.draft.isDefault" type="checkbox" /> 设为默认</label>
-        <div class="quick-paste-modal-actions">
-          <button type="button" @click="quickPaste.editorOpen = false">取消</button>
-          <button type="submit" :disabled="quickPaste.saving">保存</button>
-        </div>
-      </form>
-    </div>
 
     <div v-if="quickPaste.toast.visible" :class="['quick-paste-toast', quickPaste.toast.tone]">
       {{ quickPaste.toast.text }}
