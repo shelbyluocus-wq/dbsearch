@@ -358,7 +358,15 @@ function createTabStripController({
 }
 
 const isTauriWindow = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-const windowLabel = ref("browser");
+function getInitialWindowLabel() {
+  if (!isTauriWindow) return "browser";
+  try {
+    return getCurrentWindow().label || "main";
+  } catch {
+    return "main";
+  }
+}
+const windowLabel = ref(getInitialWindowLabel());
 
 const isPetWindow = computed(() => isTauriWindow && windowLabel.value === "main");
 const isWelcomeWindow = computed(() => isTauriWindow && windowLabel.value === "welcome");
@@ -369,10 +377,343 @@ const isDbMigrationWorkspaceWindow = computed(() =>
   isTauriWindow && windowLabel.value === "db_migration_workspace",
 );
 const isArtTextSearchWindow = computed(() => isTauriWindow && windowLabel.value === "art_text_search");
+const isQuickPasteWindow = computed(() => isTauriWindow && windowLabel.value === "quick_paste");
 const isPanelWindow = computed(() => !isTauriWindow || windowLabel.value === "browser" || windowLabel.value === "panel");
 const FIXED_WEATHER_CITY = "厦门市";
 
-const settingsOpen = ref(false);
+const quickPaste = reactive({
+  loading: false,
+  saving: false,
+  error: "",
+  query: "",
+  activeCategory: "all",
+  selectedId: "",
+  editorOpen: false,
+  editorMode: "create",
+  sidebarWidth: 142,
+  listWidth: 270,
+  resizingPane: "",
+  toast: {
+    visible: false,
+    text: "",
+    tone: "success",
+    timer: null,
+  },
+  config: {
+    enabled: true,
+    openHotkey: "F7",
+    outputHotkey: "F8",
+    snippets: [],
+  },
+  draft: {
+    id: "",
+    title: "",
+    content: "",
+    category: "text",
+    favorite: false,
+    isDefault: false,
+    createdAt: "",
+    updatedAt: "",
+  },
+});
+
+function normalizeQuickPasteSnippets(snippets) {
+  return (Array.isArray(snippets) ? snippets : []).map((snippet) => ({
+    id: String(snippet.id || ""),
+    title: String(snippet.title || "未命名文本"),
+    content: String(snippet.content || ""),
+    category: String(snippet.category || "text"),
+    favorite: Boolean(snippet.favorite),
+    isDefault: Boolean(snippet.is_default ?? snippet.isDefault),
+    createdAt: snippet.created_at ?? snippet.createdAt ?? "",
+    updatedAt: snippet.updated_at ?? snippet.updatedAt ?? "",
+  }));
+}
+
+function toQuickPasteSnippetPayload(snippet) {
+  return {
+    id: snippet.id,
+    title: snippet.title,
+    content: snippet.content,
+    category: snippet.category || "text",
+    favorite: Boolean(snippet.favorite),
+    is_default: Boolean(snippet.isDefault),
+    created_at: snippet.createdAt || "",
+    updated_at: snippet.updatedAt || "",
+  };
+}
+
+const quickPasteCategories = computed(() => [
+  { key: "all", label: "全部" },
+  { key: "text", label: "文本" },
+  { key: "favorite", label: "常用" },
+  { key: "default", label: "默认" },
+]);
+
+function getQuickPasteCategoryCount(category) {
+  if (category === "all") return quickPaste.config.snippets.length;
+  if (category === "favorite") return quickPaste.config.snippets.filter((snippet) => snippet.favorite).length;
+  if (category === "default") return quickPaste.config.snippets.filter((snippet) => snippet.isDefault).length;
+  return quickPaste.config.snippets.filter((snippet) => snippet.category === category).length;
+}
+
+const filteredQuickPasteSnippets = computed(() => {
+  const query = quickPaste.query.trim().toLowerCase();
+  return quickPaste.config.snippets.filter((snippet) => {
+    const matchesCategory =
+      quickPaste.activeCategory === "all" ||
+      (quickPaste.activeCategory === "favorite" && snippet.favorite) ||
+      (quickPaste.activeCategory === "default" && snippet.isDefault) ||
+      snippet.category === quickPaste.activeCategory;
+    const matchesQuery =
+      !query ||
+      snippet.title.toLowerCase().includes(query) ||
+      snippet.content.toLowerCase().includes(query);
+    return matchesCategory && matchesQuery;
+  });
+});
+
+const selectedQuickPasteSnippet = computed(() =>
+  quickPaste.config.snippets.find((snippet) => snippet.id === quickPaste.selectedId) || null,
+);
+
+const quickPasteBodyStyle = computed(() => ({
+  gridTemplateColumns: `${quickPaste.sidebarWidth}px 8px ${quickPaste.listWidth}px 8px minmax(260px, 1fr)`,
+}));
+
+async function closeQuickPasteWindow() {
+  await invoke("hide_quick_paste_window");
+}
+
+async function minimizeQuickPasteWindow() {
+  if (!isTauriWindow) return;
+  await getCurrentWindow().minimize().catch(() => {});
+}
+
+async function toggleQuickPasteZoom() {
+  if (!isTauriWindow) return;
+  const appWindow = getCurrentWindow();
+  const maximized = await appWindow.isMaximized().catch(() => false);
+  if (maximized) await appWindow.unmaximize().catch(() => {});
+  else await appWindow.maximize().catch(() => {});
+}
+
+function stopQuickPastePaneResize() {
+  quickPaste.resizingPane = "";
+  window.removeEventListener("pointermove", handleQuickPastePaneResize);
+  window.removeEventListener("pointerup", stopQuickPastePaneResize);
+  window.removeEventListener("pointercancel", stopQuickPastePaneResize);
+}
+
+function handleQuickPastePaneResize(event) {
+  if (!quickPaste.resizingPane) return;
+  const viewportWidth = window.innerWidth || 720;
+  if (quickPaste.resizingPane === "sidebar") {
+    quickPaste.sidebarWidth = Math.max(118, Math.min(220, event.clientX - 14));
+    return;
+  }
+
+  const listLeft = 14 + quickPaste.sidebarWidth + 8 + 12;
+  const maxListWidth = Math.max(230, viewportWidth - listLeft - 292);
+  quickPaste.listWidth = Math.max(220, Math.min(maxListWidth, event.clientX - listLeft));
+}
+
+function startQuickPastePaneResize(event, pane) {
+  event.preventDefault();
+  quickPaste.resizingPane = pane;
+  window.addEventListener("pointermove", handleQuickPastePaneResize);
+  window.addEventListener("pointerup", stopQuickPastePaneResize, { once: true });
+  window.addEventListener("pointercancel", stopQuickPastePaneResize, { once: true });
+}
+
+async function loadQuickPasteConfig() {
+  quickPaste.loading = true;
+  quickPaste.error = "";
+  try {
+    const quickPasteConfig = await invoke("get_quick_paste_config");
+    quickPaste.config.enabled = quickPasteConfig.enabled ?? true;
+    quickPaste.config.openHotkey = quickPasteConfig.open_hotkey ?? quickPasteConfig.openHotkey ?? "F7";
+    quickPaste.config.outputHotkey = quickPasteConfig.output_hotkey ?? quickPasteConfig.outputHotkey ?? "F8";
+    quickPaste.config.snippets = normalizeQuickPasteSnippets(quickPasteConfig.snippets);
+    if (!quickPaste.selectedId || !quickPaste.config.snippets.some((item) => item.id === quickPaste.selectedId)) {
+      const defaultSnippet = quickPaste.config.snippets.find((item) => item.isDefault);
+      quickPaste.selectedId = defaultSnippet?.id || quickPaste.config.snippets[0]?.id || "";
+    }
+  } catch (error) {
+    quickPaste.error = String(error);
+  } finally {
+    quickPaste.loading = false;
+  }
+}
+
+function showQuickPasteToast(text, tone = "success") {
+  quickPaste.toast.text = text;
+  quickPaste.toast.tone = tone;
+  quickPaste.toast.visible = true;
+  if (quickPaste.toast.timer) clearTimeout(quickPaste.toast.timer);
+  quickPaste.toast.timer = setTimeout(() => {
+    quickPaste.toast.visible = false;
+    quickPaste.toast.timer = null;
+  }, 1800);
+}
+
+function openQuickPasteCreate() {
+  quickPaste.editorMode = "create";
+  Object.assign(quickPaste.draft, {
+    id: "",
+    title: "",
+    content: "",
+    category: "text",
+    favorite: false,
+    isDefault: false,
+    createdAt: "",
+    updatedAt: "",
+  });
+  quickPaste.editorOpen = true;
+}
+
+function openQuickPasteEdit(snippet) {
+  if (!snippet) return;
+  quickPaste.editorMode = "edit";
+  Object.assign(quickPaste.draft, { ...snippet });
+  quickPaste.editorOpen = true;
+}
+
+async function saveQuickPasteSnippet() {
+  if (!quickPaste.draft.title.trim()) {
+    showQuickPasteToast("请输入标题", "error");
+    return;
+  }
+  if (!quickPaste.draft.content.trim()) {
+    showQuickPasteToast("请输入文本内容", "error");
+    return;
+  }
+  quickPaste.saving = true;
+  try {
+    const snippets = await invoke("upsert_quick_paste_snippet", {
+      snippet: toQuickPasteSnippetPayload(quickPaste.draft),
+    });
+    quickPaste.config.snippets = normalizeQuickPasteSnippets(snippets);
+    const selected = quickPaste.config.snippets.find((item) => item.title === quickPaste.draft.title && item.content === quickPaste.draft.content);
+    quickPaste.selectedId = quickPaste.draft.id || selected?.id || quickPaste.selectedId;
+    quickPaste.editorOpen = false;
+    showQuickPasteToast("已保存");
+  } catch (error) {
+    showQuickPasteToast(String(error), "error");
+  } finally {
+    quickPaste.saving = false;
+  }
+}
+
+async function deleteQuickPasteSnippet(snippet) {
+  if (!snippet?.id) return;
+  try {
+    const snippets = await invoke("delete_quick_paste_snippet", { id: snippet.id });
+    quickPaste.config.snippets = normalizeQuickPasteSnippets(snippets);
+    if (quickPaste.selectedId === snippet.id) {
+      quickPaste.selectedId = quickPaste.config.snippets[0]?.id || "";
+    }
+    showQuickPasteToast("已删除");
+  } catch (error) {
+    showQuickPasteToast(String(error), "error");
+  }
+}
+
+async function toggleQuickPasteFavorite(snippet) {
+  if (!snippet) return;
+  try {
+    const snippets = await invoke("upsert_quick_paste_snippet", {
+      snippet: toQuickPasteSnippetPayload({ ...snippet, favorite: !snippet.favorite }),
+    });
+    quickPaste.config.snippets = normalizeQuickPasteSnippets(snippets);
+  } catch (error) {
+    showQuickPasteToast(String(error), "error");
+  }
+}
+
+async function setQuickPasteDefault(snippet) {
+  if (!snippet?.id) return;
+  try {
+    const snippets = await invoke("set_default_quick_paste_snippet", { id: snippet.id });
+    quickPaste.config.snippets = normalizeQuickPasteSnippets(snippets);
+    showQuickPasteToast("已设为默认");
+  } catch (error) {
+    showQuickPasteToast(String(error), "error");
+  }
+}
+
+async function copyQuickPasteSnippet(snippet) {
+  if (!snippet?.content) {
+    showQuickPasteToast("没有可复制的文本", "error");
+    return false;
+  }
+  try {
+    await navigator.clipboard.writeText(snippet.content);
+    showQuickPasteToast("已复制文本");
+    return true;
+  } catch (error) {
+    showQuickPasteToast(String(error), "error");
+    return false;
+  }
+}
+
+async function outputQuickPasteSnippet(snippet = selectedQuickPasteSnippet.value) {
+  if (!snippet?.id) {
+    showQuickPasteToast("请选择要输出的文本", "error");
+    return;
+  }
+  try {
+    await invoke("output_quick_paste_snippet", { id: snippet.id });
+  } catch (error) {
+    showQuickPasteToast(String(error), "error");
+  }
+}
+
+async function outputOrCopyQuickPasteSnippet(snippet = selectedQuickPasteSnippet.value) {
+  if (!snippet?.id) {
+    showQuickPasteToast("请选择要输出的文本", "error");
+    return;
+  }
+  try {
+    await invoke("output_quick_paste_snippet", { id: snippet.id });
+  } catch (error) {
+    await copyQuickPasteSnippet(snippet);
+  }
+}
+
+function moveQuickPasteSelection(delta) {
+  const items = filteredQuickPasteSnippets.value;
+  if (!items.length) return;
+  const currentIndex = items.findIndex((item) => item.id === quickPaste.selectedId);
+  const nextIndex = currentIndex < 0 ? 0 : Math.max(0, Math.min(items.length - 1, currentIndex + delta));
+  quickPaste.selectedId = items[nextIndex].id;
+}
+
+async function handleQuickPasteKeydown(event) {
+  const tag = event.target?.tagName?.toLowerCase();
+  const isTyping = tag === "input" || tag === "textarea" || event.target?.isContentEditable;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    if (quickPaste.editorOpen) quickPaste.editorOpen = false;
+    else await invoke("hide_quick_paste_window");
+    return;
+  }
+  if (!isTyping && event.key === "Enter") {
+    event.preventDefault();
+    await outputOrCopyQuickPasteSnippet();
+    return;
+  }
+  if (!isTyping && event.key === "ArrowDown") {
+    event.preventDefault();
+    moveQuickPasteSelection(1);
+  }
+  if (!isTyping && event.key === "ArrowUp") {
+    event.preventDefault();
+    moveQuickPasteSelection(-1);
+  }
+}
+
+
 const settingsTab = ref(-1);
 const SETTINGS_TABS = [
   { id: 'connection', label: '连接', icon: '\u{1F5C4}' },
@@ -889,6 +1230,7 @@ let unlistenPetLockChanged = null;
 let unlistenMenuOpened = null;
 let unlistenPetMoved = null;
 let unlistenSearchFound = null;
+let unlistenArtTextIndexProgress = null;
 let unlistenPetIdleStatesChanged = null;
 let unlistenPetIdlePreview = null;
 let welcomeCloseTimer = null;
@@ -1673,7 +2015,17 @@ const artTextIndexBuiltAt = ref("");
 const artTextProgressCurrent = ref(0);
 const artTextProgressTotal = ref(0);
 const artTextProgressFile = ref("");
+const artTextProgressPhase = ref("");
 const artTextMessage = ref("");
+const artTextScanningDirs = ref(false);
+const artTextSubDirs = ref([]);
+
+const artTextAllSubDirsSelected = computed(() =>
+  artTextSubDirs.value.length > 0 && artTextSubDirs.value.every(d => d.selected)
+);
+const artTextSelectedSubDirCount = computed(() =>
+  artTextSubDirs.value.filter(d => d.selected).length
+);
 let artTextSearchDebounce = null;
 
 const artTextProgressPercent = computed(() => {
@@ -1706,6 +2058,42 @@ async function addArtTextDir() {
   }
 }
 
+async function scanArtTextSubDirs() {
+  if (artTextDirs.value.length === 0) {
+    artTextMessage.value = "请先添加一个目录";
+    return;
+  }
+  artTextScanningDirs.value = true;
+  artTextMessage.value = "";
+  try {
+    // Scan the first (most recently added) directory
+    const targetDir = artTextDirs.value[artTextDirs.value.length - 1];
+    const result = await invoke("scan_art_text_sub_dirs", { dir: targetDir });
+    artTextSubDirs.value = result.map(d => ({ ...d, selected: true }));
+    if (result.length === 0) {
+      artTextMessage.value = "该目录下未找到含图片的子目录";
+    }
+  } catch (e) {
+    artTextMessage.value = String(e);
+  } finally {
+    artTextScanningDirs.value = false;
+  }
+}
+
+function toggleAllSubDirs() {
+  const allSelected = artTextAllSubDirsSelected.value;
+  artTextSubDirs.value.forEach(d => { d.selected = !allSelected; });
+}
+
+async function confirmSubDirSelection() {
+  const selected = artTextSubDirs.value.filter(d => d.selected).map(d => d.path);
+  if (selected.length === 0) return;
+  artTextDirs.value = selected;
+  await invoke("save_art_text_search_dirs", { dirs: selected });
+  artTextSubDirs.value = [];
+  artTextMessage.value = `已选择 ${selected.length} 个目录，可以开始构建索引`;
+}
+
 async function removeArtTextDir(index) {
   artTextDirs.value.splice(index, 1);
   try {
@@ -1720,9 +2108,14 @@ async function buildArtTextIndex() {
   artTextProgressTotal.value = 0;
   artTextProgressFile.value = "";
   try {
-    const index = await invoke("build_art_text_index");
-    artTextIndexBuiltAt.value = index.builtAt || "";
-    artTextMessage.value = `索引构建完成，共 ${index.entries.length} 条记录`;
+    const result = await invoke("build_art_text_index");
+    artTextIndexBuiltAt.value = result.index.builtAt || "";
+    const parts = [`索引共 ${result.index.entries.length} 条记录`];
+    if (result.new_count > 0) parts.push(`新增 ${result.new_count}`);
+    if (result.moved_count > 0) parts.push(`移动/重命名 ${result.moved_count}`);
+    if (result.removed_count > 0) parts.push(`已移除 ${result.removed_count}`);
+    if (result.error_count > 0) parts.push(`失败 ${result.error_count}`);
+    artTextMessage.value = parts.join("，");
   } catch (e) {
     artTextMessage.value = String(e);
     console.warn("Build index failed:", e);
@@ -1789,17 +2182,20 @@ function artTextSearchHeaderPointerDown(event) {
   getCurrentWindow().startDragging().catch(() => {});
 }
 
-// Load art text dirs on mount if in art text search window
-if (isArtTextSearchWindow.value) {
-  loadArtTextDirs();
-  loadArtTextIndexInfo();
-  // Listen for progress events
-  listen("art-text-index-progress", (event) => {
-    const { current, total, currentFile } = event.payload;
-    artTextProgressCurrent.value = current;
-    artTextProgressTotal.value = total;
-    artTextProgressFile.value = currentFile || "";
-  });
+function handleArtTextIndexProgress(event) {
+  const { current, total, currentFile, phase } = event.payload || {};
+  artTextProgressCurrent.value = Number(current) || 0;
+  artTextProgressTotal.value = Number(total) || 0;
+  artTextProgressFile.value = currentFile || "";
+  artTextProgressPhase.value = phase || "";
+}
+
+async function initArtTextSearchWindow() {
+  await loadArtTextDirs();
+  await loadArtTextIndexInfo();
+  if (isTauriWindow && !unlistenArtTextIndexProgress) {
+    unlistenArtTextIndexProgress = await listen("art-text-index-progress", handleArtTextIndexProgress);
+  }
 }
 
 async function openSyncTargetDir() {
@@ -3874,6 +4270,16 @@ onMounted(async () => {
   }
   tableDetailView.value = normalizeTableDefaultView(config.personal.table_default_view);
 
+  if (isQuickPasteWindow.value) {
+    await loadQuickPasteConfig();
+    if (isTauriWindow) {
+      await listen("quick-paste-toast", (event) => {
+        showQuickPasteToast(String(event.payload || ""), "error");
+      }).catch(() => null);
+    }
+    return;
+  }
+
   if (isPanelWindow.value) {
     if (isTauriWindow && config.shared.db.host && config.shared.db.database) {
       summaryText.value = "正在连接数据库...";
@@ -3939,6 +4345,11 @@ onMounted(async () => {
         selectSyncCenterMode(typeof payload === "string" ? payload : payload?.mode);
       });
     }
+    return;
+  }
+
+  if (isArtTextSearchWindow.value) {
+    await initArtTextSearchWindow();
     return;
   }
 
@@ -4061,6 +4472,11 @@ onMounted(async () => {
 });
 
 onBeforeUnmount(() => {
+  stopQuickPastePaneResize();
+  if (quickPaste.toast.timer) {
+    clearTimeout(quickPaste.toast.timer);
+    quickPaste.toast.timer = null;
+  }
   if (welcomeCloseTimer) {
     clearTimeout(welcomeCloseTimer);
     welcomeCloseTimer = null;
@@ -4106,6 +4522,10 @@ onBeforeUnmount(() => {
   if (unlistenSearchFound) {
     unlistenSearchFound();
     unlistenSearchFound = null;
+  }
+  if (unlistenArtTextIndexProgress) {
+    unlistenArtTextIndexProgress();
+    unlistenArtTextIndexProgress = null;
   }
   if (unlistenPetIdleStatesChanged) {
     unlistenPetIdleStatesChanged();
@@ -8027,6 +8447,157 @@ function escapeHtml(str) {
     </section>
   </div>
 
+  <section
+    v-else-if="isQuickPasteWindow"
+    class="quick-paste-shell"
+    tabindex="0"
+    @keydown="handleQuickPasteKeydown"
+  >
+    <header class="quick-paste-header" data-tauri-drag-region>
+      <div class="quick-paste-traffic-lights" @pointerdown.stop>
+        <button
+          type="button"
+          class="quick-paste-traffic quick-paste-traffic--close"
+          aria-label="关闭快捷粘贴"
+          title="关闭"
+          @click="closeQuickPasteWindow"
+        ></button>
+        <button
+          type="button"
+          class="quick-paste-traffic quick-paste-traffic--minimize"
+          aria-label="最小化快捷粘贴"
+          title="最小化"
+          @click="minimizeQuickPasteWindow"
+        ></button>
+        <button
+          type="button"
+          class="quick-paste-traffic quick-paste-traffic--zoom"
+          aria-label="最大化或还原快捷粘贴"
+          title="最大化/还原"
+          @click="toggleQuickPasteZoom"
+        ></button>
+      </div>
+      <div class="quick-paste-title-block">
+        <span class="quick-paste-kicker">Quick Paste</span>
+        <h1>快捷粘贴</h1>
+        <p>F7 打开，F8 输出默认文本</p>
+      </div>
+      <div class="quick-paste-header-actions">
+        <button type="button" class="quick-paste-ghost-button" @click="openQuickPasteCreate">新建</button>
+      </div>
+    </header>
+
+    <main class="quick-paste-body" :style="quickPasteBodyStyle">
+      <aside class="quick-paste-sidebar">
+        <input v-model="quickPaste.query" class="quick-paste-search" placeholder="搜索标题或内容" />
+        <nav class="quick-paste-categories" aria-label="快捷粘贴分类">
+          <button
+            v-for="category in quickPasteCategories"
+            :key="category.key"
+            type="button"
+            :class="['quick-paste-category', { active: quickPaste.activeCategory === category.key }]"
+            @click="quickPaste.activeCategory = category.key"
+          >
+            <span>{{ category.label }}</span>
+            <small>{{ getQuickPasteCategoryCount(category.key) }}</small>
+          </button>
+        </nav>
+      </aside>
+
+      <div
+        class="quick-paste-pane-resizer"
+        role="separator"
+        aria-label="调整分类栏宽度"
+        @pointerdown="startQuickPastePaneResize($event, 'sidebar')"
+      ></div>
+
+      <section class="quick-paste-list-pane">
+        <div
+          v-for="snippet in filteredQuickPasteSnippets"
+          :key="snippet.id"
+          :class="['quick-paste-list-item', { active: quickPaste.selectedId === snippet.id }]"
+          role="button"
+          tabindex="0"
+          @click="quickPaste.selectedId = snippet.id"
+          @dblclick="outputOrCopyQuickPasteSnippet(snippet)"
+          @keydown.enter.prevent="outputOrCopyQuickPasteSnippet(snippet)"
+        >
+          <button
+            type="button"
+            class="quick-paste-item-delete"
+            aria-label="删除文本"
+            title="删除"
+            @click.stop="deleteQuickPasteSnippet(snippet)"
+            @dblclick.stop
+            @keydown.enter.stop
+          >×</button>
+          <button
+            type="button"
+            :class="['quick-paste-item-star', { active: snippet.favorite }]"
+            :aria-label="snippet.favorite ? '取消常用' : '设为常用'"
+            :title="snippet.favorite ? '取消常用' : '设为常用'"
+            @click.stop="toggleQuickPasteFavorite(snippet)"
+            @dblclick.stop
+            @keydown.enter.stop
+          >★</button>
+          <span class="quick-paste-item-title">{{ snippet.title }}</span>
+          <span class="quick-paste-item-preview">{{ snippet.content }}</span>
+          <span class="quick-paste-item-badges">
+            <small v-if="snippet.favorite">常用</small>
+            <small v-if="snippet.isDefault">默认</small>
+          </span>
+        </div>
+        <div v-if="!filteredQuickPasteSnippets.length" class="quick-paste-empty-list">暂无匹配文本</div>
+      </section>
+
+      <div
+        class="quick-paste-pane-resizer"
+        role="separator"
+        aria-label="调整列表栏宽度"
+        @pointerdown="startQuickPastePaneResize($event, 'list')"
+      ></div>
+
+      <section class="quick-paste-preview">
+        <template v-if="selectedQuickPasteSnippet">
+          <div class="quick-paste-preview-header">
+            <div>
+              <h2>{{ selectedQuickPasteSnippet.title }}</h2>
+              <p>{{ selectedQuickPasteSnippet.category || 'text' }}</p>
+            </div>
+          </div>
+          <pre class="quick-paste-content-preview">{{ selectedQuickPasteSnippet.content }}</pre>
+          <div class="quick-paste-preview-actions">
+            <button type="button" @click="setQuickPasteDefault(selectedQuickPasteSnippet)">设为默认</button>
+            <button type="button" @click="openQuickPasteEdit(selectedQuickPasteSnippet)">编辑</button>
+          </div>
+        </template>
+        <div v-else class="quick-paste-empty">
+          <h2>暂无文本</h2>
+          <p>新建一条常用文本后，可用 F8 快速输出默认内容。</p>
+          <button type="button" @click="openQuickPasteCreate">新建文本</button>
+        </div>
+      </section>
+    </main>
+
+    <div v-if="quickPaste.editorOpen" class="quick-paste-modal-backdrop">
+      <form class="quick-paste-modal" @submit.prevent="saveQuickPasteSnippet">
+        <h2>{{ quickPaste.editorMode === 'create' ? '新建文本' : '编辑文本' }}</h2>
+        <label>标题<input v-model="quickPaste.draft.title" placeholder="例如：客服问候语" /></label>
+        <label>内容<textarea v-model="quickPaste.draft.content" rows="8" placeholder="输入要快速输出的文本"></textarea></label>
+        <label class="quick-paste-check"><input v-model="quickPaste.draft.favorite" type="checkbox" /> 设为常用</label>
+        <label class="quick-paste-check"><input v-model="quickPaste.draft.isDefault" type="checkbox" /> 设为默认</label>
+        <div class="quick-paste-modal-actions">
+          <button type="button" @click="quickPaste.editorOpen = false">取消</button>
+          <button type="submit" :disabled="quickPaste.saving">保存</button>
+        </div>
+      </form>
+    </div>
+
+    <div v-if="quickPaste.toast.visible" :class="['quick-paste-toast', quickPaste.toast.tone]">
+      {{ quickPaste.toast.text }}
+    </div>
+  </section>
+
   <main
     v-else-if="isPanelWindow"
     :class="['app-shell', 'open', 'panel-shell', { 'reduced-transparency': reducedTransparencyEnabled }]"
@@ -9134,6 +9705,9 @@ function escapeHtml(str) {
         </div>
         <div class="ats-dir-actions">
           <button class="glass-btn-primary ats-btn-sm" @click="addArtTextDir">+ 添加目录</button>
+          <button class="glass-btn-primary ats-btn-sm" :disabled="artTextScanningDirs" @click="scanArtTextSubDirs">
+            {{ artTextScanningDirs ? '扫描中...' : '扫描子目录' }}
+          </button>
           <button class="glass-btn-primary" :disabled="artTextBuilding || artTextDirs.length === 0" @click="buildArtTextIndex">
             {{ artTextBuilding ? '构建中...' : '开始构建索引' }}
           </button>
@@ -9143,9 +9717,36 @@ function escapeHtml(str) {
           <div class="ats-progress-bar">
             <div class="ats-progress-fill" :style="{ width: artTextProgressPercent + '%' }"></div>
           </div>
-          <span class="ats-progress-text">{{ artTextProgressCurrent }}/{{ artTextProgressTotal }} {{ artTextProgressFile }}</span>
+          <span class="ats-progress-text">
+            <template v-if="artTextProgressPhase === 'collect'">{{ artTextProgressFile || `已扫描 ${artTextProgressCurrent} 个目录` }}</template>
+            <template v-else-if="artTextProgressPhase === 'hash'">{{ artTextProgressFile || `扫描 ${artTextProgressCurrent}/${artTextProgressTotal}` }}</template>
+            <template v-else>识别 {{ artTextProgressCurrent }}/{{ artTextProgressTotal }} {{ artTextProgressFile }}</template>
+          </span>
         </div>
       </div>
+
+      <!-- Subdirectory selection -->
+      <div v-if="artTextSubDirs.length > 0" class="glass-card ats-card">
+        <h4 class="glass-card-title">
+          子目录（{{ artTextSubDirs.length }} 个含图片）
+          <label class="ats-select-all">
+            <input type="checkbox" :checked="artTextAllSubDirsSelected" @change="toggleAllSubDirs" /> 全选
+          </label>
+        </h4>
+        <div class="ats-subdir-list">
+          <label v-for="d in artTextSubDirs" :key="d.path" class="ats-subdir-item">
+            <input type="checkbox" v-model="d.selected" />
+            <span class="ats-subdir-name">{{ d.name }}</span>
+            <span class="ats-subdir-count">{{ d.imageCount }} 张</span>
+          </label>
+        </div>
+        <div class="ats-dir-actions">
+          <button class="glass-btn-primary ats-btn-sm" :disabled="artTextSelectedSubDirCount === 0" @click="confirmSubDirSelection">
+            确认选择（{{ artTextSelectedSubDirCount }} 个目录）
+          </button>
+        </div>
+      </div>
+
       <div v-if="artTextMessage" class="ats-message" :class="{ 'ats-message-error': artTextMessage.startsWith('初始化') || artTextMessage.startsWith('请先') }">{{ artTextMessage }}</div>
       <input
         v-model="artTextQuery"

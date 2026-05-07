@@ -22,6 +22,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::{
     menu::{Menu, MenuItemBuilder},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
@@ -47,6 +48,8 @@ struct AppState {
     panel_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     panel_window_size_sync: Arc<std::sync::RwLock<Option<PanelWindowSize>>>,
     quick_date_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
+    quick_paste_open_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
+    quick_paste_output_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     sync_window_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     db_migration_window_hotkey_sync: Arc<std::sync::RwLock<Option<String>>>,
     db_migration_window_size_sync: Arc<std::sync::RwLock<Option<DbMigrationWindowSize>>>,
@@ -64,6 +67,8 @@ impl Default for AppState {
             panel_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             panel_window_size_sync: Arc::new(std::sync::RwLock::new(None)),
             quick_date_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
+            quick_paste_open_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
+            quick_paste_output_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             sync_window_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             db_migration_window_hotkey_sync: Arc::new(std::sync::RwLock::new(None)),
             db_migration_window_size_sync: Arc::new(std::sync::RwLock::new(None)),
@@ -84,6 +89,8 @@ struct RuntimeState {
     panel_open_settings_pending: bool,
     registered_hotkey: Option<String>,
     registered_quick_date_hotkey: Option<String>,
+    registered_quick_paste_open_hotkey: Option<String>,
+    registered_quick_paste_output_hotkey: Option<String>,
     registered_sync_window_hotkey: Option<String>,
     registered_db_migration_window_hotkey: Option<String>,
     sync_running: bool,
@@ -98,6 +105,7 @@ const PET_MENU_WINDOW_LABEL: &str = "pet_menu";
 const SYNC_WORKSPACE_WINDOW_LABEL: &str = "sync_workspace";
 const DB_MIGRATION_WORKSPACE_WINDOW_LABEL: &str = "db_migration_workspace";
 const ART_TEXT_SEARCH_WINDOW_LABEL: &str = "art_text_search";
+const QUICK_PASTE_WINDOW_LABEL: &str = "quick_paste";
 const WELCOME_WINDOW_WIDTH: f64 = 720.0;
 const WELCOME_WINDOW_HEIGHT: f64 = 320.0;
 const UPDATE_ANNOUNCEMENT_WINDOW_WIDTH: f64 = 620.0;
@@ -122,8 +130,14 @@ const DB_MIGRATION_WORKSPACE_MIN_WIDTH: f64 = 980.0;
 const DB_MIGRATION_WORKSPACE_MIN_HEIGHT: f64 = 660.0;
 const ART_TEXT_SEARCH_WIDTH: f64 = 620.0;
 const ART_TEXT_SEARCH_HEIGHT: f64 = 520.0;
+const QUICK_PASTE_WINDOW_WIDTH: f64 = 740.0;
+const QUICK_PASTE_WINDOW_HEIGHT: f64 = 570.0;
+const QUICK_PASTE_WINDOW_MIN_WIDTH: f64 = 740.0;
+const QUICK_PASTE_WINDOW_MIN_HEIGHT: f64 = 570.0;
 const DEMO_FEATURE_TEST_TABLE: &str = "demo_feature_test";
 const DEFAULT_DB_MIGRATION_WINDOW_HOTKEY: &str = "Shift+S";
+const DEFAULT_QUICK_PASTE_OPEN_HOTKEY: &str = "F7";
+const DEFAULT_QUICK_PASTE_OUTPUT_HOTKEY: &str = "F8";
 const APP_DISPLAY_NAME: &str = "鹰捷";
 const TRAY_ICON_ID: &str = "main_tray";
 const TRAY_MENU_OPEN_PANEL_ID: &str = "tray-open-panel";
@@ -174,7 +188,11 @@ fn resolve_tray_menu_action(id: impl AsRef<str>) -> Option<TrayMenuAction> {
 
 fn close_request_action_for_window(label: &str) -> WindowCloseAction {
     match label {
-        PANEL_WINDOW_LABEL | SYNC_WORKSPACE_WINDOW_LABEL | DB_MIGRATION_WORKSPACE_WINDOW_LABEL | ART_TEXT_SEARCH_WINDOW_LABEL => {
+        PANEL_WINDOW_LABEL
+        | SYNC_WORKSPACE_WINDOW_LABEL
+        | DB_MIGRATION_WORKSPACE_WINDOW_LABEL
+        | ART_TEXT_SEARCH_WINDOW_LABEL
+        | QUICK_PASTE_WINDOW_LABEL => {
             WindowCloseAction::HideToTray
         }
         _ => WindowCloseAction::HideWindow,
@@ -226,6 +244,54 @@ struct UpdateAnnouncement {
     version: String,
     notes: String,
     pub_date: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct QuickPasteSnippet {
+    id: String,
+    title: String,
+    content: String,
+    category: String,
+    favorite: bool,
+    is_default: bool,
+    created_at: String,
+    updated_at: String,
+}
+
+impl Default for QuickPasteSnippet {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            title: String::new(),
+            content: String::new(),
+            category: "text".into(),
+            favorite: false,
+            is_default: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+struct QuickPasteConfig {
+    enabled: bool,
+    open_hotkey: String,
+    output_hotkey: String,
+    snippets: Vec<QuickPasteSnippet>,
+}
+
+impl Default for QuickPasteConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            open_hotkey: DEFAULT_QUICK_PASTE_OPEN_HOTKEY.into(),
+            output_hotkey: DEFAULT_QUICK_PASTE_OUTPUT_HOTKEY.into(),
+            snippets: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -294,6 +360,8 @@ struct PersonalConfig {
     last_update_announcement_version: Option<String>,
     #[serde(default)]
     art_text_search_dirs: Vec<String>,
+    #[serde(default)]
+    quick_paste: QuickPasteConfig,
 }
 fn default_true() -> bool {
     true
@@ -318,6 +386,81 @@ fn default_startup_welcome_text() -> String {
 }
 fn default_startup_welcome_mode() -> String {
     "handwriting".into()
+}
+
+fn now_rfc3339() -> String {
+    Utc::now().to_rfc3339()
+}
+
+fn sanitize_quick_paste_snippet(mut snippet: QuickPasteSnippet) -> Option<QuickPasteSnippet> {
+    snippet.title = snippet.title.trim().to_string();
+    snippet.content = snippet.content.trim().to_string();
+    snippet.category = snippet.category.trim().to_string();
+    if snippet.category.is_empty() {
+        snippet.category = "text".into();
+    }
+    if snippet.title.is_empty() || snippet.content.is_empty() {
+        return None;
+    }
+    Some(snippet)
+}
+
+fn enforce_single_quick_paste_default(snippets: &mut [QuickPasteSnippet]) {
+    let mut default_seen = false;
+    for snippet in snippets {
+        if snippet.is_default && !default_seen {
+            default_seen = true;
+        } else {
+            snippet.is_default = false;
+        }
+    }
+}
+
+fn sanitize_quick_paste_config(mut config: QuickPasteConfig) -> QuickPasteConfig {
+    if config.open_hotkey.trim().is_empty() {
+        config.open_hotkey = DEFAULT_QUICK_PASTE_OPEN_HOTKEY.into();
+    } else {
+        config.open_hotkey = config.open_hotkey.trim().to_string();
+    }
+
+    if config.output_hotkey.trim().is_empty() {
+        config.output_hotkey = DEFAULT_QUICK_PASTE_OUTPUT_HOTKEY.into();
+    } else {
+        config.output_hotkey = config.output_hotkey.trim().to_string();
+    }
+
+    config.snippets = config
+        .snippets
+        .into_iter()
+        .filter_map(sanitize_quick_paste_snippet)
+        .collect();
+    enforce_single_quick_paste_default(&mut config.snippets);
+    config
+}
+
+fn validate_quick_paste_hotkeys(personal: &PersonalConfig, next: &QuickPasteConfig) -> Result<(), String> {
+    let open = next.open_hotkey.trim();
+    let output = next.output_hotkey.trim();
+    if open.is_empty() || output.is_empty() {
+        return Err("快捷粘贴快捷键不能为空".into());
+    }
+    if open.eq_ignore_ascii_case(output) {
+        return Err("打开快捷粘贴和输出默认文本不能使用同一个快捷键".into());
+    }
+    let conflicts = [
+        (&personal.hotkey, "主面板快捷键"),
+        (&personal.quick_date_hotkey, "快速日期快捷键"),
+        (&personal.sync_window_hotkey, "同步窗口快捷键"),
+        (&personal.db_migration_window_hotkey, "数据库迁移快捷键"),
+    ];
+    for (existing, label) in conflicts {
+        if !existing.trim().is_empty()
+            && (open.eq_ignore_ascii_case(existing) || output.eq_ignore_ascii_case(existing))
+        {
+            return Err(format!("快捷粘贴快捷键与{label}冲突"));
+        }
+    }
+    Ok(())
 }
 
 fn sanitize_db_migration_window_size(
@@ -653,6 +796,7 @@ impl Default for PersonalConfig {
             pending_update_announcement: None,
             last_update_announcement_version: None,
             art_text_search_dirs: Vec::new(),
+            quick_paste: QuickPasteConfig::default(),
         }
     }
 }
@@ -1673,6 +1817,129 @@ async fn export_tables_xlsx_batch(
 async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
     Ok(state.runtime.lock().await.config.clone())
 }
+
+#[tauri::command]
+async fn get_quick_paste_config(state: State<'_, AppState>) -> Result<QuickPasteConfig, String> {
+    let rt = state.runtime.lock().await;
+    Ok(sanitize_quick_paste_config(rt.config.personal.quick_paste.clone()))
+}
+
+#[tauri::command]
+async fn save_quick_paste_config(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    config: QuickPasteConfig,
+) -> Result<QuickPasteConfig, String> {
+    let next = sanitize_quick_paste_config(config);
+    {
+        let mut rt = state.runtime.lock().await;
+        validate_quick_paste_hotkeys(&rt.config.personal, &next)?;
+        rt.config.personal.quick_paste = next.clone();
+        save_config_to_disk(&app, &rt.config)?;
+    }
+    register_quick_paste_hotkeys(&app, state.inner()).await?;
+    Ok(next)
+}
+
+#[tauri::command]
+async fn upsert_quick_paste_snippet(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    snippet: QuickPasteSnippet,
+) -> Result<Vec<QuickPasteSnippet>, String> {
+    let mut snippet = sanitize_quick_paste_snippet(snippet).ok_or_else(|| "请填写标题和文本内容".to_string())?;
+    let now = now_rfc3339();
+    let mut rt = state.runtime.lock().await;
+    let snippets = &mut rt.config.personal.quick_paste.snippets;
+
+    if snippet.id.trim().is_empty() {
+        snippet.id = format!("quick-paste-{}", Utc::now().timestamp_millis());
+        snippet.created_at = now.clone();
+    }
+    snippet.updated_at = now.clone();
+
+    if let Some(existing) = snippets.iter_mut().find(|item| item.id == snippet.id) {
+        if snippet.created_at.trim().is_empty() {
+            snippet.created_at = existing.created_at.clone();
+        }
+        *existing = snippet;
+    } else {
+        if snippet.created_at.trim().is_empty() {
+            snippet.created_at = now;
+        }
+        snippets.push(snippet);
+    }
+
+    enforce_single_quick_paste_default(snippets);
+    let result = snippets.clone();
+    save_config_to_disk(&app, &rt.config)?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn delete_quick_paste_snippet(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<QuickPasteSnippet>, String> {
+    let mut rt = state.runtime.lock().await;
+    rt.config.personal.quick_paste.snippets.retain(|snippet| snippet.id != id);
+    let result = rt.config.personal.quick_paste.snippets.clone();
+    save_config_to_disk(&app, &rt.config)?;
+    Ok(result)
+}
+
+#[tauri::command]
+async fn set_default_quick_paste_snippet(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<Vec<QuickPasteSnippet>, String> {
+    let mut rt = state.runtime.lock().await;
+    let mut found = false;
+    for snippet in &mut rt.config.personal.quick_paste.snippets {
+        let is_match = snippet.id == id;
+        snippet.is_default = is_match;
+        found |= is_match;
+    }
+    if !found {
+        return Err("找不到要设为默认的文本".into());
+    }
+    let result = rt.config.personal.quick_paste.snippets.clone();
+    save_config_to_disk(&app, &rt.config)?;
+    Ok(result)
+}
+#[tauri::command]
+async fn output_quick_paste_snippet(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    let content = {
+        let rt = state.runtime.lock().await;
+        rt.config
+            .personal
+            .quick_paste
+            .snippets
+            .iter()
+            .find(|snippet| snippet.id == id)
+            .map(|snippet| snippet.content.clone())
+    }
+    .ok_or_else(|| "找不到要输出的文本".to_string())?;
+
+    hide_quick_paste_window(app).await?;
+    pause_before_global_text_input().await;
+    input_text_globally(&content)
+}
+
+#[tauri::command]
+async fn output_default_quick_paste_snippet(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    output_default_quick_paste_text(app, state.inner().clone()).await
+}
+
 #[tauri::command]
 async fn save_config(
     config: AppConfig,
@@ -1997,6 +2264,135 @@ async fn toggle_sync_workspace_window(app: tauri::AppHandle) -> Result<(), Strin
     Ok(())
 }
 
+async fn register_quick_paste_hotkeys(
+    app: &tauri::AppHandle,
+    state: &AppState,
+) -> Result<(), String> {
+    let open = {
+        let rt = state.runtime.lock().await;
+        normalize_hotkey_for_plugin(&rt.config.personal.quick_paste.open_hotkey)?
+    };
+    let output = {
+        let rt = state.runtime.lock().await;
+        normalize_hotkey_for_plugin(&rt.config.personal.quick_paste.output_hotkey)?
+    };
+    if open == output {
+        return Err("打开快捷粘贴和输出默认文本不能使用同一个快捷键".into());
+    }
+
+    let (previous_open, previous_output, panel_hotkey, quick_date_hotkey, sync_window_hotkey, db_migration_window_hotkey) = {
+        let rt = state.runtime.lock().await;
+        (
+            rt.registered_quick_paste_open_hotkey.clone(),
+            rt.registered_quick_paste_output_hotkey.clone(),
+            rt.registered_hotkey.clone(),
+            rt.registered_quick_date_hotkey.clone(),
+            rt.registered_sync_window_hotkey.clone(),
+            rt.registered_db_migration_window_hotkey.clone(),
+        )
+    };
+    let conflicts = [
+        panel_hotkey.as_deref(),
+        quick_date_hotkey.as_deref(),
+        sync_window_hotkey.as_deref(),
+        db_migration_window_hotkey.as_deref(),
+    ];
+    if conflicts.iter().flatten().any(|existing| *existing == open || *existing == output) {
+        return Err("快捷粘贴快捷键不能与其他全局快捷键重复".into());
+    }
+
+    let manager = app.global_shortcut();
+    let registered_open;
+    let registered_output;
+    let mut errors = Vec::new();
+
+    if previous_open.as_deref() != Some(open.as_str()) {
+        if let Some(prev) = previous_open.as_deref() {
+            let _ = manager.unregister(prev);
+        }
+        match manager.register(open.as_str()) {
+            Ok(()) => {
+                *state.quick_paste_open_hotkey_sync.write().unwrap() = Some(open.clone());
+                registered_open = Some(open.clone());
+            }
+            Err(e) => {
+                *state.quick_paste_open_hotkey_sync.write().unwrap() = None;
+                registered_open = None;
+                errors.push(format!("快捷粘贴打开快捷键注册失败: {e}"));
+            }
+        }
+    } else {
+        *state.quick_paste_open_hotkey_sync.write().unwrap() = Some(open.clone());
+        registered_open = Some(open.clone());
+    }
+
+    if previous_output.as_deref() != Some(output.as_str()) {
+        if let Some(prev) = previous_output.as_deref() {
+            let _ = manager.unregister(prev);
+        }
+        match manager.register(output.as_str()) {
+            Ok(()) => {
+                *state.quick_paste_output_hotkey_sync.write().unwrap() = Some(output.clone());
+                registered_output = Some(output.clone());
+            }
+            Err(e) => {
+                *state.quick_paste_output_hotkey_sync.write().unwrap() = None;
+                registered_output = None;
+                errors.push(format!("默认文本输出快捷键注册失败: {e}"));
+            }
+        }
+    } else {
+        *state.quick_paste_output_hotkey_sync.write().unwrap() = Some(output.clone());
+        registered_output = Some(output.clone());
+    }
+
+    let mut rt = state.runtime.lock().await;
+    rt.registered_quick_paste_open_hotkey = registered_open;
+    rt.registered_quick_paste_output_hotkey = registered_output;
+    drop(rt);
+
+    if errors.is_empty() {
+        let _ = app.emit("quick-paste-toast", format!("快捷粘贴快捷键已注册：打开 {open}，输出 {output}"));
+        Ok(())
+    } else {
+        let message = errors.join("；");
+        let _ = app.emit("quick-paste-toast", message.clone());
+        Err(message)
+    }
+
+}
+
+#[tauri::command]
+async fn show_quick_paste_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = ensure_quick_paste_window(&app)?;
+    window.show().map_err(|e| format!("显示快捷粘贴窗口失败: {e}"))?;
+    let _ = window.unminimize();
+    window.set_focus().map_err(|e| format!("聚焦快捷粘贴窗口失败: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn hide_quick_paste_window(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window(QUICK_PASTE_WINDOW_LABEL) {
+        window.hide().map_err(|e| format!("隐藏快捷粘贴窗口失败: {e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn toggle_quick_paste_window(app: tauri::AppHandle) -> Result<(), String> {
+    let window = ensure_quick_paste_window(&app)?;
+    let visible = window.is_visible().map_err(|e| e.to_string())?;
+    if visible {
+        window.hide().map_err(|e| format!("隐藏快捷粘贴窗口失败: {e}"))?;
+    } else {
+        window.show().map_err(|e| format!("显示快捷粘贴窗口失败: {e}"))?;
+        let _ = window.unminimize();
+        window.set_focus().map_err(|e| format!("聚焦快捷粘贴窗口失败: {e}"))?;
+    }
+    Ok(())
+}
+
 fn emit_sync_center_mode(app: &tauri::AppHandle, mode: &str) {
     let mode = mode.to_string();
     let _ = app.emit_to(SYNC_WORKSPACE_WINDOW_LABEL, "sync-center-open-mode", mode.clone());
@@ -2143,8 +2539,7 @@ struct ArtTextIndexEntry {
     path: String,
     #[serde(rename = "fileName")]
     file_name: String,
-    #[serde(rename = "lastModified")]
-    last_modified: u64,
+    hash: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -2255,6 +2650,186 @@ fn is_art_text_image(path: &std::path::Path) -> bool {
         .unwrap_or(false)
 }
 
+/// Fast content fingerprint: crc32 of (file_size + first 8KB + last 8KB).
+/// Enough to detect moved/renamed/modified files without reading entire images.
+fn file_content_hash(path: &std::path::Path) -> Option<String> {
+    let meta = fs::metadata(path).ok()?;
+    let size = meta.len();
+    let mut buf = Vec::with_capacity(16384 + 8);
+    buf.extend_from_slice(&size.to_le_bytes());
+
+    let mut f = fs::File::open(path).ok()?;
+    let mut header = [0u8; 8192];
+    let n = std::io::Read::read(&mut f, &mut header).unwrap_or(0);
+    buf.extend_from_slice(&header[..n]);
+
+    if size > 8192 {
+        use std::io::Seek;
+        let _ = std::io::Seek::seek(&mut f, std::io::SeekFrom::End(-8192));
+        let mut tail = [0u8; 8192];
+        let n2 = std::io::Read::read(&mut f, &mut tail).unwrap_or(0);
+        buf.extend_from_slice(&tail[..n2]);
+    }
+
+    Some(format!("{:08x}", crc32(&buf)))
+}
+
+fn crc32(data: &[u8]) -> u32 {
+    let mut crc: u32 = 0xFFFFFFFF;
+    for &byte in data {
+        crc ^= byte as u32;
+        for _ in 0..8 {
+            if crc & 1 != 0 {
+                crc = (crc >> 1) ^ 0xEDB88320;
+            } else {
+                crc >>= 1;
+            }
+        }
+    }
+    !crc
+}
+
+fn collect_images_recursive(dir: &std::path::Path, out: &mut Vec<PathBuf>) {
+    collect_images_recursive_with_progress(dir, out, &mut |_| {});
+}
+
+fn collect_images_recursive_with_progress<F>(
+    dir: &std::path::Path,
+    out: &mut Vec<PathBuf>,
+    on_dir: &mut F,
+) where
+    F: FnMut(&std::path::Path),
+{
+    on_dir(dir);
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                collect_images_recursive_with_progress(&path, out, on_dir);
+            } else if path.is_file() && is_art_text_image(&path) {
+                out.push(path);
+            }
+        }
+    }
+}
+
+/// Check if a directory name looks like an art-text folder (contains "美术字").
+fn is_art_text_dir_name(name: &str) -> bool {
+    name.contains("美术字")
+}
+
+/// Quickly discover directories that contain art-text images.
+/// Strategy: walk up to 3 levels deep. If a directory name contains "美术字",
+/// collect images directly from it. Otherwise recurse only into non-asset dirs.
+fn discover_art_text_dirs(root: &std::path::Path, depth: u8, out: &mut Vec<PathBuf>) {
+    if depth > 3 {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(root) else { return };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if is_art_text_dir_name(name) {
+            out.push(path);
+        } else {
+            discover_art_text_dirs(&path, depth + 1, out);
+        }
+    }
+}
+
+/// Count images in a directory (non-recursive, immediate children only).
+fn count_images_in_dir(dir: &std::path::Path) -> usize {
+    fs::read_dir(dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|e| e.path().is_file() && is_art_text_image(&e.path()))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Count images recursively in a directory (up to max_depth).
+fn count_images_recursive(dir: &std::path::Path, max_depth: u8) -> usize {
+    if max_depth == 0 {
+        return 0;
+    }
+    let mut count = 0;
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() && is_art_text_image(&path) {
+                count += 1;
+            } else if path.is_dir() {
+                count += count_images_recursive(&path, max_depth - 1);
+            }
+        }
+    }
+    count
+}
+
+#[derive(Serialize)]
+struct SubDirInfo {
+    path: String,
+    name: String,
+    #[serde(rename = "imageCount")]
+    image_count: usize,
+}
+
+/// Scan immediate subdirectories of a path, counting images recursively (up to 3 levels).
+#[tauri::command]
+async fn scan_art_text_sub_dirs(dir: String) -> Result<Vec<SubDirInfo>, String> {
+    let root = PathBuf::from(dir.trim());
+    if !root.exists() || !root.is_dir() {
+        return Err("目录不存在".into());
+    }
+
+    let mut result: Vec<SubDirInfo> = Vec::new();
+    let Ok(entries) = fs::read_dir(&root) else {
+        return Ok(result);
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_string();
+        let image_count = count_images_recursive(&path, 3);
+        if image_count > 0 {
+            result.push(SubDirInfo {
+                path: path.to_string_lossy().to_string(),
+                name,
+                image_count,
+            });
+        }
+    }
+
+    result.sort_by(|a, b| b.image_count.cmp(&a.image_count));
+    Ok(result)
+}
+
+/// Summary returned after building/updating the index.
+#[derive(Debug, Clone, Serialize)]
+struct BuildResult {
+    index: ArtTextIndex,
+    #[serde(rename = "newCount")]
+    new_count: usize,
+    #[serde(rename = "movedCount")]
+    moved_count: usize,
+    #[serde(rename = "removedCount")]
+    removed_count: usize,
+    #[serde(rename = "errorCount")]
+    error_count: usize,
+}
+
 #[tauri::command]
 async fn get_art_text_search_dirs(state: State<'_, AppState>) -> Result<Vec<String>, String> {
     let rt = state.runtime.lock().await;
@@ -2276,7 +2851,7 @@ async fn save_art_text_search_dirs(
 async fn build_art_text_index(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
-) -> Result<ArtTextIndex, String> {
+) -> Result<BuildResult, String> {
     let dirs = {
         let rt = state.runtime.lock().await;
         rt.config.personal.art_text_search_dirs.clone()
@@ -2285,61 +2860,69 @@ async fn build_art_text_index(
         return Err("请先添加扫描目录".into());
     }
 
-    let mut existing = load_art_text_index(&app);
-    let existing_map: HashMap<String, ArtTextIndexEntry> = existing
-        .entries
-        .drain(..)
-        .map(|e| (e.path.clone(), e))
-        .collect();
+    let existing = load_art_text_index(&app);
 
-    // Collect all image files
-    let mut all_files: Vec<PathBuf> = Vec::new();
-    for dir_str in &dirs {
-        let dir = PathBuf::from(dir_str);
-        if !dir.exists() || !dir.is_dir() {
-            continue;
-        }
-        if let Ok(entries) = fs::read_dir(&dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_file() && is_art_text_image(&path) {
-                    all_files.push(path);
-                }
+    // Build lookup structures from existing index:
+    //   hash -> entry   (for detecting moves)
+    //   path -> entry   (for detecting unchanged files)
+    let mut hash_to_old: HashMap<String, ArtTextIndexEntry> = HashMap::new();
+    let mut path_to_old: HashMap<String, ArtTextIndexEntry> = HashMap::new();
+    for e in existing.entries {
+        hash_to_old.entry(e.hash.clone()).or_insert(e.clone());
+        path_to_old.insert(e.path.clone(), e);
+    }
+
+    // Collect images from all configured directories
+    let _ = app.emit(
+        "art-text-index-progress",
+        serde_json::json!({ "current": 0u64, "total": 0u64, "currentFile": "正在扫描目录...", "phase": "collect" }),
+    );
+    tokio::task::yield_now().await;
+
+    let app_for_collect = app.clone();
+    let dirs_for_collect = dirs.clone();
+    let all_files = tokio::task::spawn_blocking(move || {
+        let mut all_files: Vec<PathBuf> = Vec::new();
+        let mut visited_dirs: u64 = 0;
+        for dir_str in &dirs_for_collect {
+            let dir = PathBuf::from(dir_str);
+            if dir.exists() && dir.is_dir() {
+                collect_images_recursive_with_progress(&dir, &mut all_files, &mut |current_dir| {
+                    visited_dirs += 1;
+                    if visited_dirs == 1 || visited_dirs % 10 == 0 {
+                        let _ = app_for_collect.emit(
+                            "art-text-index-progress",
+                            serde_json::json!({
+                                "current": visited_dirs,
+                                "total": 0u64,
+                                "currentFile": format!("正在扫描目录: {}", current_dir.display()),
+                                "phase": "collect"
+                            }),
+                        );
+                    }
+                });
             }
         }
-    }
+        all_files
+    })
+    .await
+    .map_err(|e| format!("扫描图片目录失败: {e}"))?;
 
     let total = all_files.len() as u64;
     let _ = app.emit(
         "art-text-index-progress",
-        serde_json::json!({ "current": 0u64, "total": total, "currentFile": "" }),
+        serde_json::json!({ "current": 0u64, "total": total, "currentFile": format!("共 {} 张图片，开始计算哈希...", total), "phase": "hash" }),
     );
 
-    // Initialize OCR engine - resolve model paths relative to app data dir
-    let models_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("获取数据目录失败: {e}"))?
-        .join("models");
-    let det_path = models_dir.join("det.onnx");
-    let rec_path = models_dir.join("rec.onnx");
-    let dict_path = models_dir.join("ppocr_keys_v1.txt");
+    // Yield so the initial progress event reaches the frontend
+    tokio::task::yield_now().await;
 
-    if !det_path.exists() || !rec_path.exists() || !dict_path.exists() {
-        // Auto-download models on first use
-        download_ocr_models(&models_dir).await?;
-    }
-
-    let engine = oar_ocr::prelude::OAROCRBuilder::new(
-        det_path.to_str().unwrap_or(""),
-        rec_path.to_str().unwrap_or(""),
-        dict_path.to_str().unwrap_or(""),
-    )
-    .build()
-    .map_err(|e| format!("初始化OCR引擎失败: {e}"))?;
-
-    let mut new_entries: Vec<ArtTextIndexEntry> = Vec::new();
-    let mut errors: Vec<ArtTextIndexError> = Vec::new();
+    // Phase 1: compute hashes for all files, detect new / moved / unchanged
+    let mut kept_entries: Vec<ArtTextIndexEntry> = Vec::new();
+    let mut files_to_ocr: Vec<(PathBuf, String, String)> = Vec::new(); // (path, hash, filename)
+    let mut moved_count: usize = 0;
+    let mut cached_count: usize = 0;
+    let mut current_paths: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for (i, file_path) in all_files.iter().enumerate() {
         let path_str = file_path.to_string_lossy().to_string();
@@ -2348,72 +2931,149 @@ async fn build_art_text_index(
             .and_then(|n| n.to_str())
             .unwrap_or("")
             .to_string();
+        current_paths.insert(path_str.clone());
 
-        // Check if file was already indexed and unchanged
-        let last_modified = fs::metadata(file_path)
-            .ok()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        // Yield every 32 files so progress events are delivered
+        if i % 32 == 0 {
+            let _ = app.emit(
+                "art-text-index-progress",
+                serde_json::json!({ "current": i as u64, "total": total, "currentFile": format!("扫描 {}/{} (缓存命中 {})", i, total, cached_count), "phase": "hash" }),
+            );
+            tokio::task::yield_now().await;
+        }
 
-        if let Some(existing_entry) = existing_map.get(&path_str) {
-            if existing_entry.last_modified == last_modified {
-                new_entries.push(existing_entry.clone());
-                let _ = app.emit(
-                    "art-text-index-progress",
-                    serde_json::json!({ "current": (i as u64) + 1, "total": total, "currentFile": file_name }),
-                );
+        let hash = match file_content_hash(file_path) {
+            Some(h) => h,
+            None => {
+                files_to_ocr.push((file_path.clone(), String::new(), file_name));
+                continue;
+            }
+        };
+
+        // Same path, same hash → unchanged, keep as-is
+        if let Some(old) = path_to_old.get(&path_str) {
+            if old.hash == hash {
+                kept_entries.push(old.clone());
+                cached_count += 1;
                 continue;
             }
         }
 
-        let _ = app.emit(
-            "art-text-index-progress",
-            serde_json::json!({ "current": (i as u64) + 1, "total": total, "currentFile": file_name }),
-        );
+        // Different path but same hash → file moved/renamed
+        if let Some(mut old) = hash_to_old.get(&hash).cloned() {
+            if old.path != path_str {
+                old.path = path_str;
+                old.file_name = file_name;
+                kept_entries.push(old);
+                moved_count += 1;
+                continue;
+            }
+        }
 
-        // Run OCR
-        match oar_ocr::prelude::load_image(file_path) {
-            Ok(image) => match engine.predict(vec![image]) {
-                Ok(results) => {
-                    let text = results
-                        .first()
-                        .map(|r| r.concatenated_text(" "))
-                        .unwrap_or_default();
-                    if !text.is_empty() {
-                        new_entries.push(ArtTextIndexEntry {
-                            text,
+        // New or modified file → needs OCR
+        files_to_ocr.push((file_path.clone(), hash, file_name));
+    }
+
+    // Count removed files
+    let removed_count = path_to_old.len() + hash_to_old.len()
+        - kept_entries.len()
+        - files_to_ocr.iter().filter(|(p, _, _)| path_to_old.contains_key(&p.to_string_lossy().to_string())).count();
+
+    // Phase 2: OCR only new/changed files
+    let ocr_total = files_to_ocr.len() as u64;
+    let _ = app.emit(
+        "art-text-index-progress",
+        serde_json::json!({ "current": 0u64, "total": ocr_total, "currentFile": format!("需识别 {} 张新/变动图片", ocr_total), "phase": "ocr" }),
+    );
+    tokio::task::yield_now().await;
+
+    let mut new_count: usize = 0;
+    let mut errors: Vec<ArtTextIndexError> = Vec::new();
+
+    if !files_to_ocr.is_empty() {
+        // Initialize OCR engine
+        let models_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|e| format!("获取数据目录失败: {e}"))?
+            .join("models");
+        let det_path = models_dir.join("det.onnx");
+        let rec_path = models_dir.join("rec.onnx");
+        let dict_path = models_dir.join("ppocr_keys_v1.txt");
+
+        if !det_path.exists() || !rec_path.exists() || !dict_path.exists() {
+            download_ocr_models(&models_dir).await?;
+        }
+
+        let engine = oar_ocr::prelude::OAROCRBuilder::new(
+            det_path.to_str().unwrap_or(""),
+            rec_path.to_str().unwrap_or(""),
+            dict_path.to_str().unwrap_or(""),
+        )
+        .build()
+        .map_err(|e| format!("初始化OCR引擎失败: {e}"))?;
+
+        for (i, (file_path, hash, file_name)) in files_to_ocr.iter().enumerate() {
+            let path_str = file_path.to_string_lossy().to_string();
+
+            let _ = app.emit(
+                "art-text-index-progress",
+                serde_json::json!({ "current": (i as u64) + 1, "total": ocr_total, "currentFile": file_name, "phase": "ocr" }),
+            );
+
+            // Yield every file so OCR progress is visible
+            tokio::task::yield_now().await;
+
+            match oar_ocr::prelude::load_image(file_path) {
+                Ok(image) => match engine.predict(vec![image]) {
+                    Ok(results) => {
+                        let text = results
+                            .first()
+                            .map(|r| r.concatenated_text(" "))
+                            .unwrap_or_default();
+                        if !text.is_empty() {
+                            kept_entries.push(ArtTextIndexEntry {
+                                text,
+                                path: path_str,
+                                file_name: file_name.clone(),
+                                hash: hash.clone(),
+                            });
+                            new_count += 1;
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(ArtTextIndexError {
                             path: path_str,
-                            file_name,
-                            last_modified,
+                            reason: format!("OCR识别失败: {e}"),
                         });
                     }
-                }
+                },
                 Err(e) => {
                     errors.push(ArtTextIndexError {
                         path: path_str,
-                        reason: format!("OCR识别失败: {e}"),
+                        reason: format!("加载图片失败: {e}"),
                     });
                 }
-            },
-            Err(e) => {
-                errors.push(ArtTextIndexError {
-                    path: path_str,
-                    reason: format!("加载图片失败: {e}"),
-                });
             }
         }
     }
 
+    let error_count = errors.len();
     let index = ArtTextIndex {
         version: 1,
-        entries: new_entries,
+        entries: kept_entries,
         errors,
         built_at: Some(chrono::Local::now().format("%Y-%m-%d %H:%M:%S").to_string()),
     };
     save_art_text_index(&app, &index)?;
-    Ok(index)
+
+    Ok(BuildResult {
+        index,
+        new_count,
+        moved_count,
+        removed_count,
+        error_count,
+    })
 }
 
 #[derive(Serialize)]
@@ -3012,6 +3672,45 @@ fn ensure_sync_workspace_window(app: &tauri::AppHandle) -> Result<WebviewWindow,
     Ok(window)
 }
 
+fn ensure_quick_paste_window(app: &tauri::AppHandle) -> Result<WebviewWindow, String> {
+    if let Some(window) = app.get_webview_window(QUICK_PASTE_WINDOW_LABEL) {
+        return Ok(window);
+    }
+
+    let window = WebviewWindowBuilder::new(
+        app,
+        QUICK_PASTE_WINDOW_LABEL,
+        WebviewUrl::App("index.html".into()),
+    )
+    .title(format_window_title(app, Some("快捷粘贴")))
+    .inner_size(QUICK_PASTE_WINDOW_WIDTH, QUICK_PASTE_WINDOW_HEIGHT)
+    .min_inner_size(QUICK_PASTE_WINDOW_MIN_WIDTH, QUICK_PASTE_WINDOW_MIN_HEIGHT)
+    .resizable(true)
+    .decorations(false)
+    .transparent(true)
+    .shadow(false)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .visible(false)
+    .drag_and_drop(false)
+    .build()
+    .map_err(|e| format!("failed to create quick paste window: {e}"))?;
+
+    let window_for_events = window.clone();
+    window.on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            match close_request_action_for_window(QUICK_PASTE_WINDOW_LABEL) {
+                WindowCloseAction::HideToTray | WindowCloseAction::HideWindow => {
+                    let _ = window_for_events.hide();
+                }
+            }
+        }
+    });
+
+    Ok(window)
+}
+
 async fn persist_db_migration_window_size(
     app: tauri::AppHandle,
     state: AppState,
@@ -3493,6 +4192,30 @@ fn toggle_db_migration_from_global_shortcut(app: tauri::AppHandle) {
     });
 }
 
+fn toggle_quick_paste_from_global_shortcut(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        if let Ok(window) = ensure_quick_paste_window(&app) {
+            let visible = window.is_visible().unwrap_or(false);
+            if visible {
+                let _ = window.hide();
+            } else {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }
+    });
+}
+
+fn output_default_quick_paste_from_global_shortcut(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        let state = app.state::<AppState>().inner().clone();
+        if let Err(e) = output_default_quick_paste_text(app.clone(), state).await {
+            eprintln!("failed to output quick paste default: {e}");
+        }
+    });
+}
+
 fn summarize_sync_error(error: &str) -> String {
     error
         .lines()
@@ -3501,12 +4224,45 @@ fn summarize_sync_error(error: &str) -> String {
         .unwrap_or_else(|| "同步失败".to_string())
 }
 
-fn input_today_date_globally() -> Result<(), String> {
-    let text = Local::now().format("%Y%m%d").to_string();
+async fn pause_before_global_text_input() {
+    tokio::time::sleep(Duration::from_millis(180)).await;
+}
+
+fn input_text_globally(text: &str) -> Result<(), String> {
     let mut enigo = Enigo::new(&Settings::default()).map_err(|e| format!("failed to init input driver: {e}"))?;
     enigo
-        .text(text.as_str())
-        .map_err(|e| format!("failed to input date: {e}"))
+        .text(text)
+        .map_err(|e| format!("failed to input text: {e}"))
+}
+
+async fn output_default_quick_paste_text(
+    app: tauri::AppHandle,
+    state: AppState,
+) -> Result<(), String> {
+    let content = {
+        let rt = state.runtime.lock().await;
+        let snippets = &rt.config.personal.quick_paste.snippets;
+        snippets
+            .iter()
+            .find(|snippet| snippet.is_default)
+            .or_else(|| snippets.first())
+            .map(|snippet| snippet.content.clone())
+    };
+
+    let Some(content) = content else {
+        return Err("请先新建一条快捷文本".into());
+    };
+
+    if app.get_webview_window(QUICK_PASTE_WINDOW_LABEL).is_some() {
+        hide_quick_paste_window(app.clone()).await?;
+        pause_before_global_text_input().await;
+    }
+    input_text_globally(&content)
+}
+
+fn input_today_date_globally() -> Result<(), String> {
+    let text = Local::now().format("%Y%m%d").to_string();
+    input_text_globally(&text)
 }
 
 async fn search_table_data_in_db(
@@ -4383,6 +5139,20 @@ pub fn run() {
                     let sync_window_hotkey = state.sync_window_hotkey_sync.read().unwrap().clone();
                     let db_migration_window_hotkey =
                         state.db_migration_window_hotkey_sync.read().unwrap().clone();
+                    let quick_paste_open_hotkey =
+                        state.quick_paste_open_hotkey_sync.read().unwrap().clone();
+                    let quick_paste_output_hotkey =
+                        state.quick_paste_output_hotkey_sync.read().unwrap().clone();
+
+                    if quick_paste_open_hotkey.as_deref() == Some(triggered.as_str()) {
+                        toggle_quick_paste_from_global_shortcut(app.clone());
+                        return;
+                    }
+
+                    if quick_paste_output_hotkey.as_deref() == Some(triggered.as_str()) {
+                        output_default_quick_paste_from_global_shortcut(app.clone());
+                        return;
+                    }
 
                     if db_migration_window_hotkey.as_deref() == Some(triggered.as_str()) {
                         toggle_db_migration_from_global_shortcut(app.clone());
@@ -4427,6 +5197,13 @@ pub fn run() {
                 loaded.personal.db_migration_window_hotkey =
                     default_db_migration_window_hotkey();
             }
+            if loaded.personal.quick_paste.open_hotkey.trim().is_empty() {
+                loaded.personal.quick_paste.open_hotkey = DEFAULT_QUICK_PASTE_OPEN_HOTKEY.into();
+            }
+            if loaded.personal.quick_paste.output_hotkey.trim().is_empty() {
+                loaded.personal.quick_paste.output_hotkey = DEFAULT_QUICK_PASTE_OUTPUT_HOTKEY.into();
+            }
+            loaded.personal.quick_paste = sanitize_quick_paste_config(loaded.personal.quick_paste.clone());
             loaded.personal.panel_window_size =
                 sanitize_panel_window_size(loaded.personal.panel_window_size.take());
             loaded.personal.db_migration_window_size =
@@ -4544,14 +5321,21 @@ pub fn run() {
             *st.panel_window_size_sync.write().unwrap() = loaded.personal.panel_window_size.clone();
             *st.db_migration_window_size_sync.write().unwrap() =
                 loaded.personal.db_migration_window_size.clone();
-            tauri::async_runtime::block_on(async move {
-                let mut rt = st.runtime.lock().await;
-                rt.config = loaded;
-                rt.schema_cache = mock_schema_cache();
-                rt.registered_hotkey = registered_hotkey;
-                rt.registered_quick_date_hotkey = registered_quick_date_hotkey;
-                rt.registered_sync_window_hotkey = registered_sync_window_hotkey;
-                rt.registered_db_migration_window_hotkey = registered_db_migration_window_hotkey;
+            tauri::async_runtime::block_on(async {
+                {
+                    let mut rt = st.runtime.lock().await;
+                    rt.config = loaded;
+                    rt.schema_cache = mock_schema_cache();
+                    rt.registered_hotkey = registered_hotkey;
+                    rt.registered_quick_date_hotkey = registered_quick_date_hotkey;
+                    rt.registered_sync_window_hotkey = registered_sync_window_hotkey;
+                    rt.registered_db_migration_window_hotkey = registered_db_migration_window_hotkey;
+                    rt.registered_quick_paste_open_hotkey = None;
+                    rt.registered_quick_paste_output_hotkey = None;
+                }
+                if let Err(e) = register_quick_paste_hotkeys(&app.handle(), st.inner()).await {
+                    eprintln!("failed to register quick paste hotkeys on startup: {e}");
+                }
             });
 
             if let Err(e) = create_system_tray(&app.handle()) {
@@ -4650,6 +5434,13 @@ pub fn run() {
             get_table_data,
             list_tables,
             get_config,
+            get_quick_paste_config,
+            save_quick_paste_config,
+            upsert_quick_paste_snippet,
+            delete_quick_paste_snippet,
+            set_default_quick_paste_snippet,
+            output_quick_paste_snippet,
+            output_default_quick_paste_snippet,
             save_config,
             get_update_settings,
             prepare_startup_update_check,
@@ -4660,7 +5451,9 @@ pub fn run() {
             register_quick_date_hotkey,
             register_sync_window_hotkey,
             register_db_migration_window_hotkey,
-            show_sync_workspace_window,
+            show_quick_paste_window,
+            hide_quick_paste_window,
+            toggle_quick_paste_window,
             hide_sync_workspace_window,
             toggle_sync_workspace_window,
             show_db_migration_window,
@@ -4672,6 +5465,7 @@ pub fn run() {
             run_db_migration,
             get_art_text_search_dirs,
             save_art_text_search_dirs,
+            scan_art_text_sub_dirs,
             build_art_text_index,
             get_art_text_index_info,
             search_art_text,
@@ -4716,6 +5510,32 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collect_images_recursive_reports_each_directory() {
+        let root = std::env::temp_dir().join(format!(
+            "dbsearch-art-text-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let nested = root.join("a").join("b");
+        fs::create_dir_all(&nested).unwrap();
+        fs::write(nested.join("demo.png"), b"png").unwrap();
+
+        let mut files = Vec::new();
+        let mut visited = Vec::new();
+        collect_images_recursive_with_progress(&root, &mut files, &mut |dir| {
+            visited.push(dir.to_path_buf());
+        });
+
+        assert_eq!(files.len(), 1);
+        assert!(visited.iter().any(|p| p.ends_with("a")));
+        assert!(visited.iter().any(|p| p.ends_with("b")));
+
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn pet_menu_height_fits_all_actions() {
@@ -4779,6 +5599,10 @@ mod tests {
         );
         assert_eq!(
             close_request_action_for_window(DB_MIGRATION_WORKSPACE_WINDOW_LABEL),
+            WindowCloseAction::HideToTray
+        );
+        assert_eq!(
+            close_request_action_for_window(QUICK_PASTE_WINDOW_LABEL),
             WindowCloseAction::HideToTray
         );
         assert_eq!(
