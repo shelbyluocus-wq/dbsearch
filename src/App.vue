@@ -110,6 +110,14 @@ import {
   normalizeQuickPasteEditorHtml,
   serializeQuickPasteEditorHtml,
 } from "./quickPasteEditor.js";
+import {
+  QUICK_PASTE_CATEGORIES,
+  getQuickPasteCategoryCount as countQuickPasteCategory,
+  getQuickPasteSnippetKind,
+  isQuickPasteImageSnippet,
+  isQuickPasteMixedSnippet,
+  isQuickPasteTextLikeSnippet,
+} from "./quickPasteCategories.js";
 
 const APP_VERSION = APP_PACKAGE_VERSION;
 const VERSION_DISPLAY_LABEL = resolveSettingsVersionLabel(APP_VERSION);
@@ -384,6 +392,12 @@ const isArtTextSearchWindow = computed(() => isTauriWindow && windowLabel.value 
 const isQuickPasteWindow = computed(() => isTauriWindow && windowLabel.value === "quick_paste");
 const isPanelWindow = computed(() => !isTauriWindow || windowLabel.value === "browser" || windowLabel.value === "panel");
 const FIXED_WEATHER_CITY = "厦门市";
+const QUICK_PASTE_SIDEBAR_DEFAULT_WIDTH = 180;
+const QUICK_PASTE_SIDEBAR_MIN_WIDTH = 168;
+const QUICK_PASTE_SIDEBAR_MAX_WIDTH = 240;
+const QUICK_PASTE_LIST_DEFAULT_WIDTH = 240;
+const QUICK_PASTE_LIST_MIN_WIDTH = 240;
+const QUICK_PASTE_PREVIEW_MIN_WIDTH = 320;
 
 const quickPaste = reactive({
   loading: false,
@@ -394,9 +408,14 @@ const quickPaste = reactive({
   selectedId: "",
   editorOpen: false,
   editorMode: "create",
-  sidebarWidth: 142,
-  listWidth: 270,
+  sidebarWidth: QUICK_PASTE_SIDEBAR_DEFAULT_WIDTH,
+  listWidth: QUICK_PASTE_LIST_DEFAULT_WIDTH,
   resizingPane: "",
+  imagePreview: {
+    visible: false,
+    src: "",
+    title: "",
+  },
   toast: {
     visible: false,
     text: "",
@@ -454,17 +473,10 @@ function toQuickPasteSnippetPayload(snippet) {
   };
 }
 
-const quickPasteCategories = computed(() => [
-  { key: "all", label: "全部" },
-  { key: "text", label: "文本" },
-  { key: "image", label: "图片" },
-  { key: "favorite", label: "常用" },
-]);
+const quickPasteCategories = computed(() => QUICK_PASTE_CATEGORIES);
 
 function getQuickPasteCategoryCount(category) {
-  if (category === "all") return quickPaste.config.snippets.length;
-  if (category === "favorite") return quickPaste.config.snippets.filter((snippet) => snippet.favorite).length;
-  return quickPaste.config.snippets.filter((snippet) => snippet.category === category).length;
+  return countQuickPasteCategory(quickPaste.config.snippets, category);
 }
 
 const filteredQuickPasteSnippets = computed(() => {
@@ -474,6 +486,8 @@ const filteredQuickPasteSnippets = computed(() => {
       quickPaste.activeCategory === "all" ||
       (quickPaste.activeCategory === "favorite" && snippet.favorite) ||
       (quickPaste.activeCategory === "text" && isQuickPasteTextLikeSnippet(snippet)) ||
+      (quickPaste.activeCategory === "mixed" && isQuickPasteMixedSnippet(snippet)) ||
+      (quickPaste.activeCategory === "image" && isQuickPasteImageSnippet(snippet)) ||
       snippet.category === quickPaste.activeCategory;
     const matchesQuery =
       !query ||
@@ -492,8 +506,15 @@ const selectedQuickPasteSnippet = computed(() =>
 );
 
 const quickPasteBodyStyle = computed(() => ({
-  gridTemplateColumns: `${quickPaste.sidebarWidth}px 8px ${quickPaste.listWidth}px 8px minmax(260px, 1fr)`,
+  gridTemplateColumns: `${quickPaste.sidebarWidth}px 8px ${quickPaste.listWidth}px 8px minmax(${QUICK_PASTE_PREVIEW_MIN_WIDTH}px, 1fr)`,
 }));
+
+function getQuickPasteSnippetKindLabel(snippet) {
+  const kind = getQuickPasteSnippetKind(snippet);
+  if (kind === "mixed") return "图文";
+  if (kind === "image") return "图片";
+  return "文本";
+}
 
 async function closeQuickPasteWindow() {
   await invoke("hide_quick_paste_window");
@@ -523,13 +544,19 @@ function handleQuickPastePaneResize(event) {
   if (!quickPaste.resizingPane) return;
   const viewportWidth = window.innerWidth || 720;
   if (quickPaste.resizingPane === "sidebar") {
-    quickPaste.sidebarWidth = Math.max(118, Math.min(220, event.clientX - 14));
+    quickPaste.sidebarWidth = Math.max(
+      QUICK_PASTE_SIDEBAR_MIN_WIDTH,
+      Math.min(QUICK_PASTE_SIDEBAR_MAX_WIDTH, event.clientX - 14),
+    );
     return;
   }
 
   const listLeft = 14 + quickPaste.sidebarWidth + 8 + 12;
-  const maxListWidth = Math.max(230, viewportWidth - listLeft - 292);
-  quickPaste.listWidth = Math.max(220, Math.min(maxListWidth, event.clientX - listLeft));
+  const maxListWidth = Math.max(
+    QUICK_PASTE_LIST_MIN_WIDTH,
+    viewportWidth - listLeft - QUICK_PASTE_PREVIEW_MIN_WIDTH - 18,
+  );
+  quickPaste.listWidth = Math.max(QUICK_PASTE_LIST_MIN_WIDTH, Math.min(maxListWidth, event.clientX - listLeft));
 }
 
 function startQuickPastePaneResize(event, pane) {
@@ -691,18 +718,39 @@ async function outputQuickPasteSnippet(snippet = selectedQuickPasteSnippet.value
   }
 }
 
-function isQuickPasteImageSnippet(snippet) {
-  return snippet?.category === "image";
-}
-
-function isQuickPasteTextLikeSnippet(snippet) {
-  return snippet?.category === "text" || snippet?.category === "rich";
-}
-
 function quickPasteImageSrc(snippet) {
   if (!isQuickPasteImageSnippet(snippet) || !snippet.content) return "";
   if (/^(data:|blob:|https?:)/i.test(snippet.content)) return snippet.content;
   return convertFileSrc(snippet.content);
+}
+
+function extractQuickPasteFirstImageSource(snippet) {
+  const content = String(snippet?.content || "");
+  if (!content) return "";
+  if (snippet?.category === "image") return quickPasteImageSrc(snippet);
+  const match = content.match(/<img\b[^>]*(?:data-path|src)=["']([^"']+)["'][^>]*>/i);
+  return match ? resolveQuickPasteImageSrc(match[1]) : "";
+}
+
+function openQuickPasteImagePreview(src, title = "图片预览") {
+  const resolved = resolveQuickPasteImageSrc(src);
+  if (!resolved) return;
+  quickPaste.imagePreview.src = resolved;
+  quickPaste.imagePreview.title = title || "图片预览";
+  quickPaste.imagePreview.visible = true;
+}
+
+function closeQuickPasteImagePreview() {
+  quickPaste.imagePreview.visible = false;
+  quickPaste.imagePreview.src = "";
+  quickPaste.imagePreview.title = "";
+}
+
+function openQuickPasteSnippetImagePreview(snippet) {
+  const src = extractQuickPasteFirstImageSource(snippet);
+  if (!src) return false;
+  openQuickPasteImagePreview(src, snippet?.title || "图片预览");
+  return true;
 }
 
 function fileToDataUrl(file) {
@@ -910,6 +958,19 @@ async function handleQuickPasteEditorContextMenu(event) {
   );
 }
 
+function handleQuickPasteEditorDoubleClick(event) {
+  if (event.button !== 0) return;
+  const target = event.target instanceof Element ? event.target : null;
+  const image = target?.closest?.("img");
+  if (!image) return;
+  event.preventDefault();
+  event.stopPropagation();
+  openQuickPasteImagePreview(
+    image.dataset.path || image.getAttribute("data-path") || image.getAttribute("src"),
+    image.getAttribute("alt") || selectedQuickPasteSnippet.value?.title || "图片预览",
+  );
+}
+
 async function handleQuickPasteEditorPaste(event) {
   const snippet = selectedQuickPasteSnippet.value;
   if (!snippet?.id) return;
@@ -1084,7 +1145,7 @@ async function copyQuickPasteImage(snippet) {
 
 async function outputOrCopyQuickPasteSnippet(snippet = selectedQuickPasteSnippet.value) {
   if (isQuickPasteImageSnippet(snippet)) {
-    await copyQuickPasteImage(snippet);
+    openQuickPasteSnippetImagePreview(snippet);
     return;
   }
   if (!snippet?.id) {
@@ -1111,7 +1172,8 @@ async function handleQuickPasteKeydown(event) {
   const isTyping = tag === "input" || tag === "textarea" || event.target?.isContentEditable;
   if (event.key === "Escape") {
     event.preventDefault();
-    if (quickPaste.editorOpen) quickPaste.editorOpen = false;
+    if (quickPaste.imagePreview.visible) closeQuickPasteImagePreview();
+    else if (quickPaste.editorOpen) quickPaste.editorOpen = false;
     else await invoke("hide_quick_paste_window");
     return;
   }
@@ -1139,6 +1201,54 @@ const SETTINGS_TABS = [
   { id: 'appearance', label: '外观', icon: '\u{1F3A8}' },
   { id: 'version', label: '版本号', icon: VERSION_DISPLAY_LABEL },
 ];
+const PANEL_SHORTCUT_GROUPS = [
+  {
+    id: "panelNavigation",
+    label: "搜索面板",
+    items: [
+      { id: "openTableCommand", label: "打开表命令面板", defaultValue: "Ctrl+P" },
+      { id: "focusSidebar", label: "焦点到分类栏", defaultValue: "Ctrl+Left" },
+      { id: "focusResults", label: "焦点到结果区", defaultValue: "Ctrl+Right" },
+      { id: "moveUp", label: "上移选择", defaultValue: "Ctrl+Up" },
+      { id: "moveDown", label: "下移选择", defaultValue: "Ctrl+Down" },
+    ],
+  },
+  {
+    id: "tableNavigation",
+    label: "表窗口",
+    items: [
+      { id: "openTableFind", label: "打开表内查找", defaultValue: "Ctrl+O" },
+      { id: "previousSearchTable", label: "上一张命中表", defaultValue: "Ctrl+[" },
+      { id: "nextSearchTable", label: "下一张命中表", defaultValue: "Ctrl+]" },
+      { id: "previousTab", label: "上一个已打开标签", defaultValue: "Ctrl+Shift+Tab" },
+      { id: "nextTab", label: "下一个已打开标签", defaultValue: "Ctrl+Tab" },
+      { id: "scrollTableLeft", label: "表格向左滚动", defaultValue: "Ctrl+Left" },
+      { id: "scrollTableRight", label: "表格向右滚动", defaultValue: "Ctrl+Right" },
+      { id: "toggleTableView", label: "切换命中/完整视图", defaultValue: "Tab" },
+      { id: "jumpPreviousHit", label: "上一条命中", defaultValue: "Q" },
+      { id: "jumpNextHit", label: "下一条命中", defaultValue: "E" },
+      { id: "toggleEditMode", label: "切换编辑模式", defaultValue: "`" },
+      { id: "toggleFullscreen", label: "全屏查看表", defaultValue: "W" },
+      { id: "closeTable", label: "关闭当前表", defaultValue: "Ctrl+W" },
+      { id: "closeAllTables", label: "关闭全部表", defaultValue: "Alt+W" },
+    ],
+  },
+  {
+    id: "editing",
+    label: "编辑模式",
+    items: [
+      { id: "editSelectAll", label: "选择当前页全部行", defaultValue: "Ctrl+A" },
+      { id: "editCopySelected", label: "复制选中行", defaultValue: "Ctrl+C" },
+      { id: "editSave", label: "保存编辑更改", defaultValue: "Ctrl+S" },
+      { id: "cellViewerSave", label: "保存单元格查看器", defaultValue: "Ctrl+S" },
+    ],
+  },
+];
+const PANEL_SHORTCUT_DEFAULTS = Object.fromEntries(
+  PANEL_SHORTCUT_GROUPS.flatMap((group) =>
+    group.items.map((item) => [item.id, item.defaultValue]),
+  ),
+);
 const TABLE_DIALOG_DEFAULTS = getDefaultTableDialogState();
 const tableOpen = ref(false);
 const tableDetailView = ref("hits");
@@ -1332,6 +1442,7 @@ const config = reactive({
     batch_export_hotkey: "Ctrl+Shift+E",
     template_prev_hotkey: "Ctrl+Alt+Left",
     template_next_hotkey: "Ctrl+Alt+Right",
+    panel_shortcuts: {},
     reset_on_open_to_all_tables: true,
     always_on_top_hotkey: "P",
     pet_skin: "eagle",
@@ -1349,6 +1460,12 @@ const config = reactive({
     last_update_check_at: null,
     pending_update_announcement: null,
     last_update_announcement_version: null,
+    quick_paste: {
+      enabled: true,
+      open_hotkey: "F7",
+      output_hotkey: "F8",
+      snippets: [],
+    },
   },
 });
 
@@ -1649,6 +1766,7 @@ let unlistenMenuOpened = null;
 let unlistenPetMoved = null;
 let unlistenSearchFound = null;
 let unlistenArtTextIndexProgress = null;
+let unlistenArtTextOcrInstallProgress = null;
 let unlistenPetIdleStatesChanged = null;
 let unlistenPetIdlePreview = null;
 let welcomeCloseTimer = null;
@@ -1792,6 +1910,10 @@ const settingsDraft = reactive({
   database: "",
   hotkey: "Ctrl+Shift+F",
   quickDateHotkey: "F9",
+  syncWindowHotkey: "Shift+D",
+  dbMigrationWindowHotkey: "Shift+S",
+  quickPasteOpenHotkey: "F7",
+  quickPasteOutputHotkey: "F8",
   autoStart: false,
   tableDefaultView: "hits",
   idleStates: [
@@ -1813,6 +1935,7 @@ const settingsDraft = reactive({
   alwaysOnTopHotkey: "P",
   templatePrevHotkey: "Ctrl+Alt+Left",
   templateNextHotkey: "Ctrl+Alt+Right",
+  panelShortcuts: { ...PANEL_SHORTCUT_DEFAULTS },
   resetOnOpenToAllTables: true,
   templateName: "",
   petSkin: "eagle",
@@ -2437,6 +2560,13 @@ const artTextProgressPhase = ref("");
 const artTextMessage = ref("");
 const artTextScanningDirs = ref(false);
 const artTextSubDirs = ref([]);
+const artTextOcrStatus = ref(null);
+const artTextOcrChecking = ref(false);
+const artTextOcrInstalling = ref(false);
+const artTextOcrInstallCurrent = ref(0);
+const artTextOcrInstallTotal = ref(0);
+const artTextOcrInstallFile = ref("");
+const artTextOcrInstallPhase = ref("");
 
 const artTextAllSubDirsSelected = computed(() =>
   artTextSubDirs.value.length > 0 && artTextSubDirs.value.every(d => d.selected)
@@ -2451,6 +2581,16 @@ const artTextProgressPercent = computed(() => {
   return Math.round((artTextProgressCurrent.value / artTextProgressTotal.value) * 100);
 });
 
+const artTextOcrReady = computed(() => Boolean(artTextOcrStatus.value?.ready));
+const artTextOcrMissingText = computed(() => {
+  const missing = artTextOcrStatus.value?.missing || [];
+  return missing.length ? missing.join("、") : "";
+});
+const artTextOcrInstallPercent = computed(() => {
+  if (artTextOcrInstallTotal.value <= 0) return 0;
+  return Math.min(100, Math.round((artTextOcrInstallCurrent.value / artTextOcrInstallTotal.value) * 100));
+});
+
 async function loadArtTextDirs() {
   try {
     artTextDirs.value = await invoke("get_art_text_search_dirs");
@@ -2462,6 +2602,59 @@ async function loadArtTextIndexInfo() {
     const info = await invoke("get_art_text_index_info");
     artTextIndexBuiltAt.value = info.builtAt || "";
   } catch { /* ignore */ }
+}
+
+async function checkArtTextOcrStatus(showMessage = true) {
+  artTextOcrChecking.value = true;
+  try {
+    const status = await invoke("get_art_text_ocr_status");
+    artTextOcrStatus.value = status;
+    if (showMessage) {
+      artTextMessage.value = status.ready
+        ? `OCR 模型已安装：${status.path}`
+        : `OCR 模型未安装，缺少：${(status.missing || []).join("、")}`;
+    }
+    return status;
+  } catch (e) {
+    artTextMessage.value = String(e);
+    return null;
+  } finally {
+    artTextOcrChecking.value = false;
+  }
+}
+
+async function installArtTextOcrModels() {
+  artTextOcrInstalling.value = true;
+  artTextMessage.value = "正在下载并安装 OCR 模型...";
+  artTextOcrInstallCurrent.value = 0;
+  artTextOcrInstallTotal.value = 0;
+  artTextOcrInstallFile.value = "";
+  artTextOcrInstallPhase.value = "";
+  try {
+    const status = await invoke("install_art_text_ocr_models");
+    artTextOcrStatus.value = status;
+    artTextMessage.value = `OCR 模型安装完成：${status.path}`;
+  } catch (e) {
+    artTextMessage.value = String(e);
+  } finally {
+    artTextOcrInstalling.value = false;
+  }
+}
+
+async function importArtTextOcrModels() {
+  try {
+    const dir = await open({ directory: true, multiple: false, title: "选择 OCR 模型目录" });
+    if (!dir) return;
+    artTextOcrInstalling.value = true;
+    artTextMessage.value = "正在复制本地 OCR 模型...";
+    const status = await invoke("import_art_text_ocr_models", { sourceDir: dir });
+    artTextOcrStatus.value = status;
+    artTextMessage.value = `OCR 模型导入完成：${status.path}`;
+  } catch (e) {
+    artTextMessage.value = String(e);
+  } finally {
+    artTextOcrInstalling.value = false;
+  }
 }
 
 async function addArtTextDir() {
@@ -2520,6 +2713,11 @@ async function removeArtTextDir(index) {
 }
 
 async function buildArtTextIndex() {
+  const status = artTextOcrReady.value ? artTextOcrStatus.value : await checkArtTextOcrStatus(false);
+  if (!status?.ready) {
+    artTextMessage.value = `请先安装 OCR 模型${status?.missing?.length ? `，缺少：${status.missing.join("、")}` : ""}`;
+    return;
+  }
   artTextBuilding.value = true;
   artTextMessage.value = "";
   artTextProgressCurrent.value = 0;
@@ -2608,11 +2806,23 @@ function handleArtTextIndexProgress(event) {
   artTextProgressPhase.value = phase || "";
 }
 
+function handleArtTextOcrInstallProgress(event) {
+  const { current, total, currentFile, phase } = event.payload || {};
+  artTextOcrInstallCurrent.value = Number(current) || 0;
+  artTextOcrInstallTotal.value = Number(total) || 0;
+  artTextOcrInstallFile.value = currentFile || "";
+  artTextOcrInstallPhase.value = phase || "";
+}
+
 async function initArtTextSearchWindow() {
   await loadArtTextDirs();
   await loadArtTextIndexInfo();
+  await checkArtTextOcrStatus(false);
   if (isTauriWindow && !unlistenArtTextIndexProgress) {
     unlistenArtTextIndexProgress = await listen("art-text-index-progress", handleArtTextIndexProgress);
+  }
+  if (isTauriWindow && !unlistenArtTextOcrInstallProgress) {
+    unlistenArtTextOcrInstallProgress = await listen("art-text-ocr-install-progress", handleArtTextOcrInstallProgress);
   }
 }
 
@@ -3135,7 +3345,7 @@ const tableCommandCandidates = computed(() => {
   return rankTableSearchCandidates(query, base).slice(0, TABLE_COMMAND_LIMIT);
 });
 const tableCommandHint = computed(() =>
-  tableCommandSlashMode.value ? "Slash 模式 / 选择表" : "Ctrl+P 输入表名，Enter 打开",
+  tableCommandSlashMode.value ? "Slash 模式 / 选择表" : `${getPanelShortcut("openTableCommand")} 输入表名，Enter 打开`,
 );
 const totalPages = computed(() => Math.max(1, Math.ceil(tableView.totalRows / tableView.pageSize)));
 const resultZoomTitle = computed(() => {
@@ -4952,6 +5162,10 @@ onBeforeUnmount(() => {
     unlistenArtTextIndexProgress();
     unlistenArtTextIndexProgress = null;
   }
+  if (unlistenArtTextOcrInstallProgress) {
+    unlistenArtTextOcrInstallProgress();
+    unlistenArtTextOcrInstallProgress = null;
+  }
   if (unlistenPetIdleStatesChanged) {
     unlistenPetIdleStatesChanged();
     unlistenPetIdleStatesChanged = null;
@@ -5667,7 +5881,7 @@ function onWindowKeydown(event) {
     return;
   }
 
-  if (withPrimary && !event.altKey && !event.shiftKey && lower === "p") {
+  if (isPanelShortcut(event, "openTableCommand")) {
     if (settingsOpen.value) {
       event.preventDefault();
       return;
@@ -5679,14 +5893,11 @@ function onWindowKeydown(event) {
 
   if (
     tableOpen.value &&
-    withPrimary &&
-    !event.altKey &&
-    !event.shiftKey &&
-    (event.key === "[" || event.key === "]") &&
+    (isPanelShortcut(event, "previousSearchTable") || isPanelShortcut(event, "nextSearchTable")) &&
     !isEditableTarget(event.target)
   ) {
     event.preventDefault();
-    switchTableByStep(event.key === "]" ? 1 : -1).catch(() => {});
+    switchTableByStep(isPanelShortcut(event, "nextSearchTable") ? 1 : -1).catch(() => {});
     return;
   }
 
@@ -5704,7 +5915,7 @@ function onWindowKeydown(event) {
   }
 
   if (cellViewerOpen.value) {
-    if (withPrimary && !event.altKey && lower === "s" && cellViewer.mode === "edit" && cellViewerCanSave.value) {
+    if (isPanelShortcut(event, "cellViewerSave") && cellViewer.mode === "edit" && cellViewerCanSave.value) {
       event.preventDefault();
       saveCellViewerChanges();
       return;
@@ -5719,7 +5930,7 @@ function onWindowKeydown(event) {
     }
   }
 
-  if (tableOpen.value && editMode.value && withPrimary && !event.altKey && !event.shiftKey && lower === "a" && !isEditableTarget(event.target)) {
+  if (tableOpen.value && editMode.value && isPanelShortcut(event, "editSelectAll") && !isEditableTarget(event.target)) {
     event.preventDefault();
     selectAllPageRows();
     return;
@@ -5728,10 +5939,7 @@ function onWindowKeydown(event) {
   if (
     tableOpen.value &&
     editMode.value &&
-    withPrimary &&
-    !event.altKey &&
-    !event.shiftKey &&
-    lower === "c" &&
+    isPanelShortcut(event, "editCopySelected") &&
     !isEditableTarget(event.target) &&
     editCurrentPageSelectedCount.value > 0
   ) {
@@ -5740,7 +5948,7 @@ function onWindowKeydown(event) {
     return;
   }
 
-  if (tableOpen.value && editMode.value && withPrimary && !event.altKey && lower === "s") {
+  if (tableOpen.value && editMode.value && isPanelShortcut(event, "editSave")) {
     event.preventDefault();
     confirmCellEdit();
     if (editDirty.value) {
@@ -5749,7 +5957,7 @@ function onWindowKeydown(event) {
     return;
   }
 
-  if (tableOpen.value && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "o") {
+  if (tableOpen.value && isPanelShortcut(event, "openTableFind")) {
     event.preventDefault();
     openTableFind();
     return;
@@ -5795,14 +6003,11 @@ function onWindowKeydown(event) {
 
   if (
     tableOpen.value &&
-    withPrimary &&
-    !event.altKey &&
-    !event.shiftKey &&
     !settingsOpen.value &&
     !isEditableTarget(event.target) &&
-    (lower === "arrowleft" || lower === "arrowright")
+    (isPanelShortcut(event, "scrollTableLeft") || isPanelShortcut(event, "scrollTableRight"))
   ) {
-    const moved = scrollTableContentHorizontally(lower === "arrowleft" ? -240 : 240);
+    const moved = scrollTableContentHorizontally(isPanelShortcut(event, "scrollTableLeft") ? -240 : 240);
     if (moved) {
       event.preventDefault();
     }
@@ -5811,29 +6016,31 @@ function onWindowKeydown(event) {
 
   if (
     !tableOpen.value &&
-    withPrimary &&
-    !event.altKey &&
-    !event.shiftKey &&
     !settingsOpen.value &&
     allowPanelShortcut &&
-    (lower === "arrowleft" || lower === "arrowright" || lower === "arrowup" || lower === "arrowdown")
+    (
+      isPanelShortcut(event, "focusSidebar") ||
+      isPanelShortcut(event, "focusResults") ||
+      isPanelShortcut(event, "moveUp") ||
+      isPanelShortcut(event, "moveDown")
+    )
   ) {
     event.preventDefault();
-    if (lower === "arrowleft") {
+    if (isPanelShortcut(event, "focusSidebar")) {
       navZone.value = "sidebar";
       return;
     }
-    if (lower === "arrowright") {
+    if (isPanelShortcut(event, "focusResults")) {
       navZone.value = "results";
       ensureKeyboardResultNav();
       scrollKeyboardResultIntoView();
       return;
     }
     if (navZone.value === "sidebar") {
-      moveSidebarTabByStep(lower === "arrowdown" ? 1 : -1);
+      moveSidebarTabByStep(isPanelShortcut(event, "moveDown") ? 1 : -1);
       return;
     }
-    moveResultNavByStep(lower === "arrowdown" ? 1 : -1);
+    moveResultNavByStep(isPanelShortcut(event, "moveDown") ? 1 : -1);
     return;
   }
 
@@ -5861,17 +6068,17 @@ function onWindowKeydown(event) {
     return;
   }
 
-  if (tableOpen.value && event.key === "Tab" && (event.ctrlKey || event.metaKey)) {
+  if (tableOpen.value && (isPanelShortcut(event, "nextTab") || isPanelShortcut(event, "previousTab"))) {
     event.preventDefault();
     const tabs = tableTabs.value;
     if (tabs.length <= 1) return;
     const idx = tabs.findIndex((t) => t.id === activeTableTabId.value);
-    const next = (idx + (event.shiftKey ? -1 : 1) + tabs.length) % tabs.length;
+    const next = (idx + (isPanelShortcut(event, "previousTab") ? -1 : 1) + tabs.length) % tabs.length;
     activateTableTab(tabs[next].id).catch(() => {});
     return;
   }
 
-  if (tableOpen.value && event.key === "Tab") {
+  if (tableOpen.value && isPanelShortcut(event, "toggleTableView")) {
     event.preventDefault();
     toggleTableDetailView();
     return;
@@ -5879,39 +6086,34 @@ function onWindowKeydown(event) {
 
   if (
     tableOpen.value &&
-    !event.ctrlKey &&
-    !event.metaKey &&
-    !event.altKey &&
     !isEditableTarget(event.target)
   ) {
-    if (lower === "q") {
+    if (isPanelShortcut(event, "jumpPreviousHit")) {
       event.preventDefault();
       jumpHitRow(-1).catch(() => {});
       return;
     }
-    if (lower === "e") {
+    if (isPanelShortcut(event, "jumpNextHit")) {
       event.preventDefault();
       jumpHitRow(1).catch(() => {});
       return;
     }
-    if (event.key === '`') {
+    if (isPanelShortcut(event, "toggleEditMode")) {
       event.preventDefault();
       onEditToggleClick();
       return;
     }
   }
 
-  const tableDialogKeyAction = resolveTableDialogKeyAction({
-    key: event.key,
-    code: event.code,
-    ctrlKey: event.ctrlKey,
-    metaKey: event.metaKey,
-    altKey: event.altKey,
-    shiftKey: event.shiftKey,
-    tableOpen: tableOpen.value,
-    settingsOpen: settingsOpen.value,
-    isEditable: isEditableTarget(event.target) && !bypassEditableGuard,
-  });
+  const tableDialogKeyAction = tableOpen.value && !settingsOpen.value && !(isEditableTarget(event.target) && !bypassEditableGuard)
+    ? isPanelShortcut(event, "closeTable")
+      ? "closeTable"
+      : isPanelShortcut(event, "closeAllTables")
+        ? "closeAllTables"
+        : isPanelShortcut(event, "toggleFullscreen")
+          ? "toggleFullscreen"
+          : "none"
+    : "none";
   if (shouldClearArmedTableDialogShortcutAfterAction(tableDialogKeyAction)) {
     armedTitlebarTableShortcut = false;
   }
@@ -6044,6 +6246,24 @@ function normalizeTemplateSwitchHotkey(value, fallback) {
   return normalized;
 }
 
+function normalizePanelShortcuts(shortcuts = {}) {
+  const source = shortcuts && typeof shortcuts === "object" ? shortcuts : {};
+  return Object.fromEntries(
+    Object.entries(PANEL_SHORTCUT_DEFAULTS).map(([id, fallback]) => {
+      const normalized = normalizeHotkeyDisplay(source[id] || fallback);
+      return [id, normalized || fallback];
+    }),
+  );
+}
+
+function getPanelShortcut(id) {
+  return config.personal.panel_shortcuts?.[id] || PANEL_SHORTCUT_DEFAULTS[id] || "";
+}
+
+function isPanelShortcut(event, id) {
+  return isEventMatchingHotkey(event, getPanelShortcut(id));
+}
+
 function isModifierOnlyHotkey(value) {
   const parts = String(value || "")
     .split("+")
@@ -6073,6 +6293,35 @@ function onHotkeyInputKeydown(event) {
 
 function onQuickDateHotkeyInputKeydown(event) {
   onDraftHotkeyInputKeydown(event, "quickDateHotkey");
+}
+
+function onPanelShortcutInputKeydown(event, shortcutId) {
+  if (event.key === "Tab") return;
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (event.key === "Backspace" || event.key === "Delete") {
+    settingsDraft.panelShortcuts[shortcutId] = "";
+    return;
+  }
+
+  settingsDraft.panelShortcuts[shortcutId] = buildHotkeyFromEvent(event);
+}
+
+function onSyncWindowHotkeyInputKeydown(event) {
+  onDraftHotkeyInputKeydown(event, "syncWindowHotkey");
+}
+
+function onDbMigrationWindowHotkeyInputKeydown(event) {
+  onDraftHotkeyInputKeydown(event, "dbMigrationWindowHotkey");
+}
+
+function onQuickPasteOpenHotkeyInputKeydown(event) {
+  onDraftHotkeyInputKeydown(event, "quickPasteOpenHotkey");
+}
+
+function onQuickPasteOutputHotkeyInputKeydown(event) {
+  onDraftHotkeyInputKeydown(event, "quickPasteOutputHotkey");
 }
 
 async function panelClose() {
@@ -6163,6 +6412,10 @@ function openSettings(target = null) {
   syncSettingsDraftDbFields();
   settingsDraft.hotkey = normalizeHotkeyDisplay(config.personal.hotkey);
   settingsDraft.quickDateHotkey = normalizeQuickDateHotkey(config.personal.quick_date_hotkey);
+  settingsDraft.syncWindowHotkey = normalizeSyncWindowHotkey(config.personal.sync_window_hotkey);
+  settingsDraft.dbMigrationWindowHotkey = normalizeHotkeyDisplay(config.personal.db_migration_window_hotkey || "Shift+S");
+  settingsDraft.quickPasteOpenHotkey = normalizeHotkeyDisplay(config.personal.quick_paste?.open_hotkey || "F7");
+  settingsDraft.quickPasteOutputHotkey = normalizeHotkeyDisplay(config.personal.quick_paste?.output_hotkey || "F8");
   settingsDraft.autoStart = config.personal.auto_start;
   settingsDraft.tableDefaultView = normalizeTableDefaultView(config.personal.table_default_view);
   settingsDraft.idleStates = [...sanitizeIdleStates(config.personal.idle_states)];
@@ -6181,6 +6434,7 @@ function openSettings(target = null) {
     config.personal.template_next_hotkey,
     "Ctrl+Alt+Right",
   );
+  settingsDraft.panelShortcuts = normalizePanelShortcuts(config.personal.panel_shortcuts);
   settingsDraft.resetOnOpenToAllTables = config.personal.reset_on_open_to_all_tables !== false;
   settingsDraft.templateName = "";
   settingsDraft.petSkin = config.personal.pet_skin || "eagle";
@@ -6255,6 +6509,16 @@ async function testConnect() {
 async function saveSettings() {
   const previousHotkey = config.personal.hotkey;
   const previousQuickDateHotkey = config.personal.quick_date_hotkey;
+  const previousSyncWindowHotkey = config.personal.sync_window_hotkey;
+  const previousDbMigrationWindowHotkey = config.personal.db_migration_window_hotkey;
+  const previousQuickPasteConfig = {
+    enabled: config.personal.quick_paste?.enabled ?? true,
+    open_hotkey: config.personal.quick_paste?.open_hotkey || "F7",
+    output_hotkey: config.personal.quick_paste?.output_hotkey || "F8",
+    snippets: Array.isArray(config.personal.quick_paste?.snippets)
+      ? config.personal.quick_paste.snippets.map((snippet) => ({ ...snippet }))
+      : [],
+  };
   applyDbConfigToShared({
     host: settingsDraft.host.trim(),
     port: Number(settingsDraft.port) || 3306,
@@ -6265,6 +6529,14 @@ async function saveSettings() {
 
   config.personal.hotkey = normalizeHotkeyDisplay(settingsDraft.hotkey.trim() || "Ctrl+Shift+F");
   config.personal.quick_date_hotkey = normalizeQuickDateHotkey(settingsDraft.quickDateHotkey.trim() || "F9");
+  config.personal.sync_window_hotkey = normalizeSyncWindowHotkey(settingsDraft.syncWindowHotkey.trim() || "Shift+D");
+  config.personal.db_migration_window_hotkey = normalizeHotkeyDisplay(settingsDraft.dbMigrationWindowHotkey.trim() || "Shift+S");
+  config.personal.quick_paste = {
+    enabled: previousQuickPasteConfig.enabled,
+    open_hotkey: normalizeHotkeyDisplay(settingsDraft.quickPasteOpenHotkey.trim() || "F7"),
+    output_hotkey: normalizeHotkeyDisplay(settingsDraft.quickPasteOutputHotkey.trim() || "F8"),
+    snippets: previousQuickPasteConfig.snippets,
+  };
   config.personal.idle_states = sanitizeIdleStates(settingsDraft.idleStates);
   config.personal.table_default_view = normalizeTableDefaultView(settingsDraft.tableDefaultView);
   config.personal.export_hotkey = normalizeHotkeyDisplay(settingsDraft.exportHotkey.trim() || "Ctrl+E");
@@ -6278,6 +6550,7 @@ async function saveSettings() {
     settingsDraft.templateNextHotkey.trim() || "Ctrl+Alt+Right",
     "Ctrl+Alt+Right",
   );
+  config.personal.panel_shortcuts = normalizePanelShortcuts(settingsDraft.panelShortcuts);
   if (isModifierOnlyHotkey(config.personal.hotkey)) {
     settingsMsg.value = "✗ 快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F";
     return;
@@ -6290,6 +6563,26 @@ async function saveSettings() {
     settingsMsg.value = "✗ 日期快捷键不能与主快捷键重复";
     return;
   }
+  if (isModifierOnlyHotkey(config.personal.sync_window_hotkey)) {
+    settingsMsg.value = "✗ 同步中心快捷键必须包含至少一个非修饰键，例如 Shift+D";
+    return;
+  }
+  if (isModifierOnlyHotkey(config.personal.db_migration_window_hotkey)) {
+    settingsMsg.value = "✗ 数据库迁移快捷键必须包含至少一个非修饰键，例如 Shift+S";
+    return;
+  }
+  if (isModifierOnlyHotkey(config.personal.quick_paste.open_hotkey)) {
+    settingsMsg.value = "✗ 快捷粘贴打开快捷键必须包含至少一个非修饰键，例如 F7";
+    return;
+  }
+  if (isModifierOnlyHotkey(config.personal.quick_paste.output_hotkey)) {
+    settingsMsg.value = "✗ 快捷粘贴输出快捷键必须包含至少一个非修饰键，例如 F8";
+    return;
+  }
+  if (config.personal.quick_paste.open_hotkey === config.personal.quick_paste.output_hotkey) {
+    settingsMsg.value = "✗ 快捷粘贴打开和输出快捷键不能重复";
+    return;
+  }
   if (config.personal.template_prev_hotkey === config.personal.template_next_hotkey) {
     settingsMsg.value = "✗ 模板上一快捷键不能与模板下一快捷键重复";
     return;
@@ -6297,7 +6590,7 @@ async function saveSettings() {
 
   const fixedPanelHotkeys = new Set(["Ctrl+P", "Ctrl+O", "Ctrl+[", "Ctrl+]"]);
   if (fixedPanelHotkeys.has(config.personal.template_prev_hotkey) || fixedPanelHotkeys.has(config.personal.template_next_hotkey)) {
-    settingsMsg.value = "✗ 模板切换快捷键不能与面板内置快捷键冲突";
+    settingsMsg.value = "✗ 模板切换快捷键不能与默认面板快捷键冲突";
     return;
   }
 
@@ -6305,6 +6598,10 @@ async function saveSettings() {
   const configurableHotkeys = [
     ["主快捷键", config.personal.hotkey],
     ["日期快捷键", config.personal.quick_date_hotkey],
+    ["同步中心快捷键", config.personal.sync_window_hotkey],
+    ["数据库迁移快捷键", config.personal.db_migration_window_hotkey],
+    ["快捷粘贴打开快捷键", config.personal.quick_paste.open_hotkey],
+    ["快捷粘贴输出快捷键", config.personal.quick_paste.output_hotkey],
     ["导出快捷键", config.personal.export_hotkey],
     ["批量导出快捷键", config.personal.batch_export_hotkey],
     ["置顶快捷键", config.personal.always_on_top_hotkey],
@@ -6369,6 +6666,67 @@ async function saveSettings() {
       config.personal.hotkey = previousHotkey;
       await invoke("register_hotkey", { hotkey: previousHotkey }).catch(() => {});
       settingsMsg.value = `✗ 日期快捷键注册失败：${String(error)}`;
+      return;
+    }
+
+    try {
+      const registeredSyncHotkey = await invoke("register_sync_window_hotkey", {
+        hotkey: config.personal.sync_window_hotkey,
+      });
+      config.personal.sync_window_hotkey = normalizeSyncWindowHotkey(registeredSyncHotkey);
+      syncWorkspaceHotkey.value = config.personal.sync_window_hotkey;
+    } catch (error) {
+      config.personal.sync_window_hotkey = previousSyncWindowHotkey;
+      config.personal.db_migration_window_hotkey = previousDbMigrationWindowHotkey;
+      config.personal.quick_date_hotkey = previousQuickDateHotkey;
+      config.personal.hotkey = previousHotkey;
+      await invoke("register_quick_date_hotkey", { hotkey: previousQuickDateHotkey }).catch(() => {});
+      await invoke("register_hotkey", { hotkey: previousHotkey }).catch(() => {});
+      settingsMsg.value = `✗ 同步中心快捷键注册失败：${String(error)}`;
+      return;
+    }
+
+    try {
+      const registeredDbMigrationHotkey = await invoke("register_db_migration_window_hotkey", {
+        hotkey: config.personal.db_migration_window_hotkey,
+      });
+      config.personal.db_migration_window_hotkey = normalizeHotkeyDisplay(registeredDbMigrationHotkey);
+    } catch (error) {
+      config.personal.sync_window_hotkey = previousSyncWindowHotkey;
+      config.personal.quick_date_hotkey = previousQuickDateHotkey;
+      config.personal.hotkey = previousHotkey;
+      await invoke("register_sync_window_hotkey", { hotkey: previousSyncWindowHotkey }).catch(() => {});
+      await invoke("register_db_migration_window_hotkey", { hotkey: previousDbMigrationWindowHotkey }).catch(() => {});
+      await invoke("register_quick_date_hotkey", { hotkey: previousQuickDateHotkey }).catch(() => {});
+      await invoke("register_hotkey", { hotkey: previousHotkey }).catch(() => {});
+      settingsMsg.value = `✗ 数据库迁移快捷键注册失败：${String(error)}`;
+      return;
+    }
+
+    try {
+      const registeredQuickPasteConfig = await invoke("save_quick_paste_config", {
+        config: config.personal.quick_paste,
+      });
+      config.personal.quick_paste = {
+        enabled: registeredQuickPasteConfig.enabled ?? true,
+        open_hotkey: normalizeHotkeyDisplay(registeredQuickPasteConfig.open_hotkey ?? registeredQuickPasteConfig.openHotkey ?? config.personal.quick_paste.open_hotkey),
+        output_hotkey: normalizeHotkeyDisplay(registeredQuickPasteConfig.output_hotkey ?? registeredQuickPasteConfig.outputHotkey ?? config.personal.quick_paste.output_hotkey),
+        snippets: Array.isArray(registeredQuickPasteConfig.snippets)
+          ? registeredQuickPasteConfig.snippets
+          : config.personal.quick_paste.snippets,
+      };
+    } catch (error) {
+      config.personal.quick_paste = previousQuickPasteConfig;
+      config.personal.sync_window_hotkey = previousSyncWindowHotkey;
+      config.personal.db_migration_window_hotkey = previousDbMigrationWindowHotkey;
+      config.personal.quick_date_hotkey = previousQuickDateHotkey;
+      config.personal.hotkey = previousHotkey;
+      await invoke("register_sync_window_hotkey", { hotkey: previousSyncWindowHotkey }).catch(() => {});
+      await invoke("register_db_migration_window_hotkey", { hotkey: previousDbMigrationWindowHotkey }).catch(() => {});
+      await invoke("register_quick_date_hotkey", { hotkey: previousQuickDateHotkey }).catch(() => {});
+      await invoke("register_hotkey", { hotkey: previousHotkey }).catch(() => {});
+      await invoke("save_quick_paste_config", { config: previousQuickPasteConfig }).catch(() => {});
+      settingsMsg.value = `✗ 快捷粘贴快捷键注册失败：${String(error)}`;
       return;
     }
   }
@@ -8228,6 +8586,13 @@ async function loadConfig() {
   config.personal.ui_scale = normalizeUiScale(config.personal.ui_scale);
   config.personal.table_default_view = normalizeTableDefaultView(config.personal.table_default_view);
   config.personal.quick_date_hotkey = normalizeQuickDateHotkey(config.personal.quick_date_hotkey);
+  config.personal.sync_window_hotkey = normalizeSyncWindowHotkey(config.personal.sync_window_hotkey);
+  config.personal.quick_paste = {
+    enabled: config.personal.quick_paste?.enabled ?? true,
+    open_hotkey: normalizeHotkeyDisplay(config.personal.quick_paste?.open_hotkey || config.personal.quick_paste?.openHotkey || "F7"),
+    output_hotkey: normalizeHotkeyDisplay(config.personal.quick_paste?.output_hotkey || config.personal.quick_paste?.outputHotkey || "F8"),
+    snippets: Array.isArray(config.personal.quick_paste?.snippets) ? config.personal.quick_paste.snippets : [],
+  };
   config.personal.template_prev_hotkey = normalizeTemplateSwitchHotkey(
     config.personal.template_prev_hotkey,
     "Ctrl+Alt+Left",
@@ -8236,6 +8601,7 @@ async function loadConfig() {
     config.personal.template_next_hotkey,
     "Ctrl+Alt+Right",
   );
+  config.personal.panel_shortcuts = normalizePanelShortcuts(config.personal.panel_shortcuts);
   config.personal.reset_on_open_to_all_tables = config.personal.reset_on_open_to_all_tables !== false;
   {
     const updateSettings = normalizeUpdateSettings(config.personal);
@@ -8908,13 +9274,6 @@ function escapeHtml(str) {
           @click="toggleQuickPasteZoom"
         ></button>
       </div>
-      <div class="quick-paste-title-block">
-        <img class="quick-paste-logo-mark" src="/quick-paste-logo.png" alt="" draggable="false" />
-        <span class="quick-paste-wordmark" aria-label="快捷粘贴 Quick Paste">
-          <strong>快捷粘贴</strong>
-          <small>QUICK PASTE</small>
-        </span>
-      </div>
       <div class="quick-paste-header-actions">
         <button type="button" class="quick-paste-ghost-button" @click="openQuickPasteCreate">新建</button>
       </div>
@@ -8922,6 +9281,13 @@ function escapeHtml(str) {
 
     <main class="quick-paste-body" :style="quickPasteBodyStyle">
       <aside class="quick-paste-sidebar">
+        <div class="quick-paste-sidebar-brand" data-tauri-drag-region>
+          <img class="quick-paste-logo-mark" src="/quick-paste-logo.png" alt="" draggable="false" />
+          <span class="quick-paste-wordmark" aria-label="快捷粘贴 Quick Paste">
+            <strong>快捷粘贴</strong>
+            <small>QUICK PASTE</small>
+          </span>
+        </div>
         <input v-model="quickPaste.query" class="quick-paste-search" placeholder="搜索标题或内容" />
         <nav class="quick-paste-categories" aria-label="快捷粘贴分类">
           <button
@@ -8931,7 +9297,10 @@ function escapeHtml(str) {
             :class="['quick-paste-category', { active: quickPaste.activeCategory === category.key }]"
             @click="quickPaste.activeCategory = category.key"
           >
-            <span>{{ category.label }}</span>
+            <span class="quick-paste-category-label">
+              <span class="quick-paste-category-icon" aria-hidden="true">{{ category.icon }}</span>
+              <span>{{ category.label }}</span>
+            </span>
             <small>{{ getQuickPasteCategoryCount(category.key) }}</small>
           </button>
         </nav>
@@ -8976,8 +9345,7 @@ function escapeHtml(str) {
           <span class="quick-paste-item-title">{{ snippet.title }}</span>
           <span class="quick-paste-item-preview">{{ isQuickPasteImageSnippet(snippet) ? '图片' : snippet.content }}</span>
           <span class="quick-paste-item-badges">
-            <small v-if="isQuickPasteImageSnippet(snippet)">图片</small>
-            <small v-if="snippet.image && !isQuickPasteImageSnippet(snippet)">图文</small>
+            <small>{{ getQuickPasteSnippetKindLabel(snippet) }}</small>
             <small v-if="snippet.favorite">常用</small>
             <small v-if="snippet.isDefault">默认</small>
           </span>
@@ -9003,7 +9371,7 @@ function escapeHtml(str) {
                 @change="saveQuickPasteInlineSnippet(selectedQuickPasteSnippet)"
                 @blur="saveQuickPasteInlineSnippet(selectedQuickPasteSnippet)"
               />
-              <p>{{ selectedQuickPasteSnippet.category || 'text' }}</p>
+              <p>{{ getQuickPasteSnippetKindLabel(selectedQuickPasteSnippet) }}</p>
             </div>
           </div>
           <div
@@ -9018,6 +9386,7 @@ function escapeHtml(str) {
             @paste="handleQuickPasteEditorPaste"
             @blur="saveQuickPasteEditorHtml(selectedQuickPasteSnippet)"
             @contextmenu.capture="handleQuickPasteEditorContextMenu"
+            @dblclick.capture="handleQuickPasteEditorDoubleClick"
           ></div>
           <div class="quick-paste-preview-actions">
             <button type="button" @click="setQuickPasteDefault(selectedQuickPasteSnippet)">设为默认</button>
@@ -9034,6 +9403,23 @@ function escapeHtml(str) {
 
     <div v-if="quickPaste.toast.visible" :class="['quick-paste-toast', quickPaste.toast.tone]">
       {{ quickPaste.toast.text }}
+    </div>
+
+    <div
+      v-if="quickPaste.imagePreview.visible"
+      class="quick-paste-image-preview-backdrop"
+      role="dialog"
+      aria-modal="true"
+      :aria-label="quickPaste.imagePreview.title"
+      @click.self="closeQuickPasteImagePreview"
+    >
+      <div class="quick-paste-image-preview">
+        <header>
+          <strong>{{ quickPaste.imagePreview.title }}</strong>
+          <button type="button" aria-label="关闭图片预览" title="关闭" @click="closeQuickPasteImagePreview">×</button>
+        </header>
+        <img :src="quickPaste.imagePreview.src" :alt="quickPaste.imagePreview.title" />
+      </div>
     </div>
   </section>
 
@@ -9227,7 +9613,7 @@ function escapeHtml(str) {
             </button>
             <button
               class="panel-tab-chip-add"
-              title="打开表 (Ctrl+P)"
+              :title="`打开表 (${getPanelShortcut('openTableCommand')})`"
               aria-label="打开表"
               @click.stop="openTableCommandPalette()"
             >
@@ -10134,6 +10520,39 @@ function escapeHtml(str) {
     </div>
     <div class="ats-body">
       <div class="glass-card ats-card">
+        <h4 class="glass-card-title">OCR 模型</h4>
+        <div class="ats-ocr-row">
+          <span :class="['ats-ocr-badge', artTextOcrReady ? 'ready' : 'missing']">
+            {{ artTextOcrReady ? '已安装' : '未安装' }}
+          </span>
+          <span class="ats-ocr-path">{{ artTextOcrStatus?.path || '检测后显示安装目录' }}</span>
+        </div>
+        <div v-if="!artTextOcrReady && artTextOcrMissingText" class="ats-ocr-missing">
+          缺少：{{ artTextOcrMissingText }}
+        </div>
+        <div class="ats-dir-actions">
+          <button class="glass-btn-primary ats-btn-sm" :disabled="artTextOcrChecking || artTextOcrInstalling" @click="checkArtTextOcrStatus(true)">
+            {{ artTextOcrChecking ? '检测中...' : '检测 OCR' }}
+          </button>
+          <button class="glass-btn-primary ats-btn-sm" :disabled="artTextOcrInstalling" @click="installArtTextOcrModels">
+            {{ artTextOcrInstalling ? '安装中...' : '自动安装' }}
+          </button>
+          <button class="glass-btn-primary ats-btn-sm" :disabled="artTextOcrInstalling" @click="importArtTextOcrModels">
+            选择本地模型目录
+          </button>
+        </div>
+        <div v-if="artTextOcrInstalling && artTextOcrInstallTotal > 0" class="ats-progress-wrap">
+          <div class="ats-progress-bar">
+            <div class="ats-progress-fill" :style="{ width: artTextOcrInstallPercent + '%' }"></div>
+          </div>
+          <span class="ats-progress-text">
+            {{ artTextOcrInstallPhase === 'download-bytes' ? `下载 ${artTextOcrInstallPercent}%` : '安装进度' }}
+            {{ artTextOcrInstallFile }}
+          </span>
+        </div>
+      </div>
+
+      <div class="glass-card ats-card">
         <h4 class="glass-card-title">扫描目录</h4>
         <div class="ats-dirs">
           <span v-for="(dir, i) in artTextDirs" :key="dir" class="ats-dir-chip">
@@ -10147,7 +10566,7 @@ function escapeHtml(str) {
           <button class="glass-btn-primary ats-btn-sm" :disabled="artTextScanningDirs" @click="scanArtTextSubDirs">
             {{ artTextScanningDirs ? '扫描中...' : '扫描子目录' }}
           </button>
-          <button class="glass-btn-primary" :disabled="artTextBuilding || artTextDirs.length === 0" @click="buildArtTextIndex">
+          <button class="glass-btn-primary" :disabled="artTextBuilding || artTextDirs.length === 0 || !artTextOcrReady" @click="buildArtTextIndex">
             {{ artTextBuilding ? '构建中...' : '开始构建索引' }}
           </button>
           <span v-if="artTextIndexBuiltAt" class="ats-built-at">上次更新: {{ artTextIndexBuiltAt }}</span>
@@ -10223,6 +10642,14 @@ function escapeHtml(str) {
           <path d="M7.2 5.2c.8-1.3 3.2-2.2 5.8-2.2 3.6 0 6.5 1.2 6.5 2.7 0 .7-.6 1.3-1.6 1.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
         </svg>
         <span>同步中心</span>
+      </button>
+      <button class="pet-menu-btn" @click="contextAction('quick_paste')">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M7 4.5h10A2.5 2.5 0 0 1 19.5 7v10A2.5 2.5 0 0 1 17 19.5H7A2.5 2.5 0 0 1 4.5 17V7A2.5 2.5 0 0 1 7 4.5Z" fill="none" stroke="currentColor" stroke-width="1.7"/>
+          <path d="M8 8h8M8 12h5M8 16h7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+          <path d="M16.5 3.5v3M7.5 3.5v3" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/>
+        </svg>
+        <span>快捷粘贴</span>
       </button>
       <button class="pet-menu-btn" @click="contextAction('settings')">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M19.14 12.94c.036-.31.06-.62.06-.94s-.024-.63-.07-.94l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.12 7.12 0 0 0-1.63-.94l-.36-2.54A.5.5 0 0 0 14.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54c-.58.23-1.12.54-1.63.94l-2.39-.96a.5.5 0 0 0-.6.22L3.7 8.48a.5.5 0 0 0 .12.64l2.03 1.58c-.046.31-.07.62-.07.94s.024.63.07.94L3.82 14.16a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.5.4 1.05.72 1.63.94l.36 2.54a.5.5 0 0 0 .5.42h3.8a.5.5 0 0 0 .5-.42l.36-2.54c.58-.23 1.12-.54 1.63-.94l2.39.96a.5.5 0 0 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8a3.5 3.5 0 0 1 0 7.5Z" fill="currentColor"/></svg>
@@ -10360,7 +10787,7 @@ function escapeHtml(str) {
             @click.stop="handleTableTabClose(tab.id)"
           >✕</span>
         </button>
-        <button class="table-tab-add" title="打开表 (Ctrl+P)" @click="openTableCommandPalette({ slash: true })">+</button>
+        <button class="table-tab-add" :title="`打开表 (${getPanelShortcut('openTableCommand')})`" @click="openTableCommandPalette({ slash: true })">+</button>
       </section>
       <section v-if="tableFindOpen" class="table-find-bar">
         <input id="tableFindInput" v-model="tableFindKeyword" type="text" placeholder="检索当前表的全部分页文本..." @keydown="onTableFindInputKeydown" />
@@ -10806,7 +11233,7 @@ function escapeHtml(str) {
         <button class="icon-btn" @click="closeTableCommandPalette">✕</button>
       </header>
       <div class="table-command-input-wrap">
-        <span class="table-command-prefix">Ctrl+P</span>
+        <span class="table-command-prefix">{{ getPanelShortcut("openTableCommand") }}</span>
         <input
           id="tableCommandInput"
           v-model="tableCommandQuery"
@@ -10892,15 +11319,45 @@ function escapeHtml(str) {
           <!-- Tab 1: 快捷键 -->
           <div v-else-if="settingsTab === 1" key="shortcuts" class="settings-tab-pane">
             <div class="glass-card">
-              <h4 class="glass-card-title">快捷键</h4>
+              <h4 class="glass-card-title">全局打开</h4>
               <div class="glass-form-grid">
-                <label class="glass-form-label">搜索快捷键<input v-model="settingsDraft.hotkey" type="text" class="glass-input" readonly :placeholder="hotkeyPlaceholder" @keydown="onHotkeyInputKeydown" /></label>
-                <label class="glass-form-label">日期快捷键<input v-model="settingsDraft.quickDateHotkey" type="text" class="glass-input" readonly :placeholder="quickDateHotkeyPlaceholder" @keydown="onQuickDateHotkeyInputKeydown" /></label>
+                <label class="glass-form-label">搜索面板<input v-model="settingsDraft.hotkey" type="text" class="glass-input" readonly :placeholder="hotkeyPlaceholder" @keydown="onHotkeyInputKeydown" /></label>
+                <label class="glass-form-label">同步中心快捷键<input v-model="settingsDraft.syncWindowHotkey" type="text" class="glass-input" readonly placeholder="Shift+D" @keydown="onSyncWindowHotkeyInputKeydown" /></label>
+                <label class="glass-form-label">数据库迁移快捷键<input v-model="settingsDraft.dbMigrationWindowHotkey" type="text" class="glass-input" readonly placeholder="Shift+S" @keydown="onDbMigrationWindowHotkeyInputKeydown" /></label>
+                <label class="glass-form-label">快捷粘贴打开<input v-model="settingsDraft.quickPasteOpenHotkey" type="text" class="glass-input" readonly placeholder="F7" @keydown="onQuickPasteOpenHotkeyInputKeydown" /></label>
+                <label class="glass-form-label">快捷粘贴输出<input v-model="settingsDraft.quickPasteOutputHotkey" type="text" class="glass-input" readonly placeholder="F8" @keydown="onQuickPasteOutputHotkeyInputKeydown" /></label>
+                <label class="glass-form-label">日期输入<input v-model="settingsDraft.quickDateHotkey" type="text" class="glass-input" readonly :placeholder="quickDateHotkeyPlaceholder" @keydown="onQuickDateHotkeyInputKeydown" /></label>
+              </div>
+            </div>
+            <div class="glass-card">
+              <h4 class="glass-card-title">导出与模板</h4>
+              <div class="glass-form-grid">
                 <label class="glass-form-label">导出快捷键<input v-model="settingsDraft.exportHotkey" type="text" class="glass-input" readonly placeholder="Ctrl+E" @keydown="onDraftHotkeyInputKeydown($event, 'exportHotkey')" /></label>
                 <label class="glass-form-label">批量导出快捷键<input v-model="settingsDraft.batchExportHotkey" type="text" class="glass-input" readonly placeholder="Ctrl+Shift+E" @keydown="onDraftHotkeyInputKeydown($event, 'batchExportHotkey')" /></label>
-                <label class="glass-form-label">置顶快捷键<input v-model="settingsDraft.alwaysOnTopHotkey" type="text" class="glass-input" readonly placeholder="P" @keydown="onDraftHotkeyInputKeydown($event, 'alwaysOnTopHotkey')" /></label>
                 <label class="glass-form-label">模板上一快捷键<input v-model="settingsDraft.templatePrevHotkey" type="text" class="glass-input" readonly placeholder="Ctrl+Alt+Left" @keydown="onDraftHotkeyInputKeydown($event, 'templatePrevHotkey')" /></label>
                 <label class="glass-form-label">模板下一快捷键<input v-model="settingsDraft.templateNextHotkey" type="text" class="glass-input" readonly placeholder="Ctrl+Alt+Right" @keydown="onDraftHotkeyInputKeydown($event, 'templateNextHotkey')" /></label>
+                <label class="glass-form-label">置顶快捷键<input v-model="settingsDraft.alwaysOnTopHotkey" type="text" class="glass-input" readonly placeholder="P" @keydown="onDraftHotkeyInputKeydown($event, 'alwaysOnTopHotkey')" /></label>
+              </div>
+            </div>
+            <div v-for="group in PANEL_SHORTCUT_GROUPS" :key="group.id" class="glass-card">
+              <h4 class="glass-card-title">{{ group.label }}</h4>
+              <div class="glass-form-grid">
+                <label v-for="item in group.items" :key="item.id" class="glass-form-label">
+                  {{ item.label }}
+                  <input
+                    v-model="settingsDraft.panelShortcuts[item.id]"
+                    type="text"
+                    class="glass-input"
+                    readonly
+                    :placeholder="item.defaultValue"
+                    @keydown="onPanelShortcutInputKeydown($event, item.id)"
+                  />
+                </label>
+              </div>
+            </div>
+            <div class="glass-card">
+              <h4 class="glass-card-title">系统</h4>
+              <div class="glass-form-grid">
                 <label class="glass-form-label">小窗口默认视图
                   <select v-model="settingsDraft.tableDefaultView" class="glass-select">
                     <option value="hits">Tab 页面（只看命中）</option>
@@ -10910,7 +11367,7 @@ function escapeHtml(str) {
               </div>
             </div>
             <div class="glass-card">
-              <h4 class="glass-card-title">系统</h4>
+              <h4 class="glass-card-title">启动与显示</h4>
               <div style="display:flex;flex-direction:column;gap:12px">
                 <label class="glass-toggle"><input v-model="settingsDraft.autoStart" type="checkbox" /><span class="glass-toggle-track"></span>开机自启</label>
                 <label class="glass-toggle"><input v-model="settingsDraft.alwaysOnTop" type="checkbox" /><span class="glass-toggle-track"></span>窗口置顶</label>

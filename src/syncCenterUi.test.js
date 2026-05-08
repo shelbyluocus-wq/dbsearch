@@ -3,6 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 
 const appVueSource = fs.readFileSync(new URL("./App.vue", import.meta.url), "utf8");
+const quickPasteCategoriesSource = fs.readFileSync(
+  new URL("./quickPasteCategories.js", import.meta.url),
+  "utf8",
+);
 const dbMigrationWorkspaceSource = fs.readFileSync(
   new URL("./DbMigrationWorkspace.vue", import.meta.url),
   "utf8",
@@ -153,10 +157,12 @@ test("quick paste new snippets start with an empty editable body", () => {
   assert.match(appVueSource, /category: "rich"/);
 });
 
-test("quick paste text category keeps rich mixed snippets visible", () => {
-  assert.match(appVueSource, /function isQuickPasteTextLikeSnippet\(snippet\)/);
+test("quick paste categories use shared rich snippet kind helpers", () => {
+  assert.match(appVueSource, /isQuickPasteTextLikeSnippet,\n} from "\.\/quickPasteCategories\.js";/);
   assert.match(appVueSource, /quickPaste\.activeCategory === "text" && isQuickPasteTextLikeSnippet\(snippet\)/);
-  assert.match(appVueSource, /snippet\?\.category === "rich"/);
+  assert.match(appVueSource, /quickPaste\.activeCategory === "mixed" && isQuickPasteMixedSnippet\(snippet\)/);
+  assert.match(quickPasteCategoriesSource, /export function getQuickPasteSnippetKind\(snippet\)/);
+  assert.match(quickPasteCategoriesSource, /if \(hasImage && hasText\) return "mixed";/);
 });
 
 test("quick paste window is not treated as the main search panel", () => {

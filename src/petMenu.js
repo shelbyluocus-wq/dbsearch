@@ -9,6 +9,8 @@ export async function runPetMenuAction(action, deps) {
   try {
     if (action === "open") {
       await invoke("show_panel_window", { openSettings: false });
+    } else if (action === "quick_paste") {
+      await invoke("toggle_quick_paste_window");
     } else if (action === "sync" || action === "sync_center" || action === "file_sync" || action === "db_sync") {
       await invoke("toggle_sync_workspace_window");
     } else if (action === "art_text_search") {

@@ -92,6 +92,24 @@ test("runPetMenuAction sync_center opens the unified sync workspace and then hid
   ]);
 });
 
+test("runPetMenuAction quick_paste opens quick paste and then hides the pet menu", async () => {
+  const calls = [];
+
+  await runPetMenuAction("quick_paste", {
+    isTauriWindow: true,
+    invoke: async (command) => {
+      calls.push(`invoke:${command}`);
+    },
+    getWindowByLabel: async () => null,
+    setPetHiddenForSession: () => {},
+  });
+
+  assert.deepEqual(calls, [
+    "invoke:toggle_quick_paste_window",
+    "invoke:hide_pet_menu",
+  ]);
+});
+
 test("runPetMenuAction legacy sync actions still open the unified sync workspace", async () => {
   const calls = [];
 

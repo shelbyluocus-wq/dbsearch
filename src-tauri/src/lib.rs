@@ -115,9 +115,9 @@ const PANEL_HEIGHT: f64 = 860.0;
 const PANEL_MIN_WIDTH: f64 = 680.0;
 const PANEL_MIN_HEIGHT: f64 = 720.0;
 const PET_MENU_WIDTH: f64 = 252.0;
-const PET_MENU_HEIGHT: f64 = 376.0;
-const PET_MENU_BUTTON_COUNT: f64 = 6.0;
-const PET_MENU_CHILD_COUNT: f64 = 7.0;
+const PET_MENU_HEIGHT: f64 = 426.0;
+const PET_MENU_BUTTON_COUNT: f64 = 7.0;
+const PET_MENU_CHILD_COUNT: f64 = 8.0;
 const PET_MENU_BUTTON_HEIGHT: f64 = 44.0;
 const PET_MENU_ROW_GAP: f64 = 6.0;
 const PET_MENU_DIVIDER_BLOCK_HEIGHT: f64 = 5.0;
@@ -130,9 +130,9 @@ const DB_MIGRATION_WORKSPACE_MIN_WIDTH: f64 = 980.0;
 const DB_MIGRATION_WORKSPACE_MIN_HEIGHT: f64 = 660.0;
 const ART_TEXT_SEARCH_WIDTH: f64 = 620.0;
 const ART_TEXT_SEARCH_HEIGHT: f64 = 520.0;
-const QUICK_PASTE_WINDOW_WIDTH: f64 = 818.0;
+const QUICK_PASTE_WINDOW_WIDTH: f64 = 900.0;
 const QUICK_PASTE_WINDOW_HEIGHT: f64 = 569.0;
-const QUICK_PASTE_WINDOW_MIN_WIDTH: f64 = 818.0;
+const QUICK_PASTE_WINDOW_MIN_WIDTH: f64 = 900.0;
 const QUICK_PASTE_WINDOW_MIN_HEIGHT: f64 = 569.0;
 const DEMO_FEATURE_TEST_TABLE: &str = "demo_feature_test";
 const DEFAULT_DB_MIGRATION_WINDOW_HOTKEY: &str = "Shift+S";
@@ -317,6 +317,8 @@ struct PersonalConfig {
     batch_export_hotkey: String,
     template_prev_hotkey: String,
     template_next_hotkey: String,
+    #[serde(default)]
+    panel_shortcuts: std::collections::HashMap<String, String>,
     reset_on_open_to_all_tables: bool,
     #[serde(default = "default_always_on_top_hotkey")]
     always_on_top_hotkey: String,
@@ -777,6 +779,7 @@ impl Default for PersonalConfig {
             batch_export_hotkey: "Ctrl+Shift+E".into(),
             template_prev_hotkey: "Ctrl+Alt+Left".into(),
             template_next_hotkey: "Ctrl+Alt+Right".into(),
+            panel_shortcuts: std::collections::HashMap::new(),
             reset_on_open_to_all_tables: true,
             always_on_top_hotkey: "P".into(),
             pet_skin: "eagle".into(),
@@ -2232,18 +2235,22 @@ async fn register_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
-    let (previous, quick_date, sync_window_hotkey, db_migration_window_hotkey) = {
+    let (previous, quick_date, sync_window_hotkey, db_migration_window_hotkey, quick_paste_open, quick_paste_output) = {
         let rt = state.runtime.lock().await;
         (
             rt.registered_hotkey.clone(),
             rt.registered_quick_date_hotkey.clone(),
             rt.registered_sync_window_hotkey.clone(),
             rt.registered_db_migration_window_hotkey.clone(),
+            rt.registered_quick_paste_open_hotkey.clone(),
+            rt.registered_quick_paste_output_hotkey.clone(),
         )
     };
     if quick_date.as_deref() == Some(normalized.as_str())
         || sync_window_hotkey.as_deref() == Some(normalized.as_str())
         || db_migration_window_hotkey.as_deref() == Some(normalized.as_str())
+        || quick_paste_open.as_deref() == Some(normalized.as_str())
+        || quick_paste_output.as_deref() == Some(normalized.as_str())
     {
         return Err("主快捷键不能与其他全局快捷键重复".into());
     }
@@ -2273,18 +2280,22 @@ async fn register_quick_date_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
-    let (previous, panel_hotkey, sync_window_hotkey, db_migration_window_hotkey) = {
+    let (previous, panel_hotkey, sync_window_hotkey, db_migration_window_hotkey, quick_paste_open, quick_paste_output) = {
         let rt = state.runtime.lock().await;
         (
             rt.registered_quick_date_hotkey.clone(),
             rt.registered_hotkey.clone(),
             rt.registered_sync_window_hotkey.clone(),
             rt.registered_db_migration_window_hotkey.clone(),
+            rt.registered_quick_paste_open_hotkey.clone(),
+            rt.registered_quick_paste_output_hotkey.clone(),
         )
     };
     if panel_hotkey.as_deref() == Some(normalized.as_str())
         || sync_window_hotkey.as_deref() == Some(normalized.as_str())
         || db_migration_window_hotkey.as_deref() == Some(normalized.as_str())
+        || quick_paste_open.as_deref() == Some(normalized.as_str())
+        || quick_paste_output.as_deref() == Some(normalized.as_str())
     {
         return Err("日期快捷键不能与其他全局快捷键重复".into());
     }
@@ -2314,18 +2325,22 @@ async fn register_sync_window_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
-    let (previous, panel_hotkey, quick_date_hotkey, db_migration_window_hotkey) = {
+    let (previous, panel_hotkey, quick_date_hotkey, db_migration_window_hotkey, quick_paste_open, quick_paste_output) = {
         let rt = state.runtime.lock().await;
         (
             rt.registered_sync_window_hotkey.clone(),
             rt.registered_hotkey.clone(),
             rt.registered_quick_date_hotkey.clone(),
             rt.registered_db_migration_window_hotkey.clone(),
+            rt.registered_quick_paste_open_hotkey.clone(),
+            rt.registered_quick_paste_output_hotkey.clone(),
         )
     };
     if panel_hotkey.as_deref() == Some(normalized.as_str())
         || quick_date_hotkey.as_deref() == Some(normalized.as_str())
         || db_migration_window_hotkey.as_deref() == Some(normalized.as_str())
+        || quick_paste_open.as_deref() == Some(normalized.as_str())
+        || quick_paste_output.as_deref() == Some(normalized.as_str())
     {
         return Err("同步工作台快捷键不能与其他全局快捷键重复".into());
     }
@@ -2361,19 +2376,23 @@ async fn register_db_migration_window_hotkey(
         normalize_hotkey_for_plugin(&hotkey)?
     };
 
-    let (previous, panel_hotkey, quick_date_hotkey, sync_window_hotkey) = {
+    let (previous, panel_hotkey, quick_date_hotkey, sync_window_hotkey, quick_paste_open, quick_paste_output) = {
         let rt = state.runtime.lock().await;
         (
             rt.registered_db_migration_window_hotkey.clone(),
             rt.registered_hotkey.clone(),
             rt.registered_quick_date_hotkey.clone(),
             rt.registered_sync_window_hotkey.clone(),
+            rt.registered_quick_paste_open_hotkey.clone(),
+            rt.registered_quick_paste_output_hotkey.clone(),
         )
     };
 
     if panel_hotkey.as_deref() == Some(normalized.as_str())
         || quick_date_hotkey.as_deref() == Some(normalized.as_str())
         || sync_window_hotkey.as_deref() == Some(normalized.as_str())
+        || quick_paste_open.as_deref() == Some(normalized.as_str())
+        || quick_paste_output.as_deref() == Some(normalized.as_str())
     {
         return Err("数据库迁移工作台快捷键不能与其他全局快捷键重复".into());
     }
@@ -2732,36 +2751,99 @@ struct ArtTextSearchResult {
     file_name: String,
 }
 
-#[cfg(feature = "ocr")]
-async fn download_ocr_models(models_dir: &std::path::Path) -> Result<(), String> {
+const OCR_MODEL_DET: &str = "det.onnx";
+const OCR_MODEL_REC: &str = "rec.onnx";
+const OCR_MODEL_DICT: &str = "ppocr_keys_v1.txt";
+const OCR_MODEL_FILES: [&str; 3] = [OCR_MODEL_DET, OCR_MODEL_REC, OCR_MODEL_DICT];
+const OCR_MODEL_DOWNLOADS: [(&str, &str, &str); 3] = [
+    (
+        "pp-ocrv5_mobile_det.onnx",
+        OCR_MODEL_DET,
+        "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_mobile_det.onnx",
+    ),
+    (
+        "pp-ocrv5_mobile_rec.onnx",
+        OCR_MODEL_REC,
+        "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_mobile_rec.onnx",
+    ),
+    (
+        "ppocrv5_dict.txt",
+        OCR_MODEL_DICT,
+        "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/ppocrv5_dict.txt",
+    ),
+];
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ArtTextOcrModelStatus {
+    ready: bool,
+    path: String,
+    required: Vec<String>,
+    missing: Vec<String>,
+}
+
+fn inspect_art_text_ocr_model_dir(models_dir: &Path) -> ArtTextOcrModelStatus {
+    let missing = OCR_MODEL_FILES
+        .iter()
+        .filter(|name| !models_dir.join(name).is_file())
+        .map(|name| (*name).to_string())
+        .collect::<Vec<_>>();
+    ArtTextOcrModelStatus {
+        ready: missing.is_empty(),
+        path: models_dir.to_string_lossy().to_string(),
+        required: OCR_MODEL_FILES.iter().map(|name| (*name).to_string()).collect(),
+        missing,
+    }
+}
+
+fn art_text_ocr_models_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("获取数据目录失败: {e}"))?
+        .join("models"))
+}
+
+fn emit_art_text_ocr_install_progress(
+    app: &tauri::AppHandle,
+    current: u64,
+    total: u64,
+    current_file: &str,
+    phase: &str,
+) {
+    let _ = app.emit(
+        "art-text-ocr-install-progress",
+        serde_json::json!({
+            "current": current,
+            "total": total,
+            "currentFile": current_file,
+            "phase": phase,
+        }),
+    );
+}
+
+async fn download_ocr_models(app: &tauri::AppHandle, models_dir: &Path) -> Result<(), String> {
     fs::create_dir_all(models_dir).map_err(|e| format!("创建模型目录失败: {e}"))?;
 
-    let models = [
-        (
-            "pp-ocrv5_mobile_det.onnx",
-            "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_mobile_det.onnx",
-        ),
-        (
-            "pp-ocrv5_mobile_rec.onnx",
-            "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/pp-ocrv5_mobile_rec.onnx",
-        ),
-        (
-            "ppocrv5_dict.txt",
-            "https://github.com/GreatV/oar-ocr/releases/download/v0.3.0/ppocrv5_dict.txt",
-        ),
-    ];
-
-    // Map local filenames expected by the engine
-    let local_names = ["det.onnx", "rec.onnx", "ppocr_keys_v1.txt"];
-
-    for (i, (filename, url)) in models.iter().enumerate() {
-        let dest = models_dir.join(local_names[i]);
+    for (i, (filename, local_name, url)) in OCR_MODEL_DOWNLOADS.iter().enumerate() {
+        let dest = models_dir.join(local_name);
         if dest.exists() {
+            emit_art_text_ocr_install_progress(
+                app,
+                (i as u64) + 1,
+                OCR_MODEL_DOWNLOADS.len() as u64,
+                local_name,
+                "skip",
+            );
             continue;
         }
-        // Download to temp file first, then rename
-        let temp = models_dir.join(format!("{filename}.downloading"));
-        let response = reqwest::get(*url)
+        emit_art_text_ocr_install_progress(
+            app,
+            i as u64,
+            OCR_MODEL_DOWNLOADS.len() as u64,
+            filename,
+            "download",
+        );
+        let mut response = reqwest::get(*url)
             .await
             .map_err(|e| format!("下载模型 {filename} 失败: {e}"))?;
         if !response.status().is_success() {
@@ -2770,12 +2852,57 @@ async fn download_ocr_models(models_dir: &std::path::Path) -> Result<(), String>
                 response.status()
             ));
         }
-        let bytes = response
-            .bytes()
+        let temp = models_dir.join(format!("{local_name}.downloading"));
+        let mut file = fs::File::create(&temp).map_err(|e| format!("创建临时模型文件失败: {e}"))?;
+        let total_bytes = response.content_length().unwrap_or(0).max(1);
+        let mut downloaded = 0u64;
+        while let Some(chunk) = response
+            .chunk()
             .await
-            .map_err(|e| format!("读取模型 {filename} 数据失败: {e}"))?;
-        fs::write(&temp, &bytes).map_err(|e| format!("写入模型文件失败: {e}"))?;
+            .map_err(|e| format!("读取模型 {filename} 数据失败: {e}"))?
+        {
+            use std::io::Write;
+            file.write_all(&chunk)
+                .map_err(|e| format!("写入模型文件失败: {e}"))?;
+            downloaded += chunk.len() as u64;
+            emit_art_text_ocr_install_progress(
+                app,
+                downloaded.min(total_bytes),
+                total_bytes,
+                filename,
+                "download-bytes",
+            );
+        }
+        drop(file);
         fs::rename(&temp, &dest).map_err(|e| format!("重命名模型文件失败: {e}"))?;
+        emit_art_text_ocr_install_progress(
+            app,
+            (i as u64) + 1,
+            OCR_MODEL_DOWNLOADS.len() as u64,
+            local_name,
+            "install",
+        );
+    }
+
+    Ok(())
+}
+
+fn import_ocr_models_from_dir(source_dir: &Path, models_dir: &Path) -> Result<(), String> {
+    fs::create_dir_all(models_dir).map_err(|e| format!("创建模型目录失败: {e}"))?;
+    let candidates = [
+        (OCR_MODEL_DET, ["det.onnx", "pp-ocrv5_mobile_det.onnx"]),
+        (OCR_MODEL_REC, ["rec.onnx", "pp-ocrv5_mobile_rec.onnx"]),
+        (OCR_MODEL_DICT, ["ppocr_keys_v1.txt", "ppocrv5_dict.txt"]),
+    ];
+
+    for (local_name, source_names) in candidates {
+        let source = source_names
+            .iter()
+            .map(|name| source_dir.join(name))
+            .find(|path| path.is_file())
+            .ok_or_else(|| format!("本地目录缺少模型文件: {local_name}"))?;
+        fs::copy(&source, models_dir.join(local_name))
+            .map_err(|e| format!("复制模型文件 {} 失败: {e}", source.display()))?;
     }
 
     Ok(())
@@ -3170,18 +3297,17 @@ async fn build_art_text_index(
         #[cfg(feature = "ocr")]
         {
             // Initialize OCR engine
-            let models_dir = app
-                .path()
-                .app_data_dir()
-                .map_err(|e| format!("获取数据目录失败: {e}"))?
-                .join("models");
-            let det_path = models_dir.join("det.onnx");
-            let rec_path = models_dir.join("rec.onnx");
-            let dict_path = models_dir.join("ppocr_keys_v1.txt");
-
-            if !det_path.exists() || !rec_path.exists() || !dict_path.exists() {
-                download_ocr_models(&models_dir).await?;
+            let models_dir = art_text_ocr_models_dir(&app)?;
+            let status = inspect_art_text_ocr_model_dir(&models_dir);
+            if !status.ready {
+                return Err(format!(
+                    "OCR 模型未安装，请先点击“检测 OCR”并完成安装。缺少: {}",
+                    status.missing.join(", ")
+                ));
             }
+            let det_path = models_dir.join(OCR_MODEL_DET);
+            let rec_path = models_dir.join(OCR_MODEL_REC);
+            let dict_path = models_dir.join(OCR_MODEL_DICT);
 
             let engine = oar_ocr::prelude::OAROCRBuilder::new(
                 det_path.to_str().unwrap_or(""),
@@ -3270,6 +3396,35 @@ async fn get_art_text_index_info(app: tauri::AppHandle) -> Result<ArtTextIndexIn
         built_at: index.built_at,
         entry_count: index.entries.len(),
     })
+}
+
+#[tauri::command]
+async fn get_art_text_ocr_status(app: tauri::AppHandle) -> Result<ArtTextOcrModelStatus, String> {
+    let models_dir = art_text_ocr_models_dir(&app)?;
+    Ok(inspect_art_text_ocr_model_dir(&models_dir))
+}
+
+#[tauri::command]
+async fn install_art_text_ocr_models(
+    app: tauri::AppHandle,
+) -> Result<ArtTextOcrModelStatus, String> {
+    let models_dir = art_text_ocr_models_dir(&app)?;
+    download_ocr_models(&app, &models_dir).await?;
+    let status = inspect_art_text_ocr_model_dir(&models_dir);
+    if !status.ready {
+        return Err(format!("OCR 模型安装不完整，缺少: {}", status.missing.join(", ")));
+    }
+    Ok(status)
+}
+
+#[tauri::command]
+async fn import_art_text_ocr_models(
+    app: tauri::AppHandle,
+    source_dir: String,
+) -> Result<ArtTextOcrModelStatus, String> {
+    let models_dir = art_text_ocr_models_dir(&app)?;
+    import_ocr_models_from_dir(Path::new(&source_dir), &models_dir)?;
+    Ok(inspect_art_text_ocr_model_dir(&models_dir))
 }
 
 #[tauri::command]
@@ -5864,6 +6019,9 @@ pub fn run() {
             scan_art_text_sub_dirs,
             build_art_text_index,
             get_art_text_index_info,
+            get_art_text_ocr_status,
+            install_art_text_ocr_models,
+            import_art_text_ocr_models,
             search_art_text,
             open_file_in_explorer,
             show_art_text_search_window,
@@ -5906,6 +6064,49 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn art_text_ocr_model_status_reports_missing_files() {
+        let root = std::env::temp_dir().join(format!(
+            "dbsearch-ocr-model-missing-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("det.onnx"), b"det").unwrap();
+
+        let status = inspect_art_text_ocr_model_dir(&root);
+
+        assert!(!status.ready);
+        assert_eq!(status.missing, vec!["rec.onnx", "ppocr_keys_v1.txt"]);
+        assert!(status.path.ends_with("dbsearch-ocr-model-missing-test-")
+            || status.path.contains("dbsearch-ocr-model-missing-test-"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn art_text_ocr_model_status_accepts_complete_model_dir() {
+        let root = std::env::temp_dir().join(format!(
+            "dbsearch-ocr-model-ready-test-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        fs::write(root.join("det.onnx"), b"det").unwrap();
+        fs::write(root.join("rec.onnx"), b"rec").unwrap();
+        fs::write(root.join("ppocr_keys_v1.txt"), b"dict").unwrap();
+
+        let status = inspect_art_text_ocr_model_dir(&root);
+
+        assert!(status.ready);
+        assert!(status.missing.is_empty());
+        assert_eq!(status.required.len(), 3);
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn collect_images_recursive_reports_each_directory() {
