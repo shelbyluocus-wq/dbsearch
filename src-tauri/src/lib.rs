@@ -19,7 +19,7 @@ use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
 use sqlx::{MySqlPool, Row};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -252,6 +252,7 @@ struct QuickPasteSnippet {
     id: String,
     title: String,
     content: String,
+    image: String,
     category: String,
     favorite: bool,
     is_default: bool,
@@ -265,6 +266,7 @@ impl Default for QuickPasteSnippet {
             id: String::new(),
             title: String::new(),
             content: String::new(),
+            image: String::new(),
             category: "text".into(),
             favorite: false,
             is_default: false,
@@ -394,12 +396,11 @@ fn now_rfc3339() -> String {
 
 fn sanitize_quick_paste_snippet(mut snippet: QuickPasteSnippet) -> Option<QuickPasteSnippet> {
     snippet.title = snippet.title.trim().to_string();
-    snippet.content = snippet.content.trim().to_string();
     snippet.category = snippet.category.trim().to_string();
     if snippet.category.is_empty() {
         snippet.category = "text".into();
     }
-    if snippet.title.is_empty() || snippet.content.is_empty() {
+    if snippet.title.is_empty() || snippet.content.trim().is_empty() {
         return None;
     }
     if snippet.category != "image" && snippet.category != "rich" {
@@ -1883,6 +1884,29 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+        out.push(TABLE[(b0 >> 2) as usize] as char);
+        out.push(TABLE[(((b0 & 0b0000_0011) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(TABLE[(((b1 & 0b0000_1111) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(TABLE[(b2 & 0b0011_1111) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
+}
+
 fn sanitize_quick_paste_image_ext(mime: &str) -> &'static str {
     match mime {
         "image/jpeg" => "jpg",
@@ -1970,6 +1994,39 @@ async fn upsert_quick_paste_snippet(
     Ok(result)
 }
 
+fn collect_quick_paste_local_image_paths(snippet: &QuickPasteSnippet) -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    if snippet.category == "image" && !snippet.content.starts_with("data:") {
+        paths.push(PathBuf::from(snippet.content.trim()));
+    }
+    let img_re = Regex::new(r#"<img\b[^>]*(?:data-path|src)=["']([^"']+)["'][^>]*>"#).unwrap();
+    for caps in img_re.captures_iter(&snippet.content) {
+        if let Some(src) = caps.get(1).map(|m| m.as_str().trim()) {
+            if !src.starts_with("data:") && !src.starts_with("http://") && !src.starts_with("https://") && !src.starts_with("asset:") {
+                paths.push(PathBuf::from(src));
+            }
+        }
+    }
+    paths
+}
+
+fn remove_quick_paste_owned_images(app: &tauri::AppHandle, snippet: &QuickPasteSnippet) {
+    let Ok(image_dir) = app.path().app_data_dir().map(|dir| dir.join("quick-paste-images")) else {
+        return;
+    };
+    let Ok(image_dir) = image_dir.canonicalize() else {
+        return;
+    };
+    for path in collect_quick_paste_local_image_paths(snippet) {
+        let Ok(path) = path.canonicalize() else {
+            continue;
+        };
+        if path.starts_with(&image_dir) {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 #[tauri::command]
 async fn delete_quick_paste_snippet(
     app: tauri::AppHandle,
@@ -1977,7 +2034,19 @@ async fn delete_quick_paste_snippet(
     id: String,
 ) -> Result<Vec<QuickPasteSnippet>, String> {
     let mut rt = state.runtime.lock().await;
+    let removed: Vec<QuickPasteSnippet> = rt
+        .config
+        .personal
+        .quick_paste
+        .snippets
+        .iter()
+        .filter(|snippet| snippet.id == id)
+        .cloned()
+        .collect();
     rt.config.personal.quick_paste.snippets.retain(|snippet| snippet.id != id);
+    for snippet in &removed {
+        remove_quick_paste_owned_images(&app, snippet);
+    }
     let result = rt.config.personal.quick_paste.snippets.clone();
     save_config_to_disk(&app, &rt.config)?;
     Ok(result)
@@ -2021,8 +2090,13 @@ async fn output_quick_paste_snippet(
             .ok_or_else(|| "找不到要输出的内容".to_string())?
     };
 
-    let steps = quick_paste_output_steps(&category, is_quick_paste_window_visible(&app));
-    run_quick_paste_output_steps(app, steps, &content).await
+    let (output_content, effective_category) = if category == "rich" {
+        (content, "rich".to_string())
+    } else {
+        (content, category)
+    };
+    let steps = quick_paste_output_steps(&effective_category, is_quick_paste_window_visible(&app));
+    run_quick_paste_output_steps(app, steps, &output_content).await
 }
 
 #[tauri::command]
@@ -4338,6 +4412,7 @@ async fn pause_before_global_text_input() {
 enum QuickPasteOutputStep {
     CopyImageToClipboard,
     CopyHtmlToClipboard,
+    CopyTextToClipboard,
     HideQuickPasteWindow,
     PauseBeforeGlobalInput,
     PasteClipboard,
@@ -4361,6 +4436,16 @@ fn quick_paste_output_steps(
 
     if category == "image" {
         steps.push(QuickPasteOutputStep::CopyImageToClipboard);
+        if quick_paste_window_visible {
+            steps.push(QuickPasteOutputStep::HideQuickPasteWindow);
+        }
+        steps.push(QuickPasteOutputStep::PauseBeforeGlobalInput);
+        steps.push(QuickPasteOutputStep::PasteClipboard);
+        return steps;
+    }
+
+    if category == "plain_clipboard" {
+        steps.push(QuickPasteOutputStep::CopyTextToClipboard);
         if quick_paste_window_visible {
             steps.push(QuickPasteOutputStep::HideQuickPasteWindow);
         }
@@ -4419,11 +4504,67 @@ fn html_to_plain_text(html: &str) -> String {
         .to_string()
 }
 
-fn copy_html_to_clipboard(content: &str) -> Result<(), String> {
-    let alt_text = html_to_plain_text(content);
+fn copy_text_to_clipboard(content: &str) -> Result<(), String> {
     let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("访问剪贴板失败: {e}"))?;
     clipboard
-        .set_html(content, Some(alt_text.as_str()))
+        .set_text(content.to_string())
+        .map_err(|e| format!("复制文本到剪贴板失败: {e}"))?;
+    Ok(())
+}
+
+fn quick_paste_image_mime_from_path(path: &str) -> &'static str {
+    match Path::new(path)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "bmp" => "image/bmp",
+        _ => "image/png",
+    }
+}
+
+fn inline_quick_paste_html_images(content: &str) -> Result<String, String> {
+    let img_re = Regex::new(r#"<img\b([^>]*?)(?:data-path|src)=["']([^"']+)["']([^>]*)>"#).unwrap();
+    let mut output = String::with_capacity(content.len());
+    let mut last = 0;
+    for caps in img_re.captures_iter(content) {
+        let mat = caps.get(0).unwrap();
+        output.push_str(&content[last..mat.start()]);
+        let src = caps.get(2).map(|m| m.as_str()).unwrap_or("");
+        let data_src = if src.starts_with("data:image/") {
+            src.to_string()
+        } else if src.starts_with("http://") || src.starts_with("https://") || src.starts_with("asset:") {
+            src.to_string()
+        } else {
+            let bytes = fs::read(src).map_err(|e| format!("读取富文本图片失败: {e}"))?;
+            let encoded = base64_encode(&bytes);
+            format!("data:{};base64,{}", quick_paste_image_mime_from_path(src), encoded)
+        };
+        output.push_str("<img src=\"");
+        output.push_str(&data_src);
+        output.push_str("\">");
+        last = mat.end();
+    }
+    output.push_str(&content[last..]);
+    Ok(output)
+}
+
+fn prepare_quick_paste_clipboard_html(content: &str) -> Result<String, String> {
+    let content = inline_quick_paste_html_images(content)?;
+    Ok(format!("<meta charset=\"utf-8\">{content}"))
+}
+
+fn copy_html_to_clipboard(content: &str) -> Result<(), String> {
+    let content = prepare_quick_paste_clipboard_html(content)?;
+    let alt_text = html_to_plain_text(&content);
+    let mut clipboard = arboard::Clipboard::new().map_err(|e| format!("访问剪贴板失败: {e}"))?;
+    clipboard
+        .set_html(content, Some(alt_text))
         .map_err(|e| format!("复制笔记内容到剪贴板失败: {e}"))?;
     Ok(())
 }
@@ -4437,6 +4578,7 @@ async fn run_quick_paste_output_steps(
         match step {
             QuickPasteOutputStep::CopyImageToClipboard => copy_image_to_clipboard(content)?,
             QuickPasteOutputStep::CopyHtmlToClipboard => copy_html_to_clipboard(content)?,
+            QuickPasteOutputStep::CopyTextToClipboard => copy_text_to_clipboard(content)?,
             QuickPasteOutputStep::HideQuickPasteWindow => hide_quick_paste_window(app.clone()).await?,
             QuickPasteOutputStep::PauseBeforeGlobalInput => pause_before_global_text_input().await,
             QuickPasteOutputStep::PasteClipboard => paste_clipboard_globally()?,
@@ -4501,10 +4643,16 @@ async fn output_default_quick_paste_text(
         }
     };
 
-    eprintln!("[F8] category={category}, content_len={}, content_start={:?}", content.len(), &content[..content.len().min(60)]);
+    let (output_content, effective_category) = if category == "rich" {
+        (content, "rich".to_string())
+    } else {
+        (content, category)
+    };
 
-    let steps = quick_paste_output_steps(&category, is_quick_paste_window_visible(&app));
-    run_quick_paste_output_steps(app, steps, &content).await
+    eprintln!("[F8] category={effective_category}, content_len={}", output_content.len());
+
+    let steps = quick_paste_output_steps(&effective_category, is_quick_paste_window_visible(&app));
+    run_quick_paste_output_steps(app, steps, &output_content).await
 }
 
 fn input_today_date_globally() -> Result<(), String> {
@@ -5978,6 +6126,18 @@ mod tests {
     }
 
     #[test]
+    fn quick_paste_plain_clipboard_output_plan_pastes_text_clipboard_content() {
+        assert_eq!(
+            quick_paste_output_steps("plain_clipboard", false),
+            vec![
+                QuickPasteOutputStep::CopyTextToClipboard,
+                QuickPasteOutputStep::PauseBeforeGlobalInput,
+                QuickPasteOutputStep::PasteClipboard,
+            ]
+        );
+    }
+
+    #[test]
     fn quick_paste_rich_output_plan_pastes_html_clipboard_content() {
         assert_eq!(
             quick_paste_output_steps("rich", false),
@@ -5987,6 +6147,63 @@ mod tests {
                 QuickPasteOutputStep::PasteClipboard,
             ]
         );
+    }
+
+    #[test]
+    fn quick_paste_rich_html_inlines_local_images_for_external_targets() {
+        let image_path = std::env::temp_dir().join("quick-paste-inline-image-test.png");
+        std::fs::write(&image_path, [137, 80, 78, 71]).expect("test image should be writable");
+        let html = format!(
+            "<p>上方文字</p><img src=\"{}\"><p>下方文字</p>",
+            image_path.display()
+        );
+
+        let inlined = inline_quick_paste_html_images(&html).expect("image should inline");
+
+        assert!(inlined.contains("<p>上方文字</p>"));
+        assert!(inlined.contains("<img src=\"data:image/png;base64,iVBORw==\">"));
+        assert!(inlined.contains("<p>下方文字</p>"));
+        assert!(!inlined.contains(&image_path.display().to_string()));
+        let _ = std::fs::remove_file(image_path);
+    }
+
+    #[test]
+    fn quick_paste_collects_local_images_from_image_and_rich_snippets() {
+        let image_snippet = QuickPasteSnippet {
+            id: "image".into(),
+            title: "图片".into(),
+            content: "C:/tmp/quick-paste-images/a.png".into(),
+            image: "".into(),
+            category: "image".into(),
+            favorite: false,
+            is_default: false,
+            created_at: "".into(),
+            updated_at: "".into(),
+        };
+        let rich_snippet = QuickPasteSnippet {
+            id: "rich".into(),
+            title: "图文".into(),
+            content: r#"<p><img src="asset://ignored"></p><p><img data-path="C:/tmp/quick-paste-images/b.png"></p>"#.into(),
+            image: "".into(),
+            category: "rich".into(),
+            favorite: false,
+            is_default: false,
+            created_at: "".into(),
+            updated_at: "".into(),
+        };
+
+        assert_eq!(collect_quick_paste_local_image_paths(&image_snippet).len(), 1);
+        assert_eq!(collect_quick_paste_local_image_paths(&rich_snippet).len(), 1);
+    }
+
+    #[test]
+    fn quick_paste_rich_html_declares_utf8_for_chinese_text() {
+        let html = prepare_quick_paste_clipboard_html("<p>上方文字</p><p>下方文字</p>")
+            .expect("html should prepare");
+
+        assert!(html.contains("<meta charset=\"utf-8\">"));
+        assert!(html.contains("<p>上方文字</p>"));
+        assert!(html.contains("<p>下方文字</p>"));
     }
 
     #[test]

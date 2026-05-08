@@ -15058,7 +15058,7 @@ mark {
   backdrop-filter: blur(30px) saturate(180%);
   border: 0;
   outline: 0;
-  border-radius: 28px;
+  border-radius: 34px;
   box-shadow: none;
   caret-color: transparent;
   font-family: "SF Pro Display", "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
@@ -15176,8 +15176,8 @@ mark {
   caret-color: transparent;
 }
 .quick-paste-header-actions, .quick-paste-preview-actions, .quick-paste-modal-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-.quick-paste-body { min-height: 0; flex: 1; display: grid; gap: 0 12px; padding: 6px 16px 16px; background: rgba(246, 247, 249, 0.72); }
-.quick-paste-sidebar, .quick-paste-list-pane, .quick-paste-preview { min-height: 0; border-radius: 22px; background: rgba(255, 255, 255, 0.9); border: 1px solid rgba(0, 0, 0, 0.04); box-shadow: 0 10px 24px rgba(0, 0, 0, 0.045); }
+.quick-paste-body { min-height: 0; flex: 1; display: grid; gap: 0 12px; padding: 8px 18px 18px; background: rgba(246, 247, 249, 0.72); border-radius: 0 0 34px 34px; overflow: hidden; }
+.quick-paste-sidebar, .quick-paste-list-pane, .quick-paste-preview { min-height: 0; border-radius: 30px; background: rgba(255, 255, 255, 0.9); border: 1px solid rgba(0, 0, 0, 0.04); box-shadow: 0 10px 24px rgba(0, 0, 0, 0.045); }
 .quick-paste-pane-resizer {
   position: relative;
   min-height: 0;
@@ -15200,7 +15200,7 @@ mark {
 .quick-paste-pane-resizer:hover::after,
 .quick-paste-pane-resizer:active::after { opacity: 1; background: rgba(0, 122, 255, 0.34); }
 .quick-paste-sidebar { padding: 12px; }
-.quick-paste-search { width: 100%; box-sizing: border-box; border: 0; border-radius: 16px; padding: 12px 13px; outline: none; background: rgba(118, 118, 128, 0.12); color: #1d1d1f; box-shadow: inset 0 0 0 1px rgba(60, 60, 67, 0.08); }
+.quick-paste-search { width: 100%; box-sizing: border-box; border: 0; border-radius: 22px; padding: 12px 13px; outline: none; background: rgba(118, 118, 128, 0.12); color: #1d1d1f; box-shadow: inset 0 0 0 1px rgba(60, 60, 67, 0.08); }
 .quick-paste-search::placeholder { color: rgba(60, 60, 67, 0.52); }
 .quick-paste-categories { display: grid; gap: 6px; margin-top: 12px; }
 .quick-paste-category, .quick-paste-list-item, .quick-paste-ghost-button, .quick-paste-preview-actions button, .quick-paste-empty button, .quick-paste-modal-actions button, .quick-paste-item-star { border: 0; border-radius: 999px; cursor: pointer; font: inherit; }
@@ -15218,7 +15218,7 @@ mark {
   color: #1d1d1f;
   background: transparent;
   border: 1px solid transparent;
-  border-radius: 18px;
+  border-radius: 24px;
   cursor: pointer;
   transition: background 0.16s ease, border-color 0.16s ease, transform 0.16s ease;
 }
@@ -15290,11 +15290,14 @@ mark {
 .quick-paste-item-badges { display: flex; gap: 6px; }
 .quick-paste-item-badges small { padding: 3px 8px; border-radius: 999px; background: rgba(0, 122, 255, 0.12); color: #007aff; font-weight: 720; }
 .quick-paste-preview { display: flex; flex-direction: column; padding: 16px; overflow: hidden; }
-.quick-paste-preview-header { display: flex; justify-content: space-between; gap: 12px; }
+.quick-paste-preview-header { display: flex; justify-content: space-between; gap: 12px; min-width: 0; }
+.quick-paste-preview-title-wrap { min-width: 0; width: 100%; }
 .quick-paste-title-input {
   width: 100%;
+  max-width: 100%;
+  box-sizing: border-box;
   border: 0;
-  border-radius: 10px;
+  border-radius: 18px;
   padding: 0;
   background: transparent;
   color: #1d1d1f;
@@ -15302,6 +15305,9 @@ mark {
   font-weight: 760;
   letter-spacing: -0.03em;
   outline: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .quick-paste-title-input:focus {
   background: transparent;
@@ -15312,29 +15318,36 @@ mark {
   min-height: 0;
   overflow: auto;
   margin: 14px 0;
-  padding: 12px 18px;
+  padding: 14px 18px;
   color: #1d1d1f;
-  white-space: normal;
-  word-break: break-word;
+  background: rgba(246, 247, 249, 0.6);
+  border-radius: 24px;
   font-family: "SF Pro Text", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
   font-size: 15px;
   line-height: 1.7;
   outline: none;
+  user-select: text;
+  -webkit-user-select: text;
+  caret-color: auto;
 }
-.quick-paste-note-editor:empty::before {
-  content: attr(data-placeholder);
-  color: rgba(60, 60, 67, 0.42);
+.quick-paste-note-editor:focus {
+  background: rgba(246, 247, 249, 0.76);
+  box-shadow: inset 0 0 0 1px rgba(0, 122, 255, 0.14);
+}
+.quick-paste-note-editor,
+.quick-paste-note-editor *:not(img) {
+  color: #1d1d1f !important;
 }
 .quick-paste-note-editor p {
+  min-height: 1.7em;
   margin: 0 0 10px;
 }
 .quick-paste-note-editor img {
   display: block;
   width: auto;
-  max-width: none;
+  max-width: 100%;
   height: auto;
-  margin: 8px 0 12px;
-  border-radius: 0;
+  border-radius: 14px;
 }
 .quick-paste-preview-actions button,
 .quick-paste-empty button,

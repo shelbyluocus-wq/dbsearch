@@ -32,6 +32,14 @@ function sliceSyncWorkspaceMarkup() {
   return appVueSource.slice(start, end);
 }
 
+function sliceTauriFunction(name) {
+  const start = tauriLibSource.indexOf(`fn ${name}`);
+  const end = tauriLibSource.indexOf("\nfn ", start + 1);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  return tauriLibSource.slice(start, end);
+}
+
 test("pet menu exposes one sync center entry instead of separate sync entries", () => {
   const petMenuMarkup = slicePetMenuMarkup();
 
@@ -109,12 +117,52 @@ test("embedded database workspace can hide its own sidebar and report sidebar st
   assert.match(dbMigrationWorkspaceSource, /defineExpose\(\{[\s\S]*activateProfile/);
 });
 
-test("quick paste preview supports inline editing without an edit button", () => {
-  assert.match(appVueSource, /quick-paste-title-input/);
+test("quick paste window is transparent so outer shell corners are real", () => {
+  const quickPasteWindowSource = sliceTauriFunction("ensure_quick_paste_window");
+
+  assert.match(quickPasteWindowSource, /\.transparent\(true\)/);
+  assert.doesNotMatch(quickPasteWindowSource, /\.transparent\(false\)/);
+});
+
+test("quick paste editor uses one continuous rich writing area", () => {
+  assert.match(appVueSource, /normalizeQuickPasteEditorHtml/);
+  assert.match(appVueSource, /serializeQuickPasteEditorHtml/);
+  assert.match(appVueSource, /insertImageIntoQuickPasteEditor/);
   assert.match(appVueSource, /quick-paste-note-editor/);
-  assert.match(appVueSource, /handleQuickPasteInlinePaste/);
-  assert.doesNotMatch(appVueSource, /\{ key: "default", label: "默认" \}/);
-  assert.doesNotMatch(appVueSource, /openQuickPasteEdit\(selectedQuickPasteSnippet\)/);
+  assert.match(appVueSource, /contenteditable="true"/);
+  assert.match(appVueSource, /handleQuickPasteEditorPaste/);
+  assert.match(appVueSource, /insertPlainTextIntoQuickPasteEditor/);
+  assert.match(appVueSource, /handleQuickPasteEditorContextMenu/);
+  assert.match(appVueSource, /openQuickPasteImagePath/);
+  assert.doesNotMatch(appVueSource, /<textarea[\s\S]*?quick-paste-text-block/);
+  assert.doesNotMatch(appVueSource, /quick-paste-text-block/);
+  assert.doesNotMatch(appVueSource, /execCommand\("insertHTML"/);
+});
+
+test("quick paste preview keeps titles and pasted text visually contained", () => {
+  assert.match(appVueSource, /quick-paste-preview-title-wrap/);
+  assert.match(appVueSource, /handleQuickPasteEditorContextMenu/);
+  assert.match(appVueSource, /openQuickPasteImagePath/);
+  assert.match(appVueSource, /@contextmenu\.capture="handleQuickPasteEditorContextMenu"/);
+  assert.match(appVueSource, /image\.dataset\.path \|\| image\.getAttribute\("data-path"\) \|\| image\.getAttribute\("src"\)/);
+});
+
+test("quick paste new snippets start with an empty editable body", () => {
+  assert.doesNotMatch(appVueSource, /content: "在这里输入内容"/);
+  assert.match(appVueSource, /content: "<p><br><\/p>"/);
+  assert.match(appVueSource, /category: "rich"/);
+});
+
+test("quick paste text category keeps rich mixed snippets visible", () => {
+  assert.match(appVueSource, /function isQuickPasteTextLikeSnippet\(snippet\)/);
+  assert.match(appVueSource, /quickPaste\.activeCategory === "text" && isQuickPasteTextLikeSnippet\(snippet\)/);
+  assert.match(appVueSource, /snippet\?\.category === "rich"/);
+});
+
+test("quick paste window is not treated as the main search panel", () => {
+  assert.match(appVueSource, /const isQuickPasteWindow = computed\(\(\) => isTauriWindow && windowLabel\.value === "quick_paste"\);/);
+  assert.match(appVueSource, /const isPanelWindow = computed\(\(\) => !isTauriWindow \|\| windowLabel\.value === "browser" \|\| windowLabel\.value === "panel"\);/);
+  assert.doesNotMatch(appVueSource, /const isPanelWindow = computed\(\(\) => !isTauriWindow && !isPetWindow/);
 });
 
 test("sync center uses one stable resizable sidebar for both modes", () => {
