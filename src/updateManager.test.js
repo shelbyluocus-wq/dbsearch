@@ -14,6 +14,7 @@ import {
   resolvePostUpdateAnnouncement,
   resolveUpdateCheckPlan,
   shouldAutoRunStartupUpdateCheck,
+  shouldOpenUpdateDialogForInstall,
   splitReleaseNotes,
   summarizeReleaseNotes,
 } from "./updateManager.js";
@@ -157,6 +158,17 @@ test("shouldAutoRunStartupUpdateCheck only runs on the main Tauri window", () =>
       windowLabel: "browser",
     }),
     false,
+  );
+});
+
+test("startup pet update install opens the update dialog for visible progress", () => {
+  assert.equal(
+    shouldOpenUpdateDialogForInstall({
+      manual: false,
+      isPanelWindow: false,
+      userConfirmedInstall: true,
+    }),
+    true,
   );
 });
 

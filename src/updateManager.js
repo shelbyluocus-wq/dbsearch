@@ -64,6 +64,14 @@ export function shouldAutoRunStartupUpdateCheck({
   return Boolean(isTauriWindow && windowLabel === "main");
 }
 
+export function shouldOpenUpdateDialogForInstall({
+  manual = false,
+  isPanelWindow = false,
+  userConfirmedInstall = false,
+} = {}) {
+  return Boolean(userConfirmedInstall && !manual && !isPanelWindow);
+}
+
 export function preserveOpaqueInstance(value) {
   if (value && typeof value === "object") {
     return markRaw(value);

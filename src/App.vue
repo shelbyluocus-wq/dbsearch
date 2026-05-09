@@ -73,6 +73,7 @@ import {
   reduceUpdateDownloadProgress,
   resolvePostUpdateAnnouncement,
   shouldAutoRunStartupUpdateCheck,
+  shouldOpenUpdateDialogForInstall,
   summarizeReleaseNotes,
 } from "./updateManager.js";
 import { runPetMenuAction } from "./petMenu.js";
@@ -9066,6 +9067,14 @@ async function runAppUpdateCheck({ manual = false } = {}) {
     );
 
     if (shouldInstallNow) {
+      if (shouldOpenUpdateDialogForInstall({
+        manual,
+        isPanelWindow: isPanelWindow.value,
+        userConfirmedInstall: shouldInstallNow,
+      })) {
+        updateDialogOpen.value = true;
+        resetUpdateProgress();
+      }
       await installAvailableUpdate();
       return;
     }
