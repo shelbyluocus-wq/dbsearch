@@ -4,6 +4,7 @@ pub mod sync_workspace;
 use crate::sync_workspace::{execute_sync_pipeline, SyncProfile, SyncRunOutcome};
 use crate::db_migration::{
     connect_db_migration_server as connect_db_migration_server_impl,
+    filter_user_databases,
     run_db_migration as run_db_migration_impl,
     DbMigrationLoginParams,
     DbMigrationLoginResult,
@@ -83,6 +84,7 @@ impl Default for AppState {
 #[derive(Default)]
 struct RuntimeState {
     pool: Option<MySqlPool>,
+    fake_db_connected: bool,
     schema_cache: SchemaCache,
     demo_rows: HashMap<String, Vec<HashMap<String, String>>>,
     config: AppConfig,
@@ -1045,7 +1047,6 @@ struct ConnectionStatus {
     connected: bool,
     database: Option<String>,
 }
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SearchParams {
@@ -1155,45 +1156,122 @@ struct PetLockChangedPayload {
     locked: bool,
 }
 
+const FAKE_DB_HOST: &str = "demo";
+const FAKE_DB_NAME: &str = "demo_feature_test";
+
+fn is_fake_db_config(config: &DbConfig) -> bool {
+    config.host.trim().eq_ignore_ascii_case(FAKE_DB_HOST)
+}
+
+fn runtime_db_connected(rt: &RuntimeState) -> bool {
+    rt.pool.is_some() || rt.fake_db_connected
+}
+
+fn fake_database_names() -> Vec<String> {
+    vec![FAKE_DB_NAME.into(), "demo_shop".into(), "demo_ops".into()]
+}
+
+fn is_fake_database_name(database: &str) -> bool {
+    fake_database_names()
+        .iter()
+        .any(|item| item.eq_ignore_ascii_case(database.trim()))
+}
+
+fn validate_db_server_config(config: &DbConfig) -> Result<(), String> {
+    if config.host.trim().is_empty() {
+        return Err("请填写数据库主机".into());
+    }
+    Ok(())
+}
+
+fn build_db_server_connect_options(config: &DbConfig) -> MySqlConnectOptions {
+    MySqlConnectOptions::new()
+        .host(config.host.trim())
+        .port(config.port)
+        .username(config.username.trim())
+        .password(&config.password)
+        .ssl_mode(MySqlSslMode::Disabled)
+}
+
+fn build_selected_database_connect_options(
+    config: &DbConfig,
+    database: &str,
+) -> MySqlConnectOptions {
+    build_db_server_connect_options(config).database(database.trim())
+}
+
 #[tauri::command]
 async fn connect_db(
     config: DbConfig,
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    if config.host.trim().is_empty() || config.database.trim().is_empty() {
-        return Err("请填写数据库主机和库名".into());
+    validate_db_server_config(&config)?;
+    let selected_database = config.database.trim().to_string();
+    if is_fake_db_config(&config) {
+        let schema = if selected_database.is_empty() {
+            SchemaCache::default()
+        } else if is_fake_database_name(&selected_database) {
+            mock_schema_cache()
+        } else {
+            return Err(format!("测试数据库不存在: {selected_database}"));
+        };
+        let mut next_config = config;
+        next_config.database = selected_database;
+        let mut runtime = state.runtime.lock().await;
+        runtime.pool = None;
+        runtime.fake_db_connected = true;
+        runtime.schema_cache = schema;
+        runtime.config.shared.db = next_config;
+        save_config_to_disk(&app, &runtime.config)?;
+        return Ok(if runtime.config.shared.db.database.is_empty() {
+            "测试数据库连接成功，请选择数据库".into()
+        } else {
+            "测试数据库连接成功".into()
+        });
     }
-    let opts = MySqlConnectOptions::new()
-        .host(config.host.trim())
-        .port(config.port)
-        .username(config.username.trim())
-        .password(&config.password)
-        .database(config.database.trim())
-        .ssl_mode(MySqlSslMode::Disabled);
+    let opts = if selected_database.is_empty() {
+        build_db_server_connect_options(&config)
+    } else {
+        build_selected_database_connect_options(&config, &selected_database)
+    };
     let pool = MySqlPoolOptions::new()
         .max_connections(5)
         .connect_with(opts)
         .await
         .map_err(|e| format!("数据库连接失败: {e}"))?;
-    let schema = load_schema_from_database(&pool, &config.database).await?;
+    let schema = if selected_database.is_empty() {
+        SchemaCache::default()
+    } else {
+        load_schema_from_database(&pool, &selected_database).await?
+    };
+    let mut next_config = config;
+    next_config.database = selected_database;
     let mut runtime = state.runtime.lock().await;
     runtime.pool = Some(pool);
+    runtime.fake_db_connected = false;
     runtime.schema_cache = schema;
-    runtime.config.shared.db = config;
+    runtime.config.shared.db = next_config;
     save_config_to_disk(&app, &runtime.config)?;
-    Ok("数据库连接成功".into())
+    Ok(if runtime.config.shared.db.database.is_empty() {
+        "数据库连接成功，请选择数据库".into()
+    } else {
+        "数据库连接成功".into()
+    })
 }
 #[tauri::command]
 async fn disconnect_db(state: State<'_, AppState>) -> Result<(), String> {
-    state.runtime.lock().await.pool = None;
+    let mut rt = state.runtime.lock().await;
+    rt.pool = None;
+    rt.fake_db_connected = false;
+    rt.schema_cache = SchemaCache::default();
     Ok(())
 }
 #[tauri::command]
 async fn get_connection_status(state: State<'_, AppState>) -> Result<ConnectionStatus, String> {
     let rt = state.runtime.lock().await;
     Ok(ConnectionStatus {
-        connected: rt.pool.is_some(),
+        connected: runtime_db_connected(&rt),
         database: if rt.config.shared.db.database.is_empty() {
             None
         } else {
@@ -1202,15 +1280,106 @@ async fn get_connection_status(state: State<'_, AppState>) -> Result<ConnectionS
     })
 }
 #[tauri::command]
+async fn list_databases(state: State<'_, AppState>) -> Result<Vec<String>, String> {
+    let pool = {
+        let rt = state.runtime.lock().await;
+        if rt.fake_db_connected {
+            return Ok(fake_database_names());
+        }
+        rt.pool
+            .clone()
+            .ok_or_else(|| "数据库未连接".to_string())?
+    };
+    let rows = sqlx::query("SHOW DATABASES")
+        .fetch_all(&pool)
+        .await
+        .map_err(|e| format!("读取数据库列表失败: {e}"))?;
+    Ok(filter_user_databases(
+        rows.into_iter()
+            .filter_map(|row| row.try_get::<String, _>(0).ok())
+            .collect(),
+    ))
+}
+#[tauri::command]
+async fn select_database(
+    database: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<SchemaInfo, String> {
+    let database = database.trim().to_string();
+    if database.is_empty() {
+        return Err("请选择数据库".into());
+    }
+    let config = {
+        let rt = state.runtime.lock().await;
+        if !runtime_db_connected(&rt) {
+            return Err("数据库未连接".into());
+        }
+        rt.config.shared.db.clone()
+    };
+    validate_db_server_config(&config)?;
+    if is_fake_db_config(&config) {
+        if !is_fake_database_name(&database) {
+            return Err(format!("测试数据库不存在: {database}"));
+        }
+        let schema = mock_schema_cache();
+        let info = SchemaInfo {
+            table_count: schema.tables.len(),
+            column_count: schema.tables.iter().map(|t| t.columns.len()).sum(),
+            last_refresh: schema.last_refresh,
+        };
+        let mut next_config = config;
+        next_config.database = database;
+        let mut rt = state.runtime.lock().await;
+        rt.pool = None;
+        rt.fake_db_connected = true;
+        rt.schema_cache = schema;
+        rt.config.shared.db = next_config;
+        save_config_to_disk(&app, &rt.config)?;
+        return Ok(info);
+    }
+    let pool = MySqlPoolOptions::new()
+        .max_connections(5)
+        .connect_with(build_selected_database_connect_options(&config, &database))
+        .await
+        .map_err(|e| format!("切换数据库失败: {e}"))?;
+    let schema = load_schema_from_database(&pool, &database).await?;
+    let info = SchemaInfo {
+        table_count: schema.tables.len(),
+        column_count: schema.tables.iter().map(|t| t.columns.len()).sum(),
+        last_refresh: schema.last_refresh,
+    };
+    let mut next_config = config;
+    next_config.database = database;
+    let mut rt = state.runtime.lock().await;
+    rt.pool = Some(pool);
+    rt.schema_cache = schema;
+    rt.config.shared.db = next_config;
+    save_config_to_disk(&app, &rt.config)?;
+    Ok(info)
+}
+#[tauri::command]
 async fn refresh_schema(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<SchemaInfo, String> {
-    let (pool, db) = {
+    let (pool, fake_connected, db) = {
         let rt = state.runtime.lock().await;
-        (rt.pool.clone(), rt.config.shared.db.database.clone())
+        (
+            rt.pool.clone(),
+            rt.fake_db_connected,
+            rt.config.shared.db.database.clone(),
+        )
     };
-    let schema = if let Some(pool) = pool {
+    let schema = if fake_connected {
+        if db.trim().is_empty() {
+            return Err("请先选择数据库".into());
+        }
+        mock_schema_cache()
+    } else if let Some(pool) = pool {
+        if db.trim().is_empty() {
+            return Err("请先选择数据库".into());
+        }
         load_schema_from_database(&pool, &db).await?
     } else {
         mock_schema_cache()
@@ -1243,9 +1412,10 @@ async fn search(
     let (pool, schema, cfg, demo_rows) = {
         let rt = state.runtime.lock().await;
         let pool = rt.pool.clone();
+        let connected = runtime_db_connected(&rt);
         (
             pool.clone(),
-            resolve_runtime_schema(pool.is_some(), &rt.schema_cache),
+            resolve_runtime_schema(connected, &rt.schema_cache),
             rt.config.clone(),
             rt.demo_rows.clone(),
         )
@@ -1371,9 +1541,10 @@ async fn get_table_data(
     let (pool, schema, demo_rows) = {
         let rt = state.runtime.lock().await;
         let pool = rt.pool.clone();
+        let connected = runtime_db_connected(&rt);
         (
             pool.clone(),
-            resolve_runtime_schema(pool.is_some(), &rt.schema_cache),
+            resolve_runtime_schema(connected, &rt.schema_cache),
             rt.demo_rows.clone(),
         )
     };
@@ -1617,7 +1788,7 @@ fn build_where_from_all(
 async fn list_tables(state: State<'_, AppState>) -> Result<Vec<TableOption>, String> {
     let schema = {
         let rt = state.runtime.lock().await;
-        resolve_runtime_schema(rt.pool.is_some(), &rt.schema_cache)
+        resolve_runtime_schema(runtime_db_connected(&rt), &rt.schema_cache)
     };
     let mut out = schema
         .tables
@@ -5106,7 +5277,23 @@ async fn load_schema_from_database(
 fn mock_schema_cache() -> SchemaCache {
     SchemaCache {
         last_refresh: Some(Utc::now()),
-        tables: vec![demo_feature_test_table_meta()],
+        tables: vec![
+            demo_feature_test_table_meta(),
+            demo_customer_profiles_table_meta(),
+            demo_orders_table_meta(),
+            demo_support_tickets_table_meta(),
+            demo_audit_logs_table_meta(),
+        ],
+    }
+}
+
+fn demo_column(name: &str, column_type: &str, comment: &str, primary: bool, nullable: bool) -> ColumnMeta {
+    ColumnMeta {
+        column_name: name.into(),
+        column_type: column_type.into(),
+        column_comment: comment.into(),
+        is_primary_key: primary,
+        is_nullable: nullable,
     }
 }
 
@@ -5182,6 +5369,69 @@ fn demo_feature_test_table_meta() -> TableMeta {
     }
 }
 
+fn demo_customer_profiles_table_meta() -> TableMeta {
+    TableMeta {
+        table_name: "demo_customer_profiles".into(),
+        table_comment: "测试客户档案表：姓名、城市、会员等级、余额和标签，适合测试中文备注与客户关键字搜索".into(),
+        columns: vec![
+            demo_column("customer_id", "bigint", "客户ID，主键", true, false),
+            demo_column("customer_name", "varchar(80)", "客户姓名，可搜索中文姓名", false, false),
+            demo_column("city", "varchar(40)", "所在城市", false, false),
+            demo_column("tier", "varchar(20)", "会员等级，例如 gold、silver、trial", false, false),
+            demo_column("balance", "decimal(10,2)", "账户余额", false, false),
+            demo_column("tags", "varchar(200)", "客户标签，逗号分隔", false, true),
+            demo_column("created_at", "datetime", "开户注册时间", false, false),
+        ],
+    }
+}
+
+fn demo_orders_table_meta() -> TableMeta {
+    TableMeta {
+        table_name: "demo_orders".into(),
+        table_comment: "测试订单表：订单状态、金额、渠道、收货城市，适合测试 order、paid、refund 等关键词".into(),
+        columns: vec![
+            demo_column("order_id", "bigint", "订单ID，主键", true, false),
+            demo_column("customer_id", "bigint", "关联客户ID", false, false),
+            demo_column("order_no", "varchar(40)", "订单编号", false, false),
+            demo_column("status", "varchar(20)", "订单状态：paid、pending、refunded", false, false),
+            demo_column("amount", "decimal(10,2)", "订单金额", false, false),
+            demo_column("channel", "varchar(30)", "下单渠道", false, false),
+            demo_column("shipping_city", "varchar(40)", "收货城市", false, true),
+        ],
+    }
+}
+
+fn demo_support_tickets_table_meta() -> TableMeta {
+    TableMeta {
+        table_name: "demo_support_tickets".into(),
+        table_comment: "测试工单表：问题类型、优先级、处理人和摘要，适合测试客服、bug、退款等数据搜索".into(),
+        columns: vec![
+            demo_column("ticket_id", "bigint", "工单ID，主键", true, false),
+            demo_column("customer_id", "bigint", "关联客户ID", false, false),
+            demo_column("category", "varchar(40)", "问题分类", false, false),
+            demo_column("priority", "varchar(20)", "优先级", false, false),
+            demo_column("assignee", "varchar(40)", "处理人", false, true),
+            demo_column("summary", "text", "工单摘要", false, false),
+            demo_column("resolved", "tinyint(1)", "是否已解决", false, false),
+        ],
+    }
+}
+
+fn demo_audit_logs_table_meta() -> TableMeta {
+    TableMeta {
+        table_name: "demo_audit_logs".into(),
+        table_comment: "测试审计日志表：操作人、动作、IP、JSON 明细，适合测试日志和 JSON 内容检索".into(),
+        columns: vec![
+            demo_column("log_id", "bigint", "日志ID，主键", true, false),
+            demo_column("actor", "varchar(60)", "操作人", false, false),
+            demo_column("action", "varchar(60)", "操作动作", false, false),
+            demo_column("ip_address", "varchar(45)", "来源 IP", false, true),
+            demo_column("detail_json", "json", "操作明细 JSON", false, true),
+            demo_column("created_at", "datetime", "发生时间", false, false),
+        ],
+    }
+}
+
 fn default_demo_rows() -> HashMap<String, Vec<HashMap<String, String>>> {
     let mut out = HashMap::new();
     out.insert(
@@ -5253,6 +5503,40 @@ fn default_demo_rows() -> HashMap<String, Vec<HashMap<String, String>>> {
                 ("remark", "打开 Schema 区域时，每个字段都应有备注，不再出现空内容测试尴尬。"),
                 ("payload_json", r#"{"schema":"complete","columns":9,"comments":"all-present"}"#),
             ]),
+        ],
+    );
+    out.insert(
+        "demo_customer_profiles".into(),
+        vec![
+            map_row(&[("customer_id", "1001"), ("customer_name", "林晚晴"), ("city", "上海"), ("tier", "gold"), ("balance", "1288.50"), ("tags", "高价值,企业微信,复购"), ("created_at", "2026-01-12 09:20:00")]),
+            map_row(&[("customer_id", "1002"), ("customer_name", "周明"), ("city", "杭州"), ("tier", "silver"), ("balance", "236.00"), ("tags", "退款关注,移动端"), ("created_at", "2026-02-03 14:05:00")]),
+            map_row(&[("customer_id", "1003"), ("customer_name", "Ava Chen"), ("city", "深圳"), ("tier", "trial"), ("balance", "0.00"), ("tags", "英文资料,潜在客户"), ("created_at", "2026-03-18 11:45:00")]),
+            map_row(&[("customer_id", "1004"), ("customer_name", "王一诺"), ("city", "北京"), ("tier", "gold"), ("balance", "5020.90"), ("tags", "VIP,发票,合同"), ("created_at", "2026-04-22 16:30:00")]),
+        ],
+    );
+    out.insert(
+        "demo_orders".into(),
+        vec![
+            map_row(&[("order_id", "90001"), ("customer_id", "1001"), ("order_no", "ORD-202605-0001"), ("status", "paid"), ("amount", "399.00"), ("channel", "web"), ("shipping_city", "上海")]),
+            map_row(&[("order_id", "90002"), ("customer_id", "1002"), ("order_no", "ORD-202605-0002"), ("status", "refunded"), ("amount", "128.00"), ("channel", "miniapp"), ("shipping_city", "杭州")]),
+            map_row(&[("order_id", "90003"), ("customer_id", "1004"), ("order_no", "ORD-202605-0003"), ("status", "pending"), ("amount", "2599.00"), ("channel", "sales"), ("shipping_city", "北京")]),
+            map_row(&[("order_id", "90004"), ("customer_id", "1003"), ("order_no", "ORD-202605-0004"), ("status", "paid"), ("amount", "59.90"), ("channel", "web"), ("shipping_city", "深圳")]),
+        ],
+    );
+    out.insert(
+        "demo_support_tickets".into(),
+        vec![
+            map_row(&[("ticket_id", "7001"), ("customer_id", "1002"), ("category", "退款"), ("priority", "high"), ("assignee", "客服-小夏"), ("summary", "客户反馈订单 ORD-202605-0002 重复扣款，需要退款核对。"), ("resolved", "1")]),
+            map_row(&[("ticket_id", "7002"), ("customer_id", "1001"), ("category", "bug"), ("priority", "medium"), ("assignee", "前端-阿杰"), ("summary", "客户在搜索表名时发现高亮位置偶发不准确。"), ("resolved", "0")]),
+            map_row(&[("ticket_id", "7003"), ("customer_id", "1004"), ("category", "发票"), ("priority", "low"), ("assignee", "财务-宁宁"), ("summary", "VIP 客户申请补开发票和合同抬头变更。"), ("resolved", "0")]),
+        ],
+    );
+    out.insert(
+        "demo_audit_logs".into(),
+        vec![
+            map_row(&[("log_id", "50001"), ("actor", "admin"), ("action", "login"), ("ip_address", "10.0.0.8"), ("detail_json", r#"{"result":"success","device":"desktop"}"#), ("created_at", "2026-05-09 09:00:00")]),
+            map_row(&[("log_id", "50002"), ("actor", "operator.li"), ("action", "export"), ("ip_address", "10.0.0.12"), ("detail_json", r#"{"table":"demo_orders","rows":4,"format":"xlsx"}"#), ("created_at", "2026-05-09 09:25:00")]),
+            map_row(&[("log_id", "50003"), ("actor", "system"), ("action", "sync_failed"), ("ip_address", "127.0.0.1"), ("detail_json", r#"{"reason":"mock timeout","retry":true}"#), ("created_at", "2026-05-09 10:10:00")]),
         ],
     );
     out
@@ -5978,6 +6262,8 @@ pub fn run() {
             connect_db,
             disconnect_db,
             get_connection_status,
+            list_databases,
+            select_database,
             refresh_schema,
             search,
             cancel_search,
@@ -6064,6 +6350,53 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn database_server_config_allows_empty_selected_database() {
+        let config = DbConfig {
+            host: "127.0.0.1".into(),
+            port: 3306,
+            username: "root".into(),
+            password: "secret".into(),
+            database: "".into(),
+        };
+
+        assert!(validate_db_server_config(&config).is_ok());
+    }
+
+    #[test]
+    fn database_server_config_still_requires_host() {
+        let config = DbConfig {
+            host: " ".into(),
+            port: 3306,
+            username: "root".into(),
+            password: "secret".into(),
+            database: "app".into(),
+        };
+
+        assert_eq!(validate_db_server_config(&config), Err("请填写数据库主机".into()));
+    }
+
+    #[test]
+    fn demo_host_uses_fake_database_connection() {
+        let config = DbConfig {
+            host: "demo".into(),
+            port: 3306,
+            username: "".into(),
+            password: "".into(),
+            database: "".into(),
+        };
+
+        assert!(is_fake_db_config(&config));
+        assert_eq!(
+            fake_database_names(),
+            vec![
+                "demo_feature_test".to_string(),
+                "demo_shop".to_string(),
+                "demo_ops".to_string()
+            ]
+        );
+    }
 
     #[test]
     fn art_text_ocr_model_status_reports_missing_files() {

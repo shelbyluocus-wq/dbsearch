@@ -123,6 +123,13 @@ import {
 const APP_VERSION = APP_PACKAGE_VERSION;
 const VERSION_DISPLAY_LABEL = resolveSettingsVersionLabel(APP_VERSION);
 const DEMO_FEATURE_TEST_TABLE = "demo_feature_test";
+const DEMO_TABLE_OPTIONS = [
+  { table_name: "demo_feature_test", table_comment: "离线功能测试演示表" },
+  { table_name: "demo_customer_profiles", table_comment: "测试客户档案表：姓名、城市、会员等级、余额和标签" },
+  { table_name: "demo_orders", table_comment: "测试订单表：订单状态、金额、渠道、收货城市" },
+  { table_name: "demo_support_tickets", table_comment: "测试工单表：问题类型、优先级、处理人和摘要" },
+  { table_name: "demo_audit_logs", table_comment: "测试审计日志表：操作人、动作、IP、JSON 明细" },
+];
 
 function createTabStripDragState() {
   return {
@@ -1315,10 +1322,16 @@ const historyOpen = ref(false);
 const resultZoomOpen = ref(false);
 const resultZoomType = ref("table");
 const settingsMsg = ref("");
+const settingsSaving = ref(false);
 
 const keyword = ref("");
 const dbConnected = ref(false);
 const dbName = ref("未连接");
+const databaseMenuOpen = ref(false);
+const databaseMenuLoading = ref(false);
+const databaseMenuError = ref("");
+const availableDatabases = ref([]);
+const demoDbConnected = ref(false);
 const summaryText = ref("输入关键词开始搜索");
 const copyToast = reactive({
   visible: false,
@@ -1450,6 +1463,7 @@ const config = reactive({
     pet_scale: {},
     custom_font: null,
     weather_enabled: true,
+    weather_skin: "",
     background_opacity: 1.0,
     reduce_transparency_mode: false,
     startup_welcome_text: "Louis",
@@ -3873,10 +3887,22 @@ function ensureDbConnectedForSearch() {
   return false;
 }
 
+function ensureDatabaseSelectedForSearch() {
+  if (offlineDemoMode.value) return true;
+  if (!ensureDbConnectedForSearch()) return false;
+  if (dbName.value && dbName.value !== "未连接" && dbName.value !== "请选择数据库") return true;
+  summaryText.value = "请先选择数据库";
+  return false;
+}
+
 function syncSummaryForDefaultTableBrowse() {
   if (!isPanelWindow.value || !isKeywordEmpty.value) return;
   const total = (Array.isArray(tableOptions.value) ? tableOptions.value : []).length;
   const shown = defaultTableResults.value.length;
+  if (!offlineDemoMode.value && dbConnected.value && (!dbName.value || dbName.value === "请选择数据库")) {
+    summaryText.value = "已连接 MySQL，请选择数据库";
+    return;
+  }
   if (activeFolder.value === "all") {
     summaryText.value = offlineDemoMode.value ? `离线演示：共 ${total} 张表` : `共 ${total} 张表`;
   } else {
@@ -3897,6 +3923,16 @@ function currentSearchTargets() {
 
 async function loadTableOptions() {
   if (!isPanelWindow.value) return;
+  if (dbConnected.value && (!dbName.value || dbName.value === "请选择数据库")) {
+    tableOptions.value = [];
+    syncSummaryForDefaultTableBrowse();
+    return;
+  }
+  if (demoDbConnected.value) {
+    tableOptions.value = DEMO_TABLE_OPTIONS.map((item) => ({ ...item }));
+    syncSummaryForDefaultTableBrowse();
+    return;
+  }
   try {
     const list = await invoke("list_tables");
     tableOptions.value = Array.isArray(list) ? list : [];
@@ -4767,6 +4803,9 @@ function stopWeatherRefreshTimer() {
 }
 
 function applyPreviewWeather(cat) {
+  if (settingsOpen.value && !settingsDraft.weatherEnabled) {
+    settingsDraft.weatherEnabled = true
+  }
   weatherPreviewCategory.value = cat
   if (weatherEngine) {
     if (cat === 'lightRain') {
@@ -4800,6 +4839,9 @@ function switchToLowQuality() {
 
 function resetToRealWeather() {
   weatherPreviewCategory.value = ''
+  if (config.personal) {
+    config.personal.weather_skin = ''
+  }
   skyTimeOverride.value = null
   fetchWeather()
 }
@@ -4917,7 +4959,7 @@ onMounted(async () => {
   }
 
   if (isPanelWindow.value) {
-    if (isTauriWindow && config.shared.db.host && config.shared.db.database) {
+    if (isTauriWindow && config.shared.db.host) {
       summaryText.value = "正在连接数据库...";
       await invoke("connect_db", {
         config: {
@@ -4953,6 +4995,7 @@ onMounted(async () => {
 
     // ── Weather data + weather engine init ──
     weatherEnabled.value = config.personal.weather_enabled !== false;
+    weatherPreviewCategory.value = String(config.personal.weather_skin || "");
     fetchWeather();
     ensureWeatherRefreshTimer();
     if (weatherEnabled.value) {
@@ -6442,6 +6485,7 @@ function openSettings(target = null) {
   settingsDraft.petScale = getPetScale(settingsDraft.petSkin);
   settingsDraft.customFont = config.personal.custom_font || null;
   settingsDraft.weatherEnabled = config.personal.weather_enabled !== false;
+  weatherPreviewCategory.value = String(config.personal.weather_skin || "");
   settingsDraft.backgroundOpacity = normalizeBackgroundOpacity(config.personal.background_opacity);
   settingsDraft.reduceTransparencyMode = !!config.personal.reduce_transparency_mode;
   settingsDraft.startupWelcomeText = normalizeStartupWelcomeText(config.personal.startup_welcome_text);
@@ -6450,6 +6494,8 @@ function openSettings(target = null) {
   _opacityBeforeSettings = config.personal.background_opacity;
   _reduceTransparencyBeforeSettings = !!config.personal.reduce_transparency_mode;
   _weatherBeforeSettings = weatherEnabled.value;
+  _weatherPreviewBeforeSettings = weatherPreviewCategory.value;
+  _skyTimeOverrideBeforeSettings = skyTimeOverride.value;
   if (isTauriWindow) {
     invoke("list_system_fonts").then((fonts) => { systemFonts.value = fonts; }).catch(() => {});
   }
@@ -6460,6 +6506,8 @@ function openSettings(target = null) {
 let _opacityBeforeSettings = 1;
 let _reduceTransparencyBeforeSettings = false;
 let _weatherBeforeSettings = true;
+let _weatherPreviewBeforeSettings = "";
+let _skyTimeOverrideBeforeSettings = null;
 
 function closeSettings() {
   clearIdlePreview();
@@ -6484,12 +6532,29 @@ function closeSettings() {
       document.documentElement.dataset.theme = preferredThemeId.value
     }
   }
+  weatherPreviewCategory.value = _weatherPreviewBeforeSettings;
+  skyTimeOverride.value = _skyTimeOverrideBeforeSettings;
   settingsTab.value = -1;
   settingsOpen.value = false;
 }
 
 async function testConnect() {
   settingsMsg.value = "连接中...";
+  if (String(settingsDraft.host || "").trim().toLowerCase() === "demo") {
+    demoDbConnected.value = true;
+    dbConnected.value = true;
+    dbName.value = settingsDraft.database || "请选择数据库";
+    applyDbConfigToShared({
+      host: "demo",
+      port: Number(settingsDraft.port) || 3306,
+      username: settingsDraft.username,
+      password: settingsDraft.password,
+      database: settingsDraft.database,
+    });
+    await onDbConnectionChanged({ resetContext: true });
+    settingsMsg.value = "✓ 测试数据库连接成功，请在左下角选择数据库";
+    return;
+  }
   try {
     const msg = await invoke("connect_db", {
       config: {
@@ -6507,7 +6572,43 @@ async function testConnect() {
   }
 }
 
+async function connectDemoDatabase() {
+  settingsDraft.host = "demo";
+  settingsDraft.port = 3306;
+  settingsDraft.username = "";
+  settingsDraft.password = "";
+  settingsDraft.database = "";
+  await testConnect();
+}
+
+async function disconnectDatabase() {
+  settingsMsg.value = "断开中...";
+  try {
+    if (!demoDbConnected.value) {
+      await invoke("disconnect_db");
+    }
+    demoDbConnected.value = false;
+    dbConnected.value = false;
+    dbName.value = "未连接";
+    tableOptions.value = [];
+    resetContextAfterDbSwitch();
+    summaryText.value = "当前数据库未连接";
+    closeDatabaseMenu();
+    settingsMsg.value = "✓ 已断开连接";
+  } catch (error) {
+    settingsMsg.value = `✗ 断开失败：${String(error)}`;
+  }
+}
+
+function stopSettingsSave(message) {
+  settingsMsg.value = message;
+  settingsSaving.value = false;
+}
+
 async function saveSettings() {
+  if (settingsSaving.value) return;
+  settingsSaving.value = true;
+  settingsMsg.value = "保存中...";
   const previousHotkey = config.personal.hotkey;
   const previousQuickDateHotkey = config.personal.quick_date_hotkey;
   const previousSyncWindowHotkey = config.personal.sync_window_hotkey;
@@ -6553,45 +6654,45 @@ async function saveSettings() {
   );
   config.personal.panel_shortcuts = normalizePanelShortcuts(settingsDraft.panelShortcuts);
   if (isModifierOnlyHotkey(config.personal.hotkey)) {
-    settingsMsg.value = "✗ 快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F";
+    stopSettingsSave("✗ 快捷键必须包含至少一个非修饰键，例如 Ctrl+Shift+F");
     return;
   }
   if (isModifierOnlyHotkey(config.personal.quick_date_hotkey)) {
-    settingsMsg.value = "✗ 日期快捷键必须包含至少一个非修饰键，例如 F9";
+    stopSettingsSave("✗ 日期快捷键必须包含至少一个非修饰键，例如 F9");
     return;
   }
   if (config.personal.quick_date_hotkey === config.personal.hotkey) {
-    settingsMsg.value = "✗ 日期快捷键不能与主快捷键重复";
+    stopSettingsSave("✗ 日期快捷键不能与主快捷键重复");
     return;
   }
   if (isModifierOnlyHotkey(config.personal.sync_window_hotkey)) {
-    settingsMsg.value = "✗ 同步中心快捷键必须包含至少一个非修饰键，例如 Shift+D";
+    stopSettingsSave("✗ 同步中心快捷键必须包含至少一个非修饰键，例如 Shift+D");
     return;
   }
   if (isModifierOnlyHotkey(config.personal.db_migration_window_hotkey)) {
-    settingsMsg.value = "✗ 数据库迁移快捷键必须包含至少一个非修饰键，例如 Shift+S";
+    stopSettingsSave("✗ 数据库迁移快捷键必须包含至少一个非修饰键，例如 Shift+S");
     return;
   }
   if (isModifierOnlyHotkey(config.personal.quick_paste.open_hotkey)) {
-    settingsMsg.value = "✗ 快捷粘贴打开快捷键必须包含至少一个非修饰键，例如 F7";
+    stopSettingsSave("✗ 快捷粘贴打开快捷键必须包含至少一个非修饰键，例如 F7");
     return;
   }
   if (isModifierOnlyHotkey(config.personal.quick_paste.output_hotkey)) {
-    settingsMsg.value = "✗ 快捷粘贴输出快捷键必须包含至少一个非修饰键，例如 F8";
+    stopSettingsSave("✗ 快捷粘贴输出快捷键必须包含至少一个非修饰键，例如 F8");
     return;
   }
   if (config.personal.quick_paste.open_hotkey === config.personal.quick_paste.output_hotkey) {
-    settingsMsg.value = "✗ 快捷粘贴打开和输出快捷键不能重复";
+    stopSettingsSave("✗ 快捷粘贴打开和输出快捷键不能重复");
     return;
   }
   if (config.personal.template_prev_hotkey === config.personal.template_next_hotkey) {
-    settingsMsg.value = "✗ 模板上一快捷键不能与模板下一快捷键重复";
+    stopSettingsSave("✗ 模板上一快捷键不能与模板下一快捷键重复");
     return;
   }
 
   const fixedPanelHotkeys = new Set(["Ctrl+P", "Ctrl+O", "Ctrl+[", "Ctrl+]"]);
   if (fixedPanelHotkeys.has(config.personal.template_prev_hotkey) || fixedPanelHotkeys.has(config.personal.template_next_hotkey)) {
-    settingsMsg.value = "✗ 模板切换快捷键不能与默认面板快捷键冲突";
+    stopSettingsSave("✗ 模板切换快捷键不能与默认面板快捷键冲突");
     return;
   }
 
@@ -6613,7 +6714,7 @@ async function saveSettings() {
     const normalizedKey = normalizeHotkeyDisplay(key);
     if (!normalizedKey) continue;
     if (duplicateCheck.has(normalizedKey)) {
-      settingsMsg.value = `✗ ${label}与${duplicateCheck.get(normalizedKey)}重复`;
+      stopSettingsSave(`✗ ${label}与${duplicateCheck.get(normalizedKey)}重复`);
       return;
     }
     duplicateCheck.set(normalizedKey, label);
@@ -6630,12 +6731,14 @@ async function saveSettings() {
   setPetScale(settingsDraft.petSkin, settingsDraft.petScale);
   config.personal.custom_font = settingsDraft.customFont || null;
   config.personal.weather_enabled = !!settingsDraft.weatherEnabled;
+  config.personal.weather_skin = settingsDraft.weatherEnabled ? String(weatherPreviewCategory.value || "") : "";
   config.personal.background_opacity = normalizeBackgroundOpacity(settingsDraft.backgroundOpacity);
   config.personal.reduce_transparency_mode = !!settingsDraft.reduceTransparencyMode;
   config.personal.startup_welcome_text = normalizeStartupWelcomeText(settingsDraft.startupWelcomeText);
   config.personal.startup_welcome_mode = normalizeStartupWelcomeMode(settingsDraft.startupWelcomeMode);
   config.personal.auto_check_updates = !!settingsDraft.autoCheckUpdates;
   weatherEnabled.value = !!settingsDraft.weatherEnabled;
+  weatherPreviewCategory.value = config.personal.weather_skin;
   fetchWeather();
   ensureWeatherRefreshTimer();
   if (weatherEnabled.value) {
@@ -6656,7 +6759,7 @@ async function saveSettings() {
       await invoke("register_hotkey", { hotkey: config.personal.hotkey });
     } catch (error) {
       config.personal.hotkey = previousHotkey;
-      settingsMsg.value = `✗ 快捷键注册失败：${String(error)}`;
+      stopSettingsSave(`✗ 快捷键注册失败：${String(error)}`);
       return;
     }
 
@@ -6666,7 +6769,7 @@ async function saveSettings() {
       config.personal.quick_date_hotkey = previousQuickDateHotkey;
       config.personal.hotkey = previousHotkey;
       await invoke("register_hotkey", { hotkey: previousHotkey }).catch(() => {});
-      settingsMsg.value = `✗ 日期快捷键注册失败：${String(error)}`;
+      stopSettingsSave(`✗ 日期快捷键注册失败：${String(error)}`);
       return;
     }
 
@@ -6683,7 +6786,7 @@ async function saveSettings() {
       config.personal.hotkey = previousHotkey;
       await invoke("register_quick_date_hotkey", { hotkey: previousQuickDateHotkey }).catch(() => {});
       await invoke("register_hotkey", { hotkey: previousHotkey }).catch(() => {});
-      settingsMsg.value = `✗ 同步中心快捷键注册失败：${String(error)}`;
+      stopSettingsSave(`✗ 同步中心快捷键注册失败：${String(error)}`);
       return;
     }
 
@@ -6700,7 +6803,7 @@ async function saveSettings() {
       await invoke("register_db_migration_window_hotkey", { hotkey: previousDbMigrationWindowHotkey }).catch(() => {});
       await invoke("register_quick_date_hotkey", { hotkey: previousQuickDateHotkey }).catch(() => {});
       await invoke("register_hotkey", { hotkey: previousHotkey }).catch(() => {});
-      settingsMsg.value = `✗ 数据库迁移快捷键注册失败：${String(error)}`;
+      stopSettingsSave(`✗ 数据库迁移快捷键注册失败：${String(error)}`);
       return;
     }
 
@@ -6727,7 +6830,7 @@ async function saveSettings() {
       await invoke("register_quick_date_hotkey", { hotkey: previousQuickDateHotkey }).catch(() => {});
       await invoke("register_hotkey", { hotkey: previousHotkey }).catch(() => {});
       await invoke("save_quick_paste_config", { config: previousQuickPasteConfig }).catch(() => {});
-      settingsMsg.value = `✗ 快捷粘贴快捷键注册失败：${String(error)}`;
+      stopSettingsSave(`✗ 快捷粘贴快捷键注册失败：${String(error)}`);
       return;
     }
   }
@@ -6737,7 +6840,12 @@ async function saveSettings() {
   if (isTauriWindow) {
     await invoke("set_panel_always_on_top", { alwaysOnTop: config.personal.always_on_top }).catch(() => {});
   }
-  await persistConfig();
+  try {
+    await persistConfig();
+  } catch (error) {
+    stopSettingsSave(`✗ 保存配置失败：${String(error)}`);
+    return;
+  }
   if (isTauriWindow) {
     emit("pet-idle-states-changed", {
       idleStates: config.personal.idle_states,
@@ -6752,9 +6860,26 @@ async function saveSettings() {
   }
   await invoke("set_autostart", { enable: config.personal.auto_start }).catch(() => {});
 
-  let connected = false;
-  try {
-    await invoke("connect_db", {
+  _opacityBeforeSettings = config.personal.background_opacity;
+  _reduceTransparencyBeforeSettings = !!config.personal.reduce_transparency_mode;
+  _weatherBeforeSettings = weatherEnabled.value;
+  _weatherPreviewBeforeSettings = weatherPreviewCategory.value;
+  _skyTimeOverrideBeforeSettings = skyTimeOverride.value;
+  applyCustomFont();
+  clearIdlePreview();
+  settingsOpen.value = false;
+  settingsSaving.value = false;
+
+  if (String(config.shared.db.host || "").trim().toLowerCase() === "demo") {
+    demoDbConnected.value = true;
+    dbConnected.value = true;
+    dbName.value = config.shared.db.database || "请选择数据库";
+    await onDbConnectionChanged({ resetContext: true });
+    return;
+  }
+
+  if (isTauriWindow && config.shared.db.host) {
+    invoke("connect_db", {
       config: {
         host: config.shared.db.host,
         port: config.shared.db.port,
@@ -6762,23 +6887,10 @@ async function saveSettings() {
         password: config.shared.db.password,
         database: config.shared.db.database,
       },
-    });
-    connected = true;
-  } catch {
-    // keep saved config even if connect failed
+    })
+      .then(() => onDbConnectionChanged())
+      .catch(() => refreshConnectionStatus());
   }
-
-  if (connected) {
-    await onDbConnectionChanged();
-  } else {
-    await refreshConnectionStatus();
-  }
-  _opacityBeforeSettings = config.personal.background_opacity;
-  _reduceTransparencyBeforeSettings = !!config.personal.reduce_transparency_mode;
-  _weatherBeforeSettings = weatherEnabled.value;
-  applyCustomFont();
-  clearIdlePreview();
-  settingsOpen.value = false;
 }
 
 // ── 数据库模板 ──
@@ -6828,7 +6940,9 @@ async function switchToTemplate(idx) {
     syncSettingsDraftDbFields(nextDb);
     await onDbConnectionChanged({ resetContext: true });
     templateCursorIndex.value = idx;
-    const detail = `${nextDb.host}:${nextDb.port}/${nextDb.database}`;
+    const detail = nextDb.database
+      ? `${nextDb.host}:${nextDb.port}/${nextDb.database}`
+      : `${nextDb.host}:${nextDb.port}`;
     const msg = `已切换到模板 ${tpl.name}（${detail}）`;
     summaryText.value = msg;
     settingsMsg.value = `✓ ${msg}`;
@@ -7388,7 +7502,7 @@ async function runMetaSearch() {
     return;
   }
 
-  if (!ensureDbConnectedForSearch()) {
+  if (!ensureDatabaseSelectedForSearch()) {
     results.table = [];
     results.column = [];
     results.comment = [];
@@ -7428,7 +7542,7 @@ async function runMetaSearch() {
 async function runDataSearch() {
   activeResultTab.value = '数据值';
   if (!canSearchData.value) return;
-  if (!ensureDbConnectedForSearch()) {
+  if (!ensureDatabaseSelectedForSearch()) {
     results.data = [];
     progress.show = false;
     progress.percent = 0;
@@ -8654,13 +8768,77 @@ async function persistConfig() {
 }
 
 async function refreshConnectionStatus() {
+  if (demoDbConnected.value) {
+    dbConnected.value = true;
+    dbName.value = config.shared.db.database || settingsDraft.database || "请选择数据库";
+    return;
+  }
   try {
     const status = await invoke("get_connection_status");
     dbConnected.value = !!status.connected;
-    dbName.value = status.database || "未连接";
+    dbName.value = status.connected ? (status.database || "请选择数据库") : "未连接";
   } catch {
     dbConnected.value = false;
     dbName.value = "未连接";
+  }
+}
+
+function closeDatabaseMenu() {
+  databaseMenuOpen.value = false;
+  databaseMenuError.value = "";
+}
+
+async function toggleDatabaseMenu() {
+  if (!isTauriWindow) return;
+  if (!dbConnected.value) {
+    showCopyToast("请先连接 MySQL", "error");
+    return;
+  }
+  if (databaseMenuOpen.value) {
+    closeDatabaseMenu();
+    return;
+  }
+  databaseMenuOpen.value = true;
+  databaseMenuLoading.value = true;
+  databaseMenuError.value = "";
+  if (demoDbConnected.value) {
+    availableDatabases.value = ["demo_feature_test", "demo_shop", "demo_ops"];
+    databaseMenuLoading.value = false;
+    return;
+  }
+  try {
+    const list = await invoke("list_databases");
+    availableDatabases.value = Array.isArray(list) ? list : [];
+    if (availableDatabases.value.length === 0) {
+      databaseMenuError.value = "当前连接没有可选数据库";
+    }
+  } catch (error) {
+    availableDatabases.value = [];
+    databaseMenuError.value = String(error);
+  } finally {
+    databaseMenuLoading.value = false;
+  }
+}
+
+async function selectDatabase(database) {
+  const nextDatabase = String(database || "").trim();
+  if (!nextDatabase || templateSwitching.value) return;
+  templateSwitching.value = true;
+  try {
+    if (!demoDbConnected.value) {
+      await invoke("select_database", { database: nextDatabase });
+    }
+    config.shared.db.database = nextDatabase;
+    settingsDraft.database = nextDatabase;
+    closeDatabaseMenu();
+    await onDbConnectionChanged({ resetContext: true });
+    summaryText.value = `已切换到数据库 ${nextDatabase}`;
+    showCopyToast(`已切换到数据库 ${nextDatabase}`, "success");
+  } catch (error) {
+    databaseMenuError.value = String(error);
+    showCopyToast(`切换数据库失败：${String(error)}`, "error");
+  } finally {
+    templateSwitching.value = false;
   }
 }
 
@@ -8807,7 +8985,7 @@ function applyDbJsonToSettingsDraft(parsed) {
 
   const host = String(dbConfig.host || "").trim();
   const database = String(dbConfig.database || "").trim();
-  if (!host || !database) return false;
+  if (!host) return false;
 
   settingsDraft.host = host;
   settingsDraft.database = database;
@@ -8833,9 +9011,9 @@ async function importDbConfigFile(file) {
     const text = await file.text();
     const parsed = JSON.parse(text);
     const applied = applyDbJsonToSettingsDraft(parsed);
-    settingsMsg.value = applied ? "✓ 配置已填入，请测试连接" : "✗ JSON 解析失败或缺少数据库字段";
+    settingsMsg.value = applied ? "✓ 配置已填入，请测试连接" : "✗ JSON 解析失败或缺少主机字段";
   } catch {
-    settingsMsg.value = "✗ JSON 解析失败或缺少数据库字段";
+    settingsMsg.value = "✗ JSON 解析失败或缺少主机字段";
   }
 }
 
@@ -9818,6 +9996,24 @@ function escapeHtml(str) {
 
       <!-- 右键菜单 -->
       <Teleport to="body">
+        <div v-if="databaseMenuOpen" class="database-menu-backdrop" @click="closeDatabaseMenu" @contextmenu.prevent="closeDatabaseMenu"></div>
+        <div v-if="databaseMenuOpen" class="database-menu-popover">
+          <div class="database-menu-title">选择数据库</div>
+          <div v-if="databaseMenuLoading" class="database-menu-state">读取中...</div>
+          <div v-else-if="databaseMenuError" class="database-menu-state error">{{ databaseMenuError }}</div>
+          <div v-else class="database-menu-list">
+            <button
+              v-for="database in availableDatabases"
+              :key="database"
+              :class="['database-menu-item', { selected: database === dbName }]"
+              @click="selectDatabase(database)"
+            >
+              <span>{{ database }}</span>
+              <span v-if="database === dbName" class="database-menu-check">✓</span>
+            </button>
+          </div>
+        </div>
+
         <div v-if="itemCtxOpen" class="org-ctx-backdrop" @click="closeItemCtxMenu" @contextmenu.prevent="closeItemCtxMenu"></div>
         <div v-if="itemCtxOpen" class="org-ctx-menu" :style="{ left: itemCtxPos.x + 'px', top: itemCtxPos.y + 'px' }">
           <button class="org-ctx-item" @click="toggleStar(itemCtxTableName); closeItemCtxMenu()">
@@ -9863,10 +10059,10 @@ function escapeHtml(str) {
       </div>
       <div class="panel-footer panel-footer--demo panel-footer--controls">
         <div class="panel-footer-controls-left">
-          <span class="header-connection footer-db-connection" :title="dbConnected ? `${dbName}（已连接）` : '未连接数据库'">
+          <button class="header-connection footer-db-connection footer-db-selector" :title="dbConnected ? `${dbName}（点击选择数据库）` : '未连接数据库'" @click="toggleDatabaseMenu">
             <span :class="['db-status', { connected: dbConnected }]" id="dbStatusDot"></span>
             <span class="db-name" id="dbName">{{ dbConnected ? dbName : '未连接' }}</span>
-          </span>
+          </button>
         </div>
         <div class="panel-footer-controls-right">
           <div v-if="showTitlebarDbSwitcher" class="footer-db-switcher">
@@ -11302,7 +11498,10 @@ function escapeHtml(str) {
                 <label class="glass-form-label">端口<input v-model.number="settingsDraft.port" type="number" class="glass-input" /></label>
                 <label class="glass-form-label">用户名<input v-model="settingsDraft.username" type="text" class="glass-input" /></label>
                 <label class="glass-form-label">密码<input v-model="settingsDraft.password" type="password" class="glass-input" /></label>
-                <label class="glass-form-label full">数据库<input v-model="settingsDraft.database" type="text" class="glass-input" /></label>
+                <div class="glass-form-label full">
+                  <span>当前数据库</span>
+                  <div class="glass-input glass-input-static">{{ settingsDraft.database || '连接后在左下角选择' }}</div>
+                </div>
               </div>
             </div>
             <div class="glass-card">
@@ -11310,7 +11509,7 @@ function escapeHtml(str) {
               <div v-if="config.shared.db_templates.length > 0" style="display:flex;flex-direction:column;gap:4px;margin-bottom:8px">
                 <div v-for="(tpl, idx) in config.shared.db_templates" :key="idx" class="glass-template-item">
                   <span class="template-name">{{ tpl.name }}</span>
-                  <span class="template-info">{{ tpl.db.host }}:{{ tpl.db.port }}/{{ tpl.db.database }}</span>
+                  <span class="template-info">{{ tpl.db.host }}:{{ tpl.db.port }}{{ tpl.db.database ? `/${tpl.db.database}` : '' }}</span>
                   <button class="glass-btn-ghost" :disabled="templateSwitching" @click="switchToTemplate(idx)">
                     {{ templateSwitching && templateSwitchingIndex === idx ? "加载中..." : "加载" }}
                   </button>
@@ -11556,8 +11755,10 @@ function escapeHtml(str) {
       <footer v-if="settingsTab >= 0" class="settings-footer-v2">
         <span v-if="settingsMsg" class="settings-msg" :class="{ ok: settingsMsg.startsWith('✓'), err: settingsMsg.startsWith('✗') }">{{ settingsMsg }}</span>
         <button v-show="settingsTab === 0" class="glass-btn-secondary" @click="triggerImport">导入共享配置</button>
+        <button v-show="settingsTab === 0" class="glass-btn-secondary" @click="connectDemoDatabase">使用测试库</button>
         <button v-show="settingsTab === 0" class="glass-btn-secondary" @click="testConnect">测试连接</button>
-        <button class="glass-btn-primary" @click="saveSettings">保存设置</button>
+        <button v-show="settingsTab === 0" class="glass-btn-secondary" :disabled="!dbConnected" @click="disconnectDatabase">断开连接</button>
+        <button class="glass-btn-primary" :disabled="settingsSaving" @click="saveSettings">{{ settingsSaving ? '保存中...' : '保存设置' }}</button>
       </footer>
       <input id="importFile" class="hidden" type="file" accept="application/json" @change="onImportConfig" />
     </section>

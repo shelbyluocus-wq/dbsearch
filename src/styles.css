@@ -7370,6 +7370,12 @@ mark {
   box-shadow: 0 0 0 3px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,0.08);
 }
 
+.glass-input-static {
+  display: flex;
+  align-items: center;
+  color: var(--text-soft);
+}
+
 /* ── Glass select ── */
 .glass-select {
   appearance: none;
@@ -8689,6 +8695,20 @@ mark {
   gap: 6px;
   min-width: 0;
   flex: 0 1 auto;
+}
+
+.widget--demo-shell .footer-db-selector {
+  border: 0;
+  background: transparent;
+  color: var(--demo-text-main);
+  font: inherit;
+  padding: 4px 6px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.widget--demo-shell .footer-db-selector:hover {
+  background: rgba(255, 255, 255, calc(0.08 * var(--panel-opacity)));
 }
 
 .widget--demo-shell .footer-db-connection .db-name {
@@ -14906,6 +14926,78 @@ mark {
 .ats-card {
   flex-shrink: 0;
   border-radius: 14px;
+}
+
+.database-menu-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: transparent;
+}
+
+.database-menu-popover {
+  position: fixed;
+  left: 14px;
+  bottom: 42px;
+  z-index: 9999;
+  width: 240px;
+  max-height: 340px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  background: rgba(15, 23, 42, 0.96);
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.36);
+  color: #e5eefb;
+}
+
+.database-menu-title {
+  padding: 2px 4px 8px;
+  color: #9fb0c8;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.database-menu-list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-height: 285px;
+  overflow: auto;
+}
+
+.database-menu-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 30px;
+  padding: 6px 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.database-menu-item:hover,
+.database-menu-item.selected {
+  background: rgba(34, 211, 238, 0.14);
+}
+
+.database-menu-check {
+  color: #67e8f9;
+}
+
+.database-menu-state {
+  padding: 12px 6px;
+  color: #9fb0c8;
+  font-size: 13px;
+}
+
+.database-menu-state.error {
+  color: #fca5a5;
 }
 .ats-ocr-row {
   display: flex;
