@@ -120,12 +120,29 @@ Pure logic extracted from `App.vue` for testability:
 - `src/petMenu.js` — pet right-click menu items and actions
 - `src/startupWelcome.js` — startup welcome screen state
 - `src/tableDialogLayout.js` — table dialog layout computation
+- `src/tableEditNavigation.js` — edit-mode Tab/Enter cell navigation (`resolveEditNavigation`)
+- `src/tableEditSelection.js` — edit-mode row selection, batch cell changes, TSV copy
+- `src/tableGridFocus.js` — Navicat-style grid focus navigation (`resolveFocusMove`, `clampFocus`, `classifyFocusKey`) across page + insert rows
+- `src/tableCellRange.js` — rectangular selection helpers (`normalizeRange`, `expandRange`, `fillRangeValue`, `buildFillDownChanges`, `buildRangeTsv`, `parseClipboardTsv`, `applyTsvToRange`)
+- `src/tableTextPanel.js` — decision helpers for the 📝 F4 bottom text panel (`buildFocusKey`, `resolveTextPanelLoad`, `clampTextPanelHeight`)
 - `src/tableFind.js` — in-table find/search state management
 - `src/tableTabDrag.js` — table tab drag-and-drop logic
 - `src/tableTabsOrder.js` — table tab ordering persistence
 - `src/updateManager.js` — update check, download, install state
 
-Tests (Node built-in `node:test`) exist for most modules (see `src/*.test.js`).
+Tests (Node built-in `node:test`) exist for most modules (see `src/*.test.js`). 236 tests total as of the 2026-05-10 Navicat-style edit-mode upgrade.
+
+### Edit mode (编辑模式) grid model
+
+Edit mode now has a Navicat-style grid focus + rectangular selection on top of the existing row-selection model. All live state lives in `App.vue`:
+- `gridFocus: { rowKind: "page"|"insert", rowIndex, columnName }` — currently focused cell; `null` when no focus
+- `gridRange: { anchor, head }` — rectangular selection pinned to a single rowKind
+- `editingCell` — current in-place edit (unchanged)
+- `editChanges = { updates: Map, inserts: [], deletes: Set }` — unsaved changes (unchanged)
+- `editSelectedRows: Ref<Set<string>>` — row-level selection (moved from `reactive(Set)` to `ref(Set)` with whole-set replacement so checkbox `:checked` bindings always re-render; see bug report at `docs/plans/2026-05-10-edit-mode-bugs.md`)
+- `textPanelOpen/Height/Draft/Dirty/FocusKey/Original` — 📝 F4 text panel state
+
+`handleGridFocusKeydown(event)` (in `App.vue`) is the master keyboard dispatcher for edit mode. It consumes Arrow/Home/End/PageUp/PageDown, Enter/F2, Esc, printable chars, Ctrl+C/V/D, Delete/Backspace, Ctrl+Enter (add row), Ctrl+Delete / Ctrl+- (delete row/range), and F4 (toggle text panel). Called early from `onWindowKeydown` after modal-dialog bails.
 
 ### Config persistence
 

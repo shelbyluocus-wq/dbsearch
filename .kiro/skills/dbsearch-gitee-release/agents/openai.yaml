@@ -1,0 +1,4 @@
+interface:
+  display_name: "DBSearch Gitee Release"
+  short_description: "Publish DBSearch Windows updates through signed Gitee releases."
+  default_prompt: "Use this skill to publish a DBSearch/EagleJet Windows update to Gitee with signed Tauri updater artifacts."

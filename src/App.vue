@@ -42,6 +42,7 @@ import {
   getWeatherPresentation,
   normalizeWeatherCategory,
   resolveWeatherSkinState,
+  shouldRenderWeatherClouds,
 } from "./weatherSkin.js";
 import {
   appendTimelineByProfile,
@@ -79,8 +80,10 @@ import {
 import { runPetMenuAction } from "./petMenu.js";
 import {
   buildCellViewerPreview,
+  detectCellViewerLanguage,
   normalizeCellViewerLanguage,
 } from "./cellViewer.js";
+import hljs from "highlight.js/lib/core";
 import {
   clearCollapsedColumnState,
   computeAutoCollapsedWidth,
@@ -100,7 +103,34 @@ import {
   resolveTabStripDropIndex,
 } from "./tableTabDrag.js";
 import { resolveAdaptiveTablePageSize } from "./tableDialogLayout.js";
+import {
+  resolvePendingCellValue,
+  setPendingCellChange,
+} from "./tableEditChanges.js";
 import { resolveEditNavigation } from "./tableEditNavigation.js";
+import {
+  classifyFocusKey,
+  clampFocus,
+  resolveFocusMove,
+} from "./tableGridFocus.js";
+import {
+  applyTsvToRange,
+  buildFillDownChanges,
+  buildRangeTsv,
+  enumerateRangeCells,
+  expandRange,
+  fillRangeValue,
+  normalizeRange,
+  parseClipboardTsv,
+  rangeSize,
+} from "./tableCellRange.js";
+import { shouldStartCellTextEdit } from "./tableCellClickEdit.js";
+import {
+  buildFocusKey,
+  clampTextPanelHeight,
+  resolveTextPanelLoad,
+  shouldRouteTextPanelKeyToGrid,
+} from "./tableTextPanel.js";
 import {
   buildBatchCellChanges,
   buildSelectedRowsTsv,
@@ -1276,7 +1306,12 @@ const editChanges = reactive({
   inserts: [],
   deletes: new Set(),
 })
-const editSelectedRows = reactive(new Set())
+// Use ref(new Set()) + whole-set replacement so template bindings like
+// :checked="editSelectedRows.has(...)" always see a fresh value. Mutating a
+// reactive Set via .clear()+.add() can cause the :checked binding to miss
+// updates between the clear and the add, leaving the checkbox visually out
+// of sync. See docs/plans/实现计划 — Navicat 风格编辑模式升级.md#bug.
+const editSelectedRows = ref(new Set())
 const editSelectionAnchorIndex = ref(-1)
 const editBatchColumn = ref("")
 const editBatchValue = ref("")
@@ -1287,6 +1322,42 @@ const editUnsavedDialogOpen = ref(false)
 const editUnsavedCallback = ref(null)
 const editDateSuccessCallback = ref(null)
 let editGlowTimer = null
+
+// ── 编辑模式：网格焦点 + 矩形选区 ──
+// gridFocus:  active focus cell (null when no focus). rowKind is "page" for
+//             existing rows and "insert" for pending new rows.
+// gridRange:  rectangular selection pinned to a single rowKind. anchor is the
+//             fixed corner, head is the moving corner. null when there is no
+//             multi-cell selection.
+const gridFocus = reactive({ rowKind: null, rowIndex: -1, columnName: "" })
+const gridRange = reactive({ anchor: null, head: null })
+// Set when the user is mid-drag (mousedown on a cell) so that mouseenter on
+// neighbour cells extends the range without requiring a modifier key.
+let gridRangeDragging = false
+let gridPointerDownStartedFocused = false
+let gridPointerMovedDuringClick = false
+let gridPointerDownTargetIsInput = false
+// Multi-cell overwrite accumulation: when the user starts typing with a range
+// of 2+ cells selected, each successive printable char / Backspace rewrites
+// every cell in the range to the evolving buffer. Cleared when focus moves,
+// range changes, Enter/Esc/Tab are pressed, or the user clicks anywhere.
+const gridTypingBuffer = ref("")
+const gridTypingActive = ref(false)
+// Undo stack for the edit mode. Each snapshot captures enough information to
+// revert a single user action. Kinds: "cells" (per-cell old values), "insert"
+// (we added a row), "delete" (we deleted page rows / spliced insert rows).
+const editUndoStack = ref([])
+const editRedoStack = ref([])
+const EDIT_UNDO_LIMIT = 200
+// 📝 文本选项 — bottom text editing panel state (Task 8).
+const textPanelOpen = ref(false)
+const textPanelHeight = ref(220)
+const textPanelDraft = ref("")
+const textPanelDirty = ref(false)
+const textPanelFocusKey = ref("")
+const textPanelOriginal = ref("")
+const editMirrorSelection = reactive({ start: 0, end: 0 })
+let editMirrorApplyingSelection = false
 
 const CELL_VIEWER_LANGUAGE_OPTIONS = [
   { value: "auto", label: "自动" },
@@ -1331,6 +1402,8 @@ const databaseMenuOpen = ref(false);
 const databaseMenuLoading = ref(false);
 const databaseMenuError = ref("");
 const availableDatabases = ref([]);
+const templateMenuOpen = ref(false);
+const templateMenuPosition = reactive({ left: 0, bottom: 48 });
 const demoDbConnected = ref(false);
 const summaryText = ref("输入关键词开始搜索");
 const copyToast = reactive({
@@ -1662,15 +1735,14 @@ const rainDropElements = computed(() => {
 
 const cloudElements = computed(() => {
   const cat = effectiveWeatherType.value
-  if (cat === 'sunny') return []
-  const isHeavy = cat === 'heavyRain'
-  const count = weatherQuality.value === 'high' ? (isHeavy ? 6 : 4) : 2
+  if (!shouldRenderWeatherClouds(cat)) return []
+  const count = weatherQuality.value === 'high' ? 4 : 2
   return Array.from({ length: count }, (_, i) => ({
     id: i,
     top: `${5 + Math.random() * 20}%`,
     duration: `${40 + Math.random() * 40}s`,
     delay: `-${Math.random() * 40}s`,
-    opacity: isHeavy ? 0.9 : 0.7,
+    opacity: 0.7,
     scale: 0.8 + Math.random() * 0.7,
   }))
 })
@@ -1893,7 +1965,7 @@ const editDeletedRowKeys = computed(() =>
 );
 const editCurrentPageSelectedCount = computed(() => {
   const deleted = new Set(editDeletedRowKeys.value);
-  return editPageRowKeys.value.filter((key) => editSelectedRows.has(key) && !deleted.has(key)).length;
+  return editPageRowKeys.value.filter((key) => editSelectedRows.value.has(key) && !deleted.has(key)).length;
 });
 const editSelectableRowCount = computed(() => Math.max(0, editPageRowKeys.value.length - editDeletedRowKeys.value.length));
 const editAllPageRowsSelected = computed(() =>
@@ -3540,9 +3612,15 @@ const tableDialogSurfaceMode = computed(() =>
 const contentScaleStyle = computed(() => ({
   "--content-scale": String(normalizeUiScale(config.personal.ui_scale)),
 }));
-const panelChromeStyle = computed(() => ({
-  "--panel-opacity": String(normalizeBackgroundOpacity(config.personal.background_opacity)),
-}));
+const panelChromeStyle = computed(() => {
+  const style = {
+    "--panel-opacity": String(normalizeBackgroundOpacity(config.personal.background_opacity)),
+  };
+  if (weatherEnabled.value && weatherPresentation.value?.surfaceVars) {
+    Object.assign(style, weatherPresentation.value.surfaceVars);
+  }
+  return style;
+});
 const tableContentScaleStyle = computed(() => ({
   "--content-scale": String(normalizeUiScale(config.personal.ui_scale)),
 }));
@@ -6001,6 +6079,13 @@ function onWindowKeydown(event) {
     return;
   }
 
+  // Grid focus / rectangular selection keys (Navicat-style edit mode).
+  // Must run before other table shortcuts so Enter/F2/arrows/letters are
+  // consumed while editing, but after modal dialog bails above.
+  if (handleGridFocusKeydown(event)) {
+    return;
+  }
+
   if (tableOpen.value && isPanelShortcut(event, "openTableFind")) {
     event.preventDefault();
     openTableFind();
@@ -6914,14 +6999,14 @@ function deleteTemplate(idx) {
 }
 
 async function switchToTemplate(idx) {
-  if (templateSwitching.value) return;
+  if (templateSwitching.value) return false;
   const tpl = config.shared.db_templates[idx];
-  if (!tpl) return;
+  if (!tpl) return false;
   if (editMode.value && editDirty.value) {
     const blockedMsg = "当前有未保存编辑，请先保存或放弃后再切换模板";
     settingsMsg.value = `✗ ${blockedMsg}`;
     showCopyToast(blockedMsg, "error");
-    return;
+    return false;
   }
 
   const nextDb = {
@@ -6947,14 +7032,61 @@ async function switchToTemplate(idx) {
     summaryText.value = msg;
     settingsMsg.value = `✓ ${msg}`;
     showCopyToast(msg, "success");
+    return true;
   } catch (e) {
     const errorMsg = `模板切换失败，已保持当前连接：${String(e)}`;
     settingsMsg.value = `✗ ${errorMsg}`;
     showCopyToast(errorMsg, "error");
+    return false;
   } finally {
     templateSwitching.value = false;
     templateSwitchingIndex.value = -1;
   }
+}
+
+function closeTemplateMenu() {
+  templateMenuOpen.value = false;
+}
+
+function updateTemplateMenuPosition(event) {
+  const width = 280;
+  const margin = 8;
+  const target = event?.currentTarget;
+  let left = Math.max(margin, window.innerWidth - width - 18);
+  let bottom = 48;
+
+  if (target instanceof HTMLElement) {
+    const rect = target.getBoundingClientRect();
+    left = Math.min(
+      Math.max(margin, rect.right - width),
+      Math.max(margin, window.innerWidth - width - margin),
+    );
+    bottom = Math.max(margin, window.innerHeight - rect.top + margin);
+  }
+
+  templateMenuPosition.left = Math.round(left);
+  templateMenuPosition.bottom = Math.round(bottom);
+}
+
+function toggleTemplateMenu(event) {
+  const list = Array.isArray(config.shared.db_templates) ? config.shared.db_templates : [];
+  if (templateSwitching.value) return;
+  if (list.length === 0) {
+    showCopyToast("暂无可切换模板", "error");
+    return;
+  }
+  if (templateMenuOpen.value) {
+    closeTemplateMenu();
+    return;
+  }
+  closeDatabaseMenu();
+  updateTemplateMenuPosition(event);
+  templateMenuOpen.value = true;
+}
+
+async function selectTemplateFromMenu(idx) {
+  const switched = await switchToTemplate(idx);
+  if (switched) closeTemplateMenu();
 }
 
 async function switchTemplateByStep(step = 1) {
@@ -7173,9 +7305,14 @@ async function jumpHitRow(step = 1) {
   tableView.focusedHitLocalIndex = targetHit.localIndex;
 
   await nextTick();
-  const target = document.querySelector(`[data-hit-row-index="${tableView.focusedHitLocalIndex}"]`);
-  if (target) {
-    target.scrollIntoView({ behavior: "smooth", block: "center" });
+  const targetRow = document.querySelector(`[data-hit-row-index="${tableView.focusedHitLocalIndex}"]`);
+  if (targetRow) {
+    targetRow.scrollIntoView({ behavior: "smooth", block: "center" });
+    // Also scroll the first hit cell into view horizontally so the hit text is visible on the left.
+    const hitCell = targetRow.querySelector("td.hit-cell");
+    if (hitCell) {
+      hitCell.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" });
+    }
   }
 }
 
@@ -7604,8 +7741,11 @@ function renderTableColumnHeader(columnName) {
   return renderDetailHighlighted(columnName);
 }
 
-function renderDataCell(row, columnName) {
-  return renderDetailHighlighted(row?.[columnName] || "");
+function renderDataCell(row, columnName, rowIndex = null) {
+  const value = Number.isInteger(rowIndex)
+    ? resolvePageCellValue(rowIndex, columnName)
+    : String(row?.[columnName] ?? "");
+  return renderDetailHighlighted(value);
 }
 
 function getActiveDataGridColumns() {
@@ -7955,6 +8095,7 @@ async function loadTablePage(options = {}) {
     tableView.totalRows = payload.totalRows || 0;
     tableView.tableComment = payload.tableComment || "";
     syncEditSelectionToCurrentPage();
+    ensureGridFocusInBounds();
     if (resetFocus) {
       tableView.focusedHitLocalIndex = null;
     }
@@ -8066,7 +8207,14 @@ function discardCellViewerChanges() {
 }
 
 function resolvePageCellValue(rowIndex, columnName) {
-  return String(tableView.rows[rowIndex]?.[columnName] ?? "")
+  const row = tableView.rows[rowIndex]
+  if (!row) return ""
+  return resolvePendingCellValue({
+    row,
+    rowKey: computeRowKey(row, rowIndex),
+    columnName,
+    updates: editChanges.updates,
+  })
 }
 
 function resolveInsertCellValue(insertIndex, columnName) {
@@ -8130,24 +8278,109 @@ function openHitCellViewer(item, columnName) {
   })
 }
 
-function onPageCellClick(rowIndex, columnName) {
+function resetGridClickEditState() {
+  gridPointerDownStartedFocused = false
+  gridPointerMovedDuringClick = false
+  gridPointerDownTargetIsInput = false
+}
+
+function onPageCellClick(event, rowIndex, columnName) {
+  // Focus and range are already handled by onGridCellMouseDown.
+  // Only commit typing if needed.
   if (!editMode.value) return
-  startCellEdit(rowIndex, columnName)
+  if (shouldStartCellTextEdit({
+    editMode: editMode.value,
+    startedFocused: gridPointerDownStartedFocused,
+    movedDuringPointer: gridPointerMovedDuringClick,
+    shiftKey: !!event?.shiftKey,
+    targetIsInput: gridPointerDownTargetIsInput,
+  })) {
+    resetGridClickEditState()
+    startCellEdit(rowIndex, columnName)
+    return
+  }
+  resetGridClickEditState()
+  commitGridTyping()
 }
 
 function onPageCellDoubleClick(rowIndex, columnName) {
-  if (editMode.value) return
+  if (editMode.value) {
+    startCellEdit(rowIndex, columnName)
+    return
+  }
   openPageCellViewer(rowIndex, columnName)
 }
 
-function onInsertCellClick(insertIndex, columnName) {
+function onInsertCellClick(event, insertIndex, columnName) {
   if (!editMode.value) return
-  startNewRowCellEdit(insertIndex, columnName)
+  if (shouldStartCellTextEdit({
+    editMode: editMode.value,
+    startedFocused: gridPointerDownStartedFocused,
+    movedDuringPointer: gridPointerMovedDuringClick,
+    shiftKey: !!event?.shiftKey,
+    targetIsInput: gridPointerDownTargetIsInput,
+  })) {
+    resetGridClickEditState()
+    startNewRowCellEdit(insertIndex, columnName)
+    return
+  }
+  resetGridClickEditState()
+  commitGridTyping()
 }
 
 function onInsertCellDoubleClick(insertIndex, columnName) {
-  if (editMode.value) return
+  if (editMode.value) {
+    startNewRowCellEdit(insertIndex, columnName)
+    return
+  }
   openInsertCellViewer(insertIndex, columnName)
+}
+
+function onGridCellMouseDown(event, rowKind, rowIndex, columnName) {
+  if (!editMode.value) return
+  if (event.button !== 0) return
+  // Click on inline edit <input> should not start a drag range.
+  const target = event.target
+  const targetIsInput = target && typeof target.tagName === "string" && target.tagName.toUpperCase() === "INPUT"
+  gridPointerDownStartedFocused = isGridFocused(rowKind, rowIndex, columnName)
+  gridPointerMovedDuringClick = false
+  gridPointerDownTargetIsInput = !!targetIsInput
+  if (targetIsInput) return
+  if (editingCell.active) confirmCellEdit()
+  commitGridTyping()
+  // Extend selection on Shift+click.
+  if (event.shiftKey && hasActiveGridFocus()) {
+    gridRange.anchor = gridRange.anchor || {
+      rowKind: gridFocus.rowKind,
+      rowIndex: gridFocus.rowIndex,
+      columnName: gridFocus.columnName,
+    }
+    gridRange.head = { rowKind, rowIndex, columnName }
+    setGridFocus(rowKind, rowIndex, columnName)
+    return
+  }
+  // Start a new rectangular drag.
+  clearGridRange()
+  setGridFocus(rowKind, rowIndex, columnName)
+  gridRange.anchor = { rowKind, rowIndex, columnName }
+  gridRange.head = { rowKind, rowIndex, columnName }
+  setEditSelectedRowKeys([])
+  gridRangeDragging = true
+  // Release the drag on mouseup anywhere.
+  const onUp = () => {
+    gridRangeDragging = false
+    window.removeEventListener("mouseup", onUp, true)
+  }
+  window.addEventListener("mouseup", onUp, true)
+}
+
+function onGridCellMouseEnter(event, rowKind, rowIndex, columnName) {
+  if (!editMode.value) return
+  if (!gridRangeDragging) return
+  if (!gridRange.anchor) return
+  gridPointerMovedDuringClick = true
+  gridRange.head = { rowKind, rowIndex, columnName }
+  setGridFocus(rowKind, rowIndex, columnName)
 }
 
 function onHitCellDoubleClick(item, columnName) {
@@ -8219,26 +8452,23 @@ function applyRowCellChange(rowIndex, columnName, nextValue) {
   if (!row) return false
   const key = computeRowKey(row, rowIndex)
   if (editChanges.deletes.has(key)) return false
-  if (!editChanges.updates.has(key)) {
-    const pks = getTablePrimaryKeys()
-    const whereKeys = {}
-    if (pks.length > 0) {
-      pks.forEach(pk => { whereKeys[pk] = String(row[pk] ?? "") })
-    } else {
-      tableView.columns.forEach(c => { whereKeys[c.column_name] = String(row[c.column_name] ?? "") })
-    }
-    editChanges.updates.set(key, { whereKeys, changes: {} })
-  }
-  editChanges.updates.get(key).changes[columnName] = nextValue
-  tableView.rows[rowIndex][columnName] = nextValue
-  editDirty.value = true
+  setPendingCellChange({
+    updates: editChanges.updates,
+    rowKey: key,
+    row,
+    columns: tableView.columns,
+    primaryKeys: getTablePrimaryKeys(),
+    columnName,
+    nextValue,
+  })
+  recomputeEditDirty()
   return true
 }
 
 function applyInsertCellChange(insertIndex, columnName, nextValue) {
   if (!editChanges.inserts[insertIndex]) return false
   editChanges.inserts[insertIndex][columnName] = nextValue
-  editDirty.value = true
+  recomputeEditDirty()
   return true
 }
 
@@ -8295,11 +8525,21 @@ function resetEditChanges() {
   editChanges.updates.clear()
   editChanges.inserts.splice(0)
   editChanges.deletes.clear()
-  editSelectedRows.clear()
+  editSelectedRows.value = new Set()
   editSelectionAnchorIndex.value = -1
   editBatchColumn.value = ""
   editBatchValue.value = ""
   editDirty.value = false
+  clearGridFocus()
+  clearGridRange()
+  gridTypingBuffer.value = ""
+  gridTypingActive.value = false
+  editUndoStack.value = []
+  editRedoStack.value = []
+  textPanelDirty.value = false
+  textPanelDraft.value = ""
+  textPanelOriginal.value = ""
+  textPanelFocusKey.value = ""
   Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
 }
 function enterEditMode() {
@@ -8312,6 +8552,7 @@ function enterEditMode() {
   nextTick(() => {
     startTableLayoutObserver().catch(() => {})
     scheduleAdaptiveTablePageSize()
+    initGridFocusIfNeeded()
   })
 }
 function exitEditMode() {
@@ -8361,17 +8602,39 @@ function startCellEdit(rowIndex, columnName) {
   if (!editMode.value) return
   const key = computeRowKey(tableView.rows[rowIndex], rowIndex)
   if (editChanges.deletes.has(key)) return
-  const original = String(tableView.rows[rowIndex]?.[columnName] ?? '')
+  const original = resolvePageCellValue(rowIndex, columnName)
   Object.assign(editingCell, { active: true, rowIndex, columnName, originalValue: original, currentValue: original })
+  editMirrorSelection.start = original.length
+  editMirrorSelection.end = original.length
   nextTick(() => {
-    const el = document.getElementById('edit-cell-input')
-    if (el) { el.focus(); el.select() }
+    if (textPanelOpen.value) {
+      const ta = tableModalRef.value && tableModalRef.value.querySelector(".edit-text-panel__textarea")
+      if (ta) { ta.focus(); const len = original.length; ta.setSelectionRange(len, len) }
+    } else {
+      const el = document.getElementById('edit-cell-input')
+      if (el) { el.focus(); el.select() }
+    }
   })
 }
 function confirmCellEdit() {
   if (!editingCell.active) return
+  // Safety net: read the raw DOM value in case v-model is still awaiting a
+  // compositionend / IME flush. Covers bug scan #1 (blur-before-keydown race).
+  const inputEl = document.getElementById("edit-cell-input")
+  if (inputEl && typeof inputEl.value === "string" && inputEl.value !== editingCell.currentValue) {
+    editingCell.currentValue = inputEl.value
+  }
   const { rowIndex, columnName, originalValue, currentValue } = editingCell
   if (currentValue !== originalValue) {
+    pushUndoSnapshot({
+      kind: "cells",
+      entries: [{
+        rowKind: "page",
+        rowIndex,
+        columnName,
+        prevValue: String(originalValue ?? ""),
+      }],
+    })
     applyRowCellChange(rowIndex, columnName, currentValue)
   }
   Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
@@ -8462,14 +8725,38 @@ function startNewRowCellEdit(insertIdx, columnName) {
   // Use a special index for new rows: offset by existing rows count
   const specialIdx = tableView.rows.length + insertIdx
   Object.assign(editingCell, { active: true, rowIndex: specialIdx, columnName, originalValue: original, currentValue: original })
+  editMirrorSelection.start = original.length
+  editMirrorSelection.end = original.length
   nextTick(() => {
-    const el = document.getElementById('edit-cell-input')
-    if (el) { el.focus(); el.select() }
+    if (textPanelOpen.value) {
+      const ta = tableModalRef.value && tableModalRef.value.querySelector(".edit-text-panel__textarea")
+      if (ta) { ta.focus(); const len = original.length; ta.setSelectionRange(len, len) }
+    } else {
+      const el = document.getElementById('edit-cell-input')
+      if (el) { el.focus(); el.select() }
+    }
   })
 }
 function confirmNewRowCellEdit(insertIdx) {
   if (!editingCell.active) return
-  const { columnName, currentValue } = editingCell
+  // Mirror confirmCellEdit: capture the DOM value as a safety net for IME
+  // compositionend races (bug scan #1).
+  const inputEl = document.getElementById("edit-cell-input")
+  if (inputEl && typeof inputEl.value === "string" && inputEl.value !== editingCell.currentValue) {
+    editingCell.currentValue = inputEl.value
+  }
+  const { columnName, originalValue, currentValue } = editingCell
+  if (currentValue !== originalValue) {
+    pushUndoSnapshot({
+      kind: "cells",
+      entries: [{
+        rowKind: "insert",
+        rowIndex: insertIdx,
+        columnName,
+        prevValue: String(originalValue ?? ""),
+      }],
+    })
+  }
   applyInsertCellChange(insertIdx, columnName, currentValue)
   Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
 }
@@ -8505,27 +8792,34 @@ function onNewRowCellEditKeydown(e, insertIdx) {
 
 // ── 编辑模式：行操作 ──
 function setEditSelectedRowKeys(keys = []) {
-  editSelectedRows.clear()
+  // Whole-Set replacement: assign a new Set so the ref triggers template
+  // dependents in one step. Avoids the `.clear()` + `.add()` race that caused
+  // checkbox :checked bindings to miss updates.
+  const next = new Set()
   for (const key of (Array.isArray(keys) ? keys : [])) {
-    if (key) editSelectedRows.add(key)
+    if (key) next.add(key)
   }
+  editSelectedRows.value = next
 }
 function syncEditSelectionToCurrentPage() {
   const current = new Set(editPageRowKeys.value)
   const deleted = new Set(editDeletedRowKeys.value)
-  const next = [...editSelectedRows].filter((key) => current.has(key) && !deleted.has(key))
-  if (next.length !== editSelectedRows.size) {
+  const next = [...editSelectedRows.value].filter((key) => current.has(key) && !deleted.has(key))
+  if (next.length !== editSelectedRows.value.size) {
     setEditSelectedRowKeys(next)
   }
-  if (editSelectionAnchorIndex.value >= tableView.rows.length || editCurrentPageSelectedCount.value === 0) {
-    editSelectionAnchorIndex.value = -1
-  }
+  // Always clear the Shift-click anchor when page data changes. The anchor
+  // stores a row *index* from the previous page; if we keep it across a page
+  // switch a subsequent Shift-click can select a contiguous range centred on
+  // the wrong row. See docs/plans/实现计划 — Navicat 风格编辑模式升级.md
+  // (bug scan #2: pagination anchor drift).
+  editSelectionAnchorIndex.value = -1
 }
 function toggleRowSelection(idx, event = {}) {
   confirmCellEdit()
   const result = resolveRowSelection({
     rowKeys: editPageRowKeys.value,
-    selectedKeys: [...editSelectedRows],
+    selectedKeys: [...editSelectedRows.value],
     deletedKeys: editDeletedRowKeys.value,
     rowIndex: idx,
     anchorIndex: editSelectionAnchorIndex.value,
@@ -8535,14 +8829,128 @@ function toggleRowSelection(idx, event = {}) {
   setEditSelectedRowKeys(result.selectedKeys)
   editSelectionAnchorIndex.value = result.anchorIndex
 }
+
+function selectWholeRow(idx, event = {}) {
+  commitGridTyping()
+  const columns = getEditColumnNames()
+  if (columns.length === 0) return
+  // Shift+click: extend range from existing anchor row to this row.
+  if (event.shiftKey && gridRange.anchor && gridRange.anchor.rowKind === "page") {
+    gridRange.head = { rowKind: "page", rowIndex: idx, columnName: columns[columns.length - 1] }
+    setGridFocus("page", idx, columns[0])
+  } else if (event.ctrlKey || event.metaKey) {
+    // Ctrl+click: keep existing range, just toggle row selection.
+    setGridFocus("page", idx, columns[0])
+    gridRange.anchor = { rowKind: "page", rowIndex: idx, columnName: columns[0] }
+    gridRange.head = { rowKind: "page", rowIndex: idx, columnName: columns[columns.length - 1] }
+  } else {
+    setGridFocus("page", idx, columns[0])
+    gridRange.anchor = { rowKind: "page", rowIndex: idx, columnName: columns[0] }
+    gridRange.head = { rowKind: "page", rowIndex: idx, columnName: columns[columns.length - 1] }
+  }
+  // Also add to row selection for Ctrl+C / batch operations.
+  const row = tableView.rows[idx]
+  const rowKey = row ? computeRowKey(row, idx) : ""
+  if (rowKey && !editChanges.deletes.has(rowKey)) {
+    if (event.shiftKey && editSelectionAnchorIndex.value >= 0) {
+      const result = resolveRowSelection({
+        rowKeys: editPageRowKeys.value,
+        selectedKeys: [...editSelectedRows.value],
+        deletedKeys: editDeletedRowKeys.value,
+        rowIndex: idx,
+        anchorIndex: editSelectionAnchorIndex.value,
+        shiftKey: true,
+        additiveKey: !!event.ctrlKey || !!event.metaKey,
+      })
+      setEditSelectedRowKeys(result.selectedKeys)
+      editSelectionAnchorIndex.value = result.anchorIndex
+    } else if (event.ctrlKey || event.metaKey) {
+      const result = resolveRowSelection({
+        rowKeys: editPageRowKeys.value,
+        selectedKeys: [...editSelectedRows.value],
+        deletedKeys: editDeletedRowKeys.value,
+        rowIndex: idx,
+        anchorIndex: editSelectionAnchorIndex.value,
+        shiftKey: false,
+        additiveKey: true,
+      })
+      setEditSelectedRowKeys(result.selectedKeys)
+      editSelectionAnchorIndex.value = result.anchorIndex
+    } else {
+      setEditSelectedRowKeys([rowKey])
+      editSelectionAnchorIndex.value = idx
+    }
+  }
+}
+
+function selectWholeInsertRow(nIdx, event = {}) {
+  commitGridTyping()
+  const columns = getEditColumnNames()
+  if (columns.length === 0) return
+  if (event.shiftKey && gridRange.anchor && gridRange.anchor.rowKind === "insert") {
+    gridRange.head = { rowKind: "insert", rowIndex: nIdx, columnName: columns[columns.length - 1] }
+    setGridFocus("insert", nIdx, columns[0])
+  } else {
+    setGridFocus("insert", nIdx, columns[0])
+    gridRange.anchor = { rowKind: "insert", rowIndex: nIdx, columnName: columns[0] }
+    gridRange.head = { rowKind: "insert", rowIndex: nIdx, columnName: columns[columns.length - 1] }
+  }
+}
+
+let rowHandleDragging = false
+
+function onRowHandleMouseDown(idx, rowKind) {
+  commitGridTyping()
+  const columns = getEditColumnNames()
+  if (columns.length === 0) return
+  setGridFocus(rowKind, idx, columns[0])
+  gridRange.anchor = { rowKind, rowIndex: idx, columnName: columns[0] }
+  gridRange.head = { rowKind, rowIndex: idx, columnName: columns[columns.length - 1] }
+  if (rowKind === "page") {
+    const row = tableView.rows[idx]
+    const rowKey = row ? computeRowKey(row, idx) : ""
+    if (rowKey && !editChanges.deletes.has(rowKey)) {
+      setEditSelectedRowKeys([rowKey])
+      editSelectionAnchorIndex.value = idx
+    }
+  }
+  rowHandleDragging = true
+  const onUp = () => {
+    rowHandleDragging = false
+    window.removeEventListener("mouseup", onUp, true)
+  }
+  window.addEventListener("mouseup", onUp, true)
+}
+
+function onRowHandleMouseEnter(idx, rowKind) {
+  if (!rowHandleDragging) return
+  if (!gridRange.anchor || gridRange.anchor.rowKind !== rowKind) return
+  const columns = getEditColumnNames()
+  if (columns.length === 0) return
+  gridRange.head = { rowKind, rowIndex: idx, columnName: columns[columns.length - 1] }
+  setGridFocus(rowKind, idx, columns[0])
+  // Update row selection for page rows.
+  if (rowKind === "page") {
+    const startRow = Math.min(gridRange.anchor.rowIndex, idx)
+    const endRow = Math.max(gridRange.anchor.rowIndex, idx)
+    const keys = []
+    for (let r = startRow; r <= endRow; r++) {
+      const row = tableView.rows[r]
+      const rowKey = row ? computeRowKey(row, r) : ""
+      if (rowKey && !editChanges.deletes.has(rowKey)) keys.push(rowKey)
+    }
+    setEditSelectedRowKeys(keys)
+  }
+}
+
 function toggleSelectAll() {
   confirmCellEdit()
   setEditSelectedRowKeys(resolveSelectAllRowKeys({
     rowKeys: editPageRowKeys.value,
-    selectedKeys: [...editSelectedRows],
+    selectedKeys: [...editSelectedRows.value],
     deletedKeys: editDeletedRowKeys.value,
   }))
-  editSelectionAnchorIndex.value = editSelectedRows.size > 0 ? 0 : -1
+  editSelectionAnchorIndex.value = editSelectedRows.value.size > 0 ? 0 : -1
 }
 function selectAllPageRows() {
   confirmCellEdit()
@@ -8551,7 +8959,7 @@ function selectAllPageRows() {
     selectedKeys: [],
     deletedKeys: editDeletedRowKeys.value,
   }))
-  editSelectionAnchorIndex.value = editSelectedRows.size > 0 ? 0 : -1
+  editSelectionAnchorIndex.value = editSelectedRows.value.size > 0 ? 0 : -1
 }
 async function copySelectedRows() {
   confirmCellEdit()
@@ -8559,7 +8967,7 @@ async function copySelectedRows() {
     rows: tableView.rows,
     columns: getEditColumnNames(),
     rowKeys: editPageRowKeys.value,
-    selectedKeys: [...editSelectedRows],
+    selectedKeys: [...editSelectedRows.value],
   })
   if (!text) return
   try {
@@ -8573,7 +8981,7 @@ function applyBatchEditToSelectedRows() {
   confirmCellEdit()
   const changes = buildBatchCellChanges({
     rowKeys: editPageRowKeys.value,
-    selectedKeys: [...editSelectedRows],
+    selectedKeys: [...editSelectedRows.value],
     deletedKeys: editDeletedRowKeys.value,
     columnName: editBatchColumn.value,
     value: editBatchValue.value,
@@ -8585,24 +8993,44 @@ function applyBatchEditToSelectedRows() {
   })
   showCopyToast(`已批量修改 ${changes.length} 行`, "success")
 }
+function hasNonEmptyInserts() {
+  return editChanges.inserts.some(r => Object.values(r).some(v => v !== ''))
+}
+function recomputeEditDirty() {
+  editDirty.value = editChanges.updates.size > 0 || hasNonEmptyInserts() || editChanges.deletes.size > 0
+}
 function addNewRow() {
   const newRow = {}
   tableView.columns.forEach(c => { newRow[c.column_name] = '' })
   editChanges.inserts.push(newRow)
-  editDirty.value = true
+  recomputeEditDirty()
 }
 function removeNewRow(insertIdx) {
   editChanges.inserts.splice(insertIdx, 1)
-  editDirty.value = editChanges.updates.size > 0 || editChanges.inserts.length > 0 || editChanges.deletes.size > 0
+  recomputeEditDirty()
 }
 function deleteSelectedRows() {
   confirmCellEdit()
-  for (const key of [...editSelectedRows]) {
+  const pageKeys = []
+  const prevUpdates = {}
+  for (const key of [...editSelectedRows.value]) {
+    if (editChanges.deletes.has(key)) continue
+    pageKeys.push(key)
+    if (editChanges.updates.has(key)) {
+      const prev = editChanges.updates.get(key)
+      prevUpdates[key] = {
+        whereKeys: { ...(prev.whereKeys || {}) },
+        changes: { ...(prev.changes || {}) },
+      }
+    }
     editChanges.deletes.add(key)
     // Remove any pending updates for deleted rows
     editChanges.updates.delete(key)
   }
-  editSelectedRows.clear()
+  if (pageKeys.length > 0) {
+    pushDeleteUndoSnapshot({ pageKeys, insertEntries: [], prevUpdates })
+  }
+  editSelectedRows.value = new Set()
   editSelectionAnchorIndex.value = -1
   editDirty.value = true
 }
@@ -8610,7 +9038,7 @@ function isRowDeleted(row, idx) {
   return editChanges.deletes.has(computeRowKey(row, idx))
 }
 function isRowSelected(row, idx) {
-  return editSelectedRows.has(computeRowKey(row, idx))
+  return editSelectedRows.value.has(computeRowKey(row, idx))
 }
 function isRowModified(row, idx) {
   return editChanges.updates.has(computeRowKey(row, idx))
@@ -8619,6 +9047,1307 @@ function isCellModified(row, idx, columnName) {
   const key = computeRowKey(row, idx)
   const upd = editChanges.updates.get(key)
   return upd ? columnName in upd.changes : false
+}
+
+// ── 编辑模式：网格焦点 + 矩形选区 ──
+
+function getEditGridCounts() {
+  return {
+    pageCount: Array.isArray(tableView.rows) ? tableView.rows.length : 0,
+    insertCount: Array.isArray(editChanges.inserts) ? editChanges.inserts.length : 0,
+  }
+}
+
+function hasActiveGridFocus() {
+  return gridFocus.rowKind === "page" || gridFocus.rowKind === "insert"
+}
+
+function setGridFocus(rowKind, rowIndex, columnName) {
+  gridFocus.rowKind = rowKind
+  gridFocus.rowIndex = rowIndex
+  gridFocus.columnName = columnName
+}
+
+function clearGridFocus() {
+  gridFocus.rowKind = null
+  gridFocus.rowIndex = -1
+  gridFocus.columnName = ""
+}
+
+function clearGridRange() {
+  gridRange.anchor = null
+  gridRange.head = null
+  gridRangeDragging = false
+}
+
+function isGridFocused(rowKind, rowIndex, columnName) {
+  return editMode.value
+    && gridFocus.rowKind === rowKind
+    && gridFocus.rowIndex === rowIndex
+    && gridFocus.columnName === columnName
+}
+
+function isCellInGridRange(rowKind, rowIndex, columnName) {
+  if (!editMode.value) return false
+  if (!gridRange.anchor || !gridRange.head) return false
+  const anchor = gridRange.anchor
+  const head = gridRange.head
+  // Cross-kind range: anchor in page, head in insert (or vice versa).
+  if (anchor.rowKind !== head.rowKind) {
+    const columns = getEditColumnNames()
+    const colIdx = columns.indexOf(String(columnName || ""))
+    if (colIdx < 0) return false
+    const colA = columns.indexOf(String(anchor.columnName || ""))
+    const colB = columns.indexOf(String(head.columnName || ""))
+    const colStart = Math.min(colA >= 0 ? colA : 0, colB >= 0 ? colB : 0)
+    const colEnd = Math.max(colA >= 0 ? colA : 0, colB >= 0 ? colB : 0)
+    if (colIdx < colStart || colIdx > colEnd) return false
+    if (anchor.rowKind === "page" && head.rowKind === "insert") {
+      if (rowKind === "page") return rowIndex >= anchor.rowIndex
+      if (rowKind === "insert") return rowIndex <= head.rowIndex
+    }
+    if (anchor.rowKind === "insert" && head.rowKind === "page") {
+      if (rowKind === "page") return rowIndex >= head.rowIndex
+      if (rowKind === "insert") return rowIndex <= anchor.rowIndex
+    }
+    return false
+  }
+  const range = getNormalizedGridRange()
+  if (!range) return false
+  if (range.rowKind !== rowKind) return false
+  if (rowIndex < range.rowStart || rowIndex > range.rowEnd) return false
+  const colIdx = range.columns.indexOf(String(columnName || ""))
+  if (colIdx < 0) return false
+  return colIdx >= range.colStart && colIdx <= range.colEnd
+}
+
+function getNormalizedGridRange() {
+  if (!gridRange.anchor) return null
+  const { pageCount, insertCount } = getEditGridCounts()
+  return normalizeRange({
+    anchor: gridRange.anchor,
+    head: gridRange.head || gridRange.anchor,
+    columns: getEditColumnNames(),
+    pageCount,
+    insertCount,
+  })
+}
+
+function getEffectiveGridRange() {
+  // Range used by batch operations. Falls back to the focus cell alone when
+  // no multi-cell selection is active.
+  const range = getNormalizedGridRange()
+  if (range) return range
+  if (!hasActiveGridFocus()) return null
+  const { pageCount, insertCount } = getEditGridCounts()
+  return normalizeRange({
+    anchor: { rowKind: gridFocus.rowKind, rowIndex: gridFocus.rowIndex, columnName: gridFocus.columnName },
+    head: { rowKind: gridFocus.rowKind, rowIndex: gridFocus.rowIndex, columnName: gridFocus.columnName },
+    columns: getEditColumnNames(),
+    pageCount,
+    insertCount,
+  })
+}
+
+function ensureGridFocusInBounds() {
+  const { pageCount, insertCount } = getEditGridCounts()
+  const columns = getEditColumnNames()
+  if (columns.length === 0 || (pageCount === 0 && insertCount === 0)) {
+    clearGridFocus()
+    clearGridRange()
+    return
+  }
+  if (!hasActiveGridFocus()) return
+  const clamped = clampFocus({
+    rowKind: gridFocus.rowKind,
+    rowIndex: gridFocus.rowIndex,
+    columnName: gridFocus.columnName,
+    columns,
+    pageRowCount: pageCount,
+    insertRowCount: insertCount,
+  })
+  if (!clamped) {
+    clearGridFocus()
+    clearGridRange()
+    return
+  }
+  setGridFocus(clamped.rowKind, clamped.rowIndex, clamped.columnName)
+}
+
+function initGridFocusIfNeeded() {
+  if (hasActiveGridFocus()) return
+  const columns = getEditColumnNames()
+  const { pageCount, insertCount } = getEditGridCounts()
+  if (columns.length === 0) return
+  if (pageCount > 0) setGridFocus("page", 0, columns[0])
+  else if (insertCount > 0) setGridFocus("insert", 0, columns[0])
+}
+
+// ── 编辑模式：撤销栈（Ctrl+Z） ──
+
+function pushUndoSnapshot(snapshot) {
+  if (!snapshot) return
+  const stack = editUndoStack.value.slice()
+  stack.push(snapshot)
+  while (stack.length > EDIT_UNDO_LIMIT) stack.shift()
+  editUndoStack.value = stack
+  editRedoStack.value = []
+}
+
+function captureCellsUndoEntries(changes) {
+  if (!Array.isArray(changes) || changes.length === 0) return []
+  return changes
+    .filter(Boolean)
+    .map(({ rowKind, rowIndex, columnName }) => ({
+      rowKind,
+      rowIndex,
+      columnName,
+      prevValue: readGridCellValue(rowKind, rowIndex, columnName),
+    }))
+}
+
+function pushCellsUndoSnapshot(changes) {
+  const entries = captureCellsUndoEntries(changes)
+  if (entries.length === 0) return
+  pushUndoSnapshot({ kind: "cells", entries })
+}
+
+function pushInsertUndoSnapshot(insertIndex) {
+  if (!Number.isInteger(insertIndex)) return
+  pushUndoSnapshot({ kind: "insert", insertIndex })
+}
+
+function pushDeleteUndoSnapshot({ pageKeys = [], insertEntries = [], prevUpdates = {} } = {}) {
+  const pagesArr = Array.from(pageKeys || [])
+  const insertsArr = Array.isArray(insertEntries) ? insertEntries.slice() : []
+  if (pagesArr.length === 0 && insertsArr.length === 0) return
+  pushUndoSnapshot({
+    kind: "delete",
+    pageKeys: pagesArr,
+    insertEntries: insertsArr,
+    prevUpdates,
+  })
+}
+
+function undoLastEditChange() {
+  if (!editMode.value) return false
+  commitGridTyping({ cancel: true })
+  const stack = editUndoStack.value.slice()
+  if (stack.length === 0) {
+    showCopyToast("没有可撤销的操作", "info")
+    return false
+  }
+  const snap = stack.pop()
+  editUndoStack.value = stack
+  try {
+    if (snap.kind === "cells") {
+      // Capture current values for redo before restoring.
+      const redoEntries = snap.entries.map(entry => ({
+        rowKind: entry.rowKind,
+        rowIndex: entry.rowIndex,
+        columnName: entry.columnName,
+        prevValue: readGridCellValue(entry.rowKind, entry.rowIndex, entry.columnName),
+      }))
+      for (const entry of snap.entries) {
+        if (entry.rowKind === "page") {
+          applyRowCellChange(entry.rowIndex, entry.columnName, entry.prevValue)
+        } else if (entry.rowKind === "insert") {
+          applyInsertCellChange(entry.rowIndex, entry.columnName, entry.prevValue)
+        }
+      }
+      editRedoStack.value = [...editRedoStack.value, { kind: "cells", entries: redoEntries }]
+      syncTextPanelAfterGridMutation()
+      showCopyToast(`已撤销 ${snap.entries.length} 格修改`, "success")
+      return true
+    }
+    if (snap.kind === "insert") {
+      if (snap.insertIndex >= 0 && snap.insertIndex < editChanges.inserts.length) {
+        const removedRow = { ...editChanges.inserts[snap.insertIndex] }
+        editChanges.inserts.splice(snap.insertIndex, 1)
+        editDirty.value = editChanges.updates.size > 0
+          || hasNonEmptyInserts()
+          || editChanges.deletes.size > 0
+        ensureGridFocusInBounds()
+        editRedoStack.value = [...editRedoStack.value, { kind: "insert", insertIndex: snap.insertIndex, row: removedRow }]
+        syncTextPanelAfterGridMutation()
+        showCopyToast("已撤销新增行", "success")
+      }
+      return true
+    }
+    if (snap.kind === "delete") {
+      // Page-row deletes live in editChanges.deletes — just remove keys.
+      for (const key of snap.pageKeys) {
+        editChanges.deletes.delete(key)
+        if (snap.prevUpdates && Object.prototype.hasOwnProperty.call(snap.prevUpdates, key)) {
+          const prev = snap.prevUpdates[key]
+          editChanges.updates.set(key, {
+            whereKeys: { ...(prev.whereKeys || {}) },
+            changes: { ...(prev.changes || {}) },
+          })
+        }
+      }
+      // Insert-row deletes were spliced — restore them at their original
+      // indices, lowest index first so later ones don't shift.
+      const sortedInserts = snap.insertEntries
+        .slice()
+        .sort((a, b) => a.index - b.index)
+      for (const entry of sortedInserts) {
+        const idx = Math.min(entry.index, editChanges.inserts.length)
+        editChanges.inserts.splice(idx, 0, { ...entry.row })
+      }
+      editDirty.value = editChanges.updates.size > 0
+        || hasNonEmptyInserts()
+        || editChanges.deletes.size > 0
+      editRedoStack.value = [...editRedoStack.value, { kind: "delete", pageKeys: snap.pageKeys, insertEntries: snap.insertEntries, prevUpdates: snap.prevUpdates }]
+      const total = snap.pageKeys.length + snap.insertEntries.length
+      syncTextPanelAfterGridMutation()
+      showCopyToast(`已撤销删除 ${total} 行`, "success")
+      return true
+    }
+  } catch (err) {
+    showCopyToast(`撤销失败: ${String(err)}`, "error")
+    return false
+  }
+  return false
+}
+
+function redoLastEditChange() {
+  if (!editMode.value) return false
+  commitGridTyping({ cancel: true })
+  const stack = editRedoStack.value.slice()
+  if (stack.length === 0) {
+    showCopyToast("没有可重做的操作", "info")
+    return false
+  }
+  const snap = stack.pop()
+  editRedoStack.value = stack
+  try {
+    if (snap.kind === "cells") {
+      // Capture current values for undo before re-applying.
+      const undoEntries = snap.entries.map(entry => ({
+        rowKind: entry.rowKind,
+        rowIndex: entry.rowIndex,
+        columnName: entry.columnName,
+        prevValue: readGridCellValue(entry.rowKind, entry.rowIndex, entry.columnName),
+      }))
+      for (const entry of snap.entries) {
+        if (entry.rowKind === "page") {
+          applyRowCellChange(entry.rowIndex, entry.columnName, entry.prevValue)
+        } else if (entry.rowKind === "insert") {
+          applyInsertCellChange(entry.rowIndex, entry.columnName, entry.prevValue)
+        }
+      }
+      editUndoStack.value = [...editUndoStack.value, { kind: "cells", entries: undoEntries }]
+      syncTextPanelAfterGridMutation()
+      showCopyToast(`已重做 ${snap.entries.length} 格修改`, "success")
+      return true
+    }
+    if (snap.kind === "insert") {
+      // Re-insert the row at the original index.
+      const idx = Math.min(snap.insertIndex, editChanges.inserts.length)
+      editChanges.inserts.splice(idx, 0, { ...(snap.row || {}) })
+      editDirty.value = editChanges.updates.size > 0
+        || hasNonEmptyInserts()
+        || editChanges.deletes.size > 0
+      editUndoStack.value = [...editUndoStack.value, { kind: "insert", insertIndex: idx }]
+      syncTextPanelAfterGridMutation()
+      showCopyToast("已重做新增行", "success")
+      return true
+    }
+    if (snap.kind === "delete") {
+      // Re-delete the rows.
+      for (const key of snap.pageKeys) {
+        editChanges.deletes.add(key)
+        if (snap.prevUpdates && Object.prototype.hasOwnProperty.call(snap.prevUpdates, key)) {
+          editChanges.updates.delete(key)
+        }
+      }
+      // Remove insert rows (highest index first to avoid shifting).
+      const sortedInserts = snap.insertEntries
+        .slice()
+        .sort((a, b) => b.index - a.index)
+      for (const entry of sortedInserts) {
+        if (entry.index >= 0 && entry.index < editChanges.inserts.length) {
+          editChanges.inserts.splice(entry.index, 1)
+        }
+      }
+      editDirty.value = editChanges.updates.size > 0
+        || hasNonEmptyInserts()
+        || editChanges.deletes.size > 0
+      ensureGridFocusInBounds()
+      editUndoStack.value = [...editUndoStack.value, { kind: "delete", pageKeys: snap.pageKeys, insertEntries: snap.insertEntries, prevUpdates: snap.prevUpdates }]
+      const total = snap.pageKeys.length + snap.insertEntries.length
+      syncTextPanelAfterGridMutation()
+      showCopyToast(`已重做删除 ${total} 行`, "success")
+      return true
+    }
+  } catch (err) {
+    showCopyToast(`重做失败: ${String(err)}`, "error")
+    return false
+  }
+  return false
+}
+
+// ── 编辑模式：多单元格打字缓冲（支持 77、Backspace 修剪） ──
+
+function isMultiCellRangeActive() {
+  const range = getNormalizedGridRange()
+  if (!range) return false
+  const size = rangeSize(range)
+  return size.rows * size.cols > 1
+}
+
+function startOrAppendGridTyping(delta) {
+  const range = getNormalizedGridRange()
+  if (!range) return 0
+  if (!gridTypingActive.value) {
+    // Snapshot current values so Ctrl+Z restores them atomically.
+    pushCellsUndoSnapshot(enumerateRangeCells(range))
+    gridTypingActive.value = true
+    gridTypingBuffer.value = ""
+  }
+  gridTypingBuffer.value = String(gridTypingBuffer.value || "") + String(delta || "")
+  const changes = fillRangeValue(range, gridTypingBuffer.value)
+  return writeGridCellChanges(changes, { suppressUndo: true })
+}
+
+function backspaceGridTyping() {
+  if (!gridTypingActive.value) return 0
+  const range = getNormalizedGridRange()
+  if (!range) {
+    gridTypingActive.value = false
+    gridTypingBuffer.value = ""
+    return 0
+  }
+  gridTypingBuffer.value = String(gridTypingBuffer.value || "").slice(0, -1)
+  const changes = fillRangeValue(range, gridTypingBuffer.value)
+  return writeGridCellChanges(changes, { suppressUndo: true })
+}
+
+function commitGridTyping({ cancel = false } = {}) {
+  if (!gridTypingActive.value) return
+  gridTypingActive.value = false
+  gridTypingBuffer.value = ""
+  // The cell values are already committed to editChanges; nothing further
+  // unless the caller wanted to cancel (we don't support cancel — fill is
+  // destructive, use Ctrl+Z to undo).
+  void cancel
+}
+
+function moveGridFocus(action, { withShift = false } = {}) {
+  if (!hasActiveGridFocus()) {
+    initGridFocusIfNeeded()
+    if (!hasActiveGridFocus()) return false
+  }
+  const columns = getEditColumnNames()
+  const { pageCount, insertCount } = getEditGridCounts()
+
+  if (withShift) {
+    // Shift+arrow extends the rectangular selection.
+    const anchor = gridRange.anchor || {
+      rowKind: gridFocus.rowKind,
+      rowIndex: gridFocus.rowIndex,
+      columnName: gridFocus.columnName,
+    }
+    const head = gridRange.head || {
+      rowKind: gridFocus.rowKind,
+      rowIndex: gridFocus.rowIndex,
+      columnName: gridFocus.columnName,
+    }
+    const next = expandRange({
+      anchor,
+      head,
+      columns,
+      pageCount,
+      insertCount,
+      direction: action,
+    })
+    if (!next) {
+      // At the last row pressing Shift+Down → append a new row and expand into it.
+      if (action === "down") {
+        const curHead = head
+        const isLastInsert = curHead.rowKind === "insert" && curHead.rowIndex === insertCount - 1
+        const isLastPageNoInserts = curHead.rowKind === "page" && curHead.rowIndex === pageCount - 1 && insertCount === 0
+        if (isLastInsert || isLastPageNoInserts) {
+          addNewRow()
+          const newInsertCount = editChanges.inserts.length
+          gridRange.anchor = { ...anchor }
+          gridRange.head = { rowKind: "insert", rowIndex: newInsertCount - 1, columnName: curHead.columnName }
+          setGridFocus("insert", newInsertCount - 1, curHead.columnName)
+          scrollFocusedCellIntoView()
+          return true
+        }
+        // Cross-kind: head is in page, try to expand into insert region.
+        if (curHead.rowKind === "page" && curHead.rowIndex === pageCount - 1 && insertCount > 0) {
+          gridRange.anchor = { ...anchor }
+          gridRange.head = { rowKind: "insert", rowIndex: 0, columnName: curHead.columnName }
+          setGridFocus("insert", 0, curHead.columnName)
+          scrollFocusedCellIntoView()
+          return true
+        }
+      }
+      // Shift+Up from first insert row → cross back to last page row.
+      if (action === "up" && head.rowKind === "insert" && head.rowIndex === 0 && pageCount > 0) {
+        gridRange.anchor = { ...anchor }
+        gridRange.head = { rowKind: "page", rowIndex: pageCount - 1, columnName: head.columnName }
+        setGridFocus("page", pageCount - 1, head.columnName)
+        scrollFocusedCellIntoView()
+        return true
+      }
+      return false
+    }
+    gridRange.anchor = { ...next.anchor }
+    gridRange.head = { ...next.head }
+    setGridFocus(next.head.rowKind, next.head.rowIndex, next.head.columnName)
+    scrollFocusedCellIntoView()
+    return true
+  }
+
+  const target = resolveFocusMove({
+    rowKind: gridFocus.rowKind,
+    rowIndex: gridFocus.rowIndex,
+    columnName: gridFocus.columnName,
+    columns,
+    pageRowCount: pageCount,
+    insertRowCount: insertCount,
+    action,
+  })
+  if (!target) {
+    // At the last row pressing down → append a new row and focus it.
+    if (action === "down") {
+      const isLastInsert = gridFocus.rowKind === "insert" && gridFocus.rowIndex === insertCount - 1
+      const isLastPageNoInserts = gridFocus.rowKind === "page" && gridFocus.rowIndex === pageCount - 1 && insertCount === 0
+      if (isLastInsert || isLastPageNoInserts) {
+        addRowAndFocus()
+        return true
+      }
+    }
+    return false
+  }
+  clearGridRange()
+  setGridFocus(target.rowKind, target.rowIndex, target.columnName)
+  scrollFocusedCellIntoView()
+  return true
+}
+
+function scrollFocusedCellIntoView() {
+  if (!hasActiveGridFocus()) return
+  nextTick(() => {
+    const selector = gridFocus.rowKind === "insert"
+      ? `tr.edit-new-row:nth-of-type(${gridFocus.rowIndex + 1}) td[data-column-name="${cssEscape(gridFocus.columnName)}"]`
+      : `tbody tr[data-hit-row-index="${gridFocus.rowIndex}"] td[data-column-name="${cssEscape(gridFocus.columnName)}"]`
+    try {
+      const el = tableModalRef.value && tableModalRef.value.querySelector(selector)
+      if (el && typeof el.scrollIntoView === "function") {
+        el.scrollIntoView({ block: "nearest", inline: "nearest" })
+      }
+    } catch { /* noop */ }
+  })
+}
+
+function cssEscape(value) {
+  const text = String(value ?? "")
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(text)
+  }
+  return text.replace(/["\\]/g, "\\$&")
+}
+
+function enterCellEditFromFocus({ prefill = null } = {}) {
+  if (!hasActiveGridFocus()) return false
+  if (gridFocus.rowKind === "page") {
+    if (editChanges.deletes.has(computeRowKey(tableView.rows[gridFocus.rowIndex], gridFocus.rowIndex))) return false
+    startCellEdit(gridFocus.rowIndex, gridFocus.columnName)
+    if (prefill !== null) {
+      editingCell.currentValue = String(prefill)
+      nextTick(() => {
+        if (textPanelOpen.value) {
+          const ta = tableModalRef.value && tableModalRef.value.querySelector(".edit-text-panel__textarea")
+          if (ta) { const len = editingCell.currentValue.length; ta.focus(); ta.setSelectionRange(len, len) }
+        } else {
+          const el = document.getElementById("edit-cell-input")
+          if (el) { el.focus(); const len = editingCell.currentValue.length; try { el.setSelectionRange(len, len) } catch { /* noop */ } }
+        }
+      })
+    }
+    return true
+  }
+  if (gridFocus.rowKind === "insert") {
+    startNewRowCellEdit(gridFocus.rowIndex, gridFocus.columnName)
+    if (prefill !== null) {
+      editingCell.currentValue = String(prefill)
+      nextTick(() => {
+        if (textPanelOpen.value) {
+          const ta = tableModalRef.value && tableModalRef.value.querySelector(".edit-text-panel__textarea")
+          if (ta) { const len = editingCell.currentValue.length; ta.focus(); ta.setSelectionRange(len, len) }
+        } else {
+          const el = document.getElementById("edit-cell-input")
+          if (el) { el.focus(); const len = editingCell.currentValue.length; try { el.setSelectionRange(len, len) } catch { /* noop */ } }
+        }
+      })
+    }
+    return true
+  }
+  return false
+}
+
+function isPrintableChar(event) {
+  if (event.ctrlKey || event.metaKey || event.altKey) return false
+  const key = String(event.key || "")
+  if (key.length !== 1) return false
+  // Exclude whitespace-only keys such as raw space — but we DO want space to
+  // enter edit mode with a leading space. Allow everything with length 1.
+  const code = key.charCodeAt(0)
+  return code >= 0x20 && code !== 0x7f
+}
+
+function readGridCellValue(rowKind, rowIndex, columnName) {
+  if (rowKind === "page") return resolvePageCellValue(rowIndex, columnName)
+  if (rowKind === "insert") return resolveInsertCellValue(rowIndex, columnName)
+  return ""
+}
+
+function writeGridCellChanges(changes, { suppressUndo = false } = {}) {
+  if (!Array.isArray(changes) || changes.length === 0) return 0
+  // Capture undo state BEFORE applying. Typing buffer / batch ops that want
+  // to coalesce multiple writes into one snapshot pass suppressUndo=true and
+  // own the snapshot push themselves.
+  if (!suppressUndo) {
+    pushCellsUndoSnapshot(changes)
+  }
+  let applied = 0
+  for (const change of changes) {
+    if (!change) continue
+    const { rowKind, rowIndex, columnName, value } = change
+    const v = String(value ?? "")
+    if (rowKind === "page") {
+      if (applyRowCellChange(rowIndex, columnName, v)) applied += 1
+    } else if (rowKind === "insert") {
+      if (applyInsertCellChange(rowIndex, columnName, v)) applied += 1
+    }
+  }
+  return applied
+}
+
+async function copyGridRangeToClipboard() {
+  const range = getEffectiveGridRange()
+  if (!range) return 0
+  const tsv = buildRangeTsv(range, readGridCellValue)
+  try {
+    await navigator.clipboard.writeText(tsv)
+    const size = rangeSize(range)
+    showCopyToast(`已复制 ${size.rows}×${size.cols} 单元格`, "success")
+    return size.rows * size.cols
+  } catch {
+    showCopyToast("复制失败", "error")
+    return 0
+  }
+}
+
+async function pasteTsvIntoGridRange() {
+  const range = getEffectiveGridRange()
+  if (!range) return 0
+  let text = ""
+  try {
+    text = await navigator.clipboard.readText()
+  } catch {
+    showCopyToast("读取剪贴板失败", "error")
+    return 0
+  }
+  const tsv = parseClipboardTsv(text)
+  if (tsv.length === 0) return 0
+
+  // Auto-expand: if TSV is larger than selection, expand the range to fit.
+  const { rows: selRows, cols: selCols } = rangeSize(range)
+  const tsvRows = tsv.length
+  const tsvCols = Math.max(...tsv.map(r => r.length), 0)
+  const needRows = Math.max(selRows, tsvRows)
+  const needCols = Math.max(selCols, tsvCols)
+
+  // Expand range to needed dimensions.
+  let pasteRange = range
+  if (needRows > selRows || needCols > selCols) {
+    const newRowEnd = Math.min(range.rowStart + needRows - 1, range.rowKind === "page" ? getEditGridCounts().pageCount - 1 : getEditGridCounts().insertCount - 1)
+    const newColEnd = Math.min(range.colStart + needCols - 1, range.columns.length - 1)
+    pasteRange = { ...range, rowEnd: newRowEnd, colEnd: newColEnd }
+  }
+
+  // Auto-append insert rows if paste needs more space.
+  const pasteNeededRows = range.rowStart + needRows
+  if (range.rowKind === "insert") {
+    const { insertCount } = getEditGridCounts()
+    for (let i = insertCount; i < pasteNeededRows; i++) addNewRow()
+  } else if (range.rowKind === "page") {
+    const { pageCount, insertCount } = getEditGridCounts()
+    const overflow = pasteNeededRows - pageCount
+    if (overflow > 0) {
+      for (let i = insertCount; i < overflow; i++) addNewRow()
+    }
+  }
+
+  const { pageCount, insertCount } = getEditGridCounts()
+  // Re-expand rowEnd after adding rows.
+  if (needRows > selRows) {
+    const maxRow = pasteRange.rowKind === "page" ? pageCount - 1 : insertCount - 1
+    pasteRange = { ...pasteRange, rowEnd: Math.min(range.rowStart + needRows - 1, maxRow) }
+  }
+  const { changes, newRange } = applyTsvToRange({
+    tsv,
+    range: pasteRange,
+    pageCount,
+    insertCount,
+  })
+
+  // If pasting from a page row overflows, paste the overflow into insert rows.
+  let extraChanges = []
+  if (range.rowKind === "page" && selRows === 1 && tsv.length > 1) {
+    const pastedPageRows = Math.min(tsv.length, pageCount - range.rowStart)
+    const overflowTsv = tsv.slice(pastedPageRows)
+    if (overflowTsv.length > 0) {
+      const { insertCount: ic2 } = getEditGridCounts()
+      for (let i = ic2; i < overflowTsv.length; i++) addNewRow()
+      const { insertCount: ic3 } = getEditGridCounts()
+      const overflowRange = normalizeRange({
+        anchor: { rowKind: "insert", rowIndex: 0, columnName: range.columns[range.colStart] },
+        head: { rowKind: "insert", rowIndex: 0, columnName: range.columns[range.colStart] },
+        columns: range.columns,
+        pageCount,
+        insertCount: ic3,
+      })
+      if (overflowRange) {
+        const { changes: oc } = applyTsvToRange({ tsv: overflowTsv, range: overflowRange, pageCount, insertCount: ic3 })
+        extraChanges = oc
+      }
+    }
+  }
+  const applied = writeGridCellChanges(changes) + writeGridCellChanges(extraChanges)
+  if (newRange) {
+    gridRange.anchor = {
+      rowKind: newRange.rowKind,
+      rowIndex: newRange.rowStart,
+      columnName: newRange.columns[newRange.colStart],
+    }
+    gridRange.head = {
+      rowKind: newRange.rowKind,
+      rowIndex: newRange.rowEnd,
+      columnName: newRange.columns[newRange.colEnd],
+    }
+  }
+  if (applied > 0) {
+    showCopyToast(`已粘贴 ${applied} 格`, "success")
+  }
+  return applied
+}
+
+function fillDownFromRange() {
+  const anchor = gridRange.anchor
+  const head = gridRange.head
+  // Cross-kind fill: page→insert
+  if (anchor && head && anchor.rowKind !== head.rowKind) {
+    const columns = getEditColumnNames()
+    const { pageCount, insertCount } = getEditGridCounts()
+    const colA = columns.indexOf(String(anchor.columnName || ""))
+    const colB = columns.indexOf(String(head.columnName || ""))
+    const colStart = Math.min(colA >= 0 ? colA : 0, colB >= 0 ? colB : 0)
+    const colEnd = Math.max(colA >= 0 ? colA : 0, colB >= 0 ? colB : 0)
+    // Source row is the first row (anchor for page→insert)
+    const srcKind = anchor.rowKind === "page" ? "page" : "insert"
+    const srcRow = anchor.rowIndex
+    const changes = []
+    for (let c = colStart; c <= colEnd; c++) {
+      const col = columns[c]
+      const srcVal = String(readGridCellValue(srcKind, srcRow, col) ?? "")
+      // Fill remaining page rows
+      if (srcKind === "page") {
+        for (let r = srcRow + 1; r < pageCount; r++) {
+          changes.push({ rowKind: "page", rowIndex: r, columnName: col, value: srcVal })
+        }
+        // Fill insert rows up to head
+        const insertEnd = head.rowKind === "insert" ? head.rowIndex : insertCount - 1
+        for (let r = 0; r <= insertEnd; r++) {
+          changes.push({ rowKind: "insert", rowIndex: r, columnName: col, value: srcVal })
+        }
+      }
+    }
+    const applied = writeGridCellChanges(changes)
+    if (applied > 0) showCopyToast(`向下填充 ${applied} 格`, "success")
+    return applied
+  }
+  const range = getEffectiveGridRange()
+  if (!range) return 0
+  const size = rangeSize(range)
+  if (size.rows <= 1) return 0
+  const changes = buildFillDownChanges(range, readGridCellValue)
+  const applied = writeGridCellChanges(changes)
+  if (applied > 0) {
+    showCopyToast(`向下填充 ${size.rows - 1} 行`, "success")
+  }
+  return applied
+}
+
+function clearRangeCells() {
+  const range = getEffectiveGridRange()
+  if (!range) return 0
+  return writeGridCellChanges(fillRangeValue(range, ""))
+}
+
+function addRowAndFocus() {
+  addNewRow()
+  const newIdx = editChanges.inserts.length - 1
+  pushInsertUndoSnapshot(newIdx)
+  const columns = getEditColumnNames()
+  if (columns.length === 0) return false
+  nextTick(() => {
+    setGridFocus("insert", newIdx, columns[0])
+    clearGridRange()
+    scrollFocusedCellIntoView()
+  })
+  return true
+}
+
+function deleteFocusedOrRangeRows() {
+  // Determine which rows the operation should cover.
+  const range = getNormalizedGridRange()
+  const { pageCount, insertCount } = getEditGridCounts()
+  const pageRowsToDelete = new Set()
+  const insertRowsToDelete = []
+
+  if (range) {
+    if (range.rowKind === "page") {
+      for (let r = range.rowStart; r <= range.rowEnd; r++) pageRowsToDelete.add(r)
+    } else if (range.rowKind === "insert") {
+      for (let r = range.rowStart; r <= range.rowEnd; r++) insertRowsToDelete.push(r)
+    }
+  } else if (hasActiveGridFocus()) {
+    if (gridFocus.rowKind === "page") pageRowsToDelete.add(gridFocus.rowIndex)
+    else if (gridFocus.rowKind === "insert") insertRowsToDelete.push(gridFocus.rowIndex)
+  }
+
+  // Capture undo state before mutating.
+  const undoPageKeys = []
+  const undoInsertEntries = []
+  const undoPrevUpdates = {}
+
+  let deleted = 0
+  if (pageRowsToDelete.size > 0) {
+    for (const rowIdx of pageRowsToDelete) {
+      const row = tableView.rows[rowIdx]
+      if (!row) continue
+      const key = computeRowKey(row, rowIdx)
+      if (editChanges.deletes.has(key)) continue
+      undoPageKeys.push(key)
+      if (editChanges.updates.has(key)) {
+        const prev = editChanges.updates.get(key)
+        undoPrevUpdates[key] = {
+          whereKeys: { ...(prev.whereKeys || {}) },
+          changes: { ...(prev.changes || {}) },
+        }
+      }
+      editChanges.deletes.add(key)
+      editChanges.updates.delete(key)
+      deleted += 1
+    }
+  }
+  if (insertRowsToDelete.length > 0) {
+    // Snapshot full row content before splicing, so undo can restore it.
+    const snapshotIndices = [...new Set(insertRowsToDelete)].sort((a, b) => a - b)
+    for (const idx of snapshotIndices) {
+      const row = editChanges.inserts[idx]
+      if (row) undoInsertEntries.push({ index: idx, row: { ...row } })
+    }
+    // Delete from bottom to top so indices stay valid.
+    const toRemove = snapshotIndices.slice().reverse()
+    for (const idx of toRemove) {
+      editChanges.inserts.splice(idx, 1)
+      deleted += 1
+    }
+  }
+  if (deleted > 0) {
+    pushDeleteUndoSnapshot({
+      pageKeys: undoPageKeys,
+      insertEntries: undoInsertEntries,
+      prevUpdates: undoPrevUpdates,
+    })
+    editDirty.value = true
+    clearGridRange()
+    ensureGridFocusInBounds()
+    showCopyToast(`已删除 ${deleted} 行`, "success")
+    // Discard row references in the row-selection set as well.
+    const stillValid = [...editSelectedRows.value].filter(
+      (key) => !editChanges.deletes.has(key),
+    )
+    if (stillValid.length !== editSelectedRows.value.size) {
+      setEditSelectedRowKeys(stillValid)
+    }
+  }
+  return deleted
+}
+
+// ── 编辑模式：📝 文本选项 面板 ──
+
+function textPanelFocusTitle() {
+  if (!hasActiveGridFocus()) return "未选中单元格"
+  const globalRow = gridFocus.rowKind === "insert"
+    ? `新增行 #${gridFocus.rowIndex + 1}`
+    : `第 ${((tableView.page - 1) * tableView.pageSize) + gridFocus.rowIndex + 1} 行`
+  return `${gridFocus.columnName} · ${globalRow}`
+}
+
+const textPanelHighlightedHtml = computed(() => {
+  const text = textPanelDraft.value || ""
+  if (!text.trim()) return ""
+  const lang = detectCellViewerLanguage(text)
+  if (lang === "plaintext") return escapeHtmlForHighlight(text)
+  try {
+    return hljs.highlight(text, { language: lang, ignoreIllegals: true }).value
+  } catch {
+    return escapeHtmlForHighlight(text)
+  }
+})
+
+function escapeHtmlForHighlight(text) {
+  return String(text || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+}
+
+function onTextPanelScroll(event) {
+  const pre = event.target.parentElement && event.target.parentElement.querySelector(".edit-text-panel__highlight")
+  if (pre) {
+    pre.scrollTop = event.target.scrollTop
+    pre.scrollLeft = event.target.scrollLeft
+  }
+}
+
+function isEditMirrorElement(target) {
+  return target instanceof Element
+    && (target.id === "edit-cell-input" || target.classList.contains("edit-text-panel__textarea"))
+}
+
+function onCellEditBlur(event, confirmActiveEdit) {
+  if (isEditMirrorElement(event.relatedTarget)) return
+  confirmActiveEdit()
+}
+
+function onTextPanelBlur(event) {
+  if (isEditMirrorElement(event.relatedTarget)) return
+  // When textarea loses focus while cell edit is active via text panel, confirm the edit.
+  if (editingCell.active && textPanelOpen.value) {
+    if (editingCell.rowIndex >= tableView.rows.length) {
+      confirmNewRowCellEdit(editingCell.rowIndex - tableView.rows.length)
+    } else {
+      confirmCellEdit()
+    }
+  }
+}
+
+function toggleTextPanel() {
+  if (!editMode.value) {
+    showCopyToast("请先进入编辑模式", "error")
+    return
+  }
+  textPanelOpen.value = !textPanelOpen.value
+  if (textPanelOpen.value) {
+    loadTextPanelFromFocus({ force: true })
+  }
+}
+
+function loadTextPanelFromFocus({ force = false } = {}) {
+  if (!textPanelOpen.value && !force) return
+  const focus = hasActiveGridFocus()
+    ? { rowKind: gridFocus.rowKind, rowIndex: gridFocus.rowIndex, columnName: gridFocus.columnName }
+    : null
+  const editingInsertIndex = editingCell.rowIndex - tableView.rows.length
+  const focusMatchesActiveEdit = editingCell.active && focus
+    && editingCell.columnName === focus.columnName
+    && (
+      (focus.rowKind === "page" && editingCell.rowIndex === focus.rowIndex)
+      || (focus.rowKind === "insert" && editingInsertIndex === focus.rowIndex)
+    )
+  const originalText = focusMatchesActiveEdit
+    ? editingCell.currentValue
+    : (focus ? readGridCellValue(focus.rowKind, focus.rowIndex, focus.columnName) : "")
+  const decision = force && focus
+    ? {
+      action: "load",
+      draft: String(originalText ?? ""),
+      focusKey: buildFocusKey(focus),
+      dirty: false,
+    }
+    : resolveTextPanelLoad({
+      focus,
+      panelDirty: false,
+      lastFocusKey: textPanelFocusKey.value,
+      originalText,
+    })
+  if (decision.action === "load" || decision.action === "warn") {
+    textPanelDraft.value = String(originalText ?? "")
+    textPanelOriginal.value = String(originalText ?? "")
+    textPanelFocusKey.value = buildFocusKey(focus)
+    textPanelDirty.value = false
+  } else if (decision.action === "clear") {
+    textPanelDraft.value = ""
+    textPanelOriginal.value = ""
+    textPanelFocusKey.value = ""
+    textPanelDirty.value = false
+  }
+}
+
+function syncTextPanelAfterGridMutation() {
+  if (!textPanelOpen.value) return
+  loadTextPanelFromFocus({ force: true })
+}
+
+function onTextPanelInput(event) {
+  textPanelDraft.value = String(event.target.value ?? "")
+  textPanelDirty.value = textPanelDraft.value !== textPanelOriginal.value
+  syncEditMirrorSelectionFrom(event.target, "cell")
+  // Real-time sync: immediately write back to the cell.
+  if (hasActiveGridFocus()) {
+    const { rowKind, rowIndex, columnName } = gridFocus
+    if (editingCell.active) {
+      // If cell is being edited inline, update the inline value too.
+      editingCell.currentValue = textPanelDraft.value
+    } else {
+      writeGridCellChanges([{ rowKind, rowIndex, columnName, value: textPanelDraft.value }])
+    }
+  }
+}
+
+function onCellEditInput(event) {
+  editingCell.currentValue = String(event.target.value ?? "")
+  syncEditMirrorSelectionFrom(event.target, "cell")
+  if (textPanelOpen.value) {
+    textPanelDraft.value = editingCell.currentValue
+    textPanelDirty.value = textPanelDraft.value !== textPanelOriginal.value
+    syncEditMirrorSelectionTo("text-panel")
+  }
+}
+
+function syncEditMirrorSelectionFrom(source, target) {
+  if (editMirrorApplyingSelection || !source) return
+  const start = Number.isInteger(source.selectionStart) ? source.selectionStart : 0
+  const end = Number.isInteger(source.selectionEnd) ? source.selectionEnd : start
+  editMirrorSelection.start = Math.max(0, start)
+  editMirrorSelection.end = Math.max(editMirrorSelection.start, end)
+  syncEditMirrorSelectionTo(target)
+}
+
+function syncEditMirrorSelectionTo(target) {
+  if (!textPanelOpen.value && target === "text-panel") return
+  nextTick(() => {
+    const valueLength = String(editingCell.active ? editingCell.currentValue : textPanelDraft.value || "").length
+    const start = Math.min(editMirrorSelection.start, valueLength)
+    const end = Math.min(editMirrorSelection.end, valueLength)
+    const input = document.getElementById("edit-cell-input")
+    const ta = tableModalRef.value && tableModalRef.value.querySelector(".edit-text-panel__textarea")
+    const el = target === "cell" ? input : ta
+    if (el && typeof el.setSelectionRange === "function") {
+      editMirrorApplyingSelection = true
+      try {
+        el.setSelectionRange(start, end)
+      } finally {
+        editMirrorApplyingSelection = false
+      }
+    }
+  })
+}
+
+function syncCursorToTextPanel(event) {
+  if (!textPanelOpen.value || !editingCell.active) return
+  syncEditMirrorSelectionFrom(event?.target || document.getElementById("edit-cell-input"), "text-panel")
+}
+
+function syncCursorToCellInput(event) {
+  syncEditMirrorSelectionFrom(event?.target || tableModalRef.value?.querySelector(".edit-text-panel__textarea"), "cell")
+}
+
+function resetTextPanel() {
+  textPanelDraft.value = textPanelOriginal.value
+  textPanelDirty.value = false
+}
+
+function writeTextPanelBack() {
+  if (!hasActiveGridFocus()) return
+  const { rowKind, rowIndex, columnName } = gridFocus
+  const applied = writeGridCellChanges([
+    { rowKind, rowIndex, columnName, value: textPanelDraft.value },
+  ])
+  if (applied > 0) {
+    textPanelOriginal.value = textPanelDraft.value
+    textPanelDirty.value = false
+    showCopyToast("已写回单元格", "success")
+  }
+}
+
+async function copyTextPanelDraft() {
+  try {
+    await navigator.clipboard.writeText(textPanelDraft.value || "")
+    showCopyToast("已复制文本", "success")
+  } catch {
+    showCopyToast("复制失败", "error")
+  }
+}
+
+function onTextPanelResizeStart(event) {
+  event.preventDefault()
+  const startY = event.clientY
+  const startHeight = textPanelHeight.value
+  const container = tableModalRef.value
+  const containerHeight = container && typeof container.getBoundingClientRect === "function"
+    ? container.getBoundingClientRect().height
+    : window.innerHeight
+  const onMove = (moveEvent) => {
+    // Dragging the handle upwards increases the panel height.
+    const delta = startY - moveEvent.clientY
+    textPanelHeight.value = clampTextPanelHeight(startHeight + delta, containerHeight)
+  }
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove, true)
+    window.removeEventListener("pointerup", onUp, true)
+  }
+  window.addEventListener("pointermove", onMove, true)
+  window.addEventListener("pointerup", onUp, true)
+}
+
+watch(
+  () => buildFocusKey({ rowKind: gridFocus.rowKind, rowIndex: gridFocus.rowIndex, columnName: gridFocus.columnName }),
+  () => {
+    if (!textPanelOpen.value) return
+    loadTextPanelFromFocus()
+  },
+)
+
+// Sync cell edit value + cursor to text panel in real-time.
+watch(
+  () => editingCell.currentValue,
+  (val) => {
+    if (!editingCell.active || !textPanelOpen.value) return
+    textPanelDraft.value = val
+  },
+)
+
+function handleGridFocusKeydown(event) {
+  if (!editMode.value) return false
+  if (editingCell.active) return false
+  if (editingCell.rowIndex >= 0 && editingCell.active) return false
+  if (!tableOpen.value) return false
+  if (cellViewerOpen.value) return false
+  if (editSaveDialogOpen.value || editUnsavedDialogOpen.value || editDateDialogOpen.value) return false
+  const isTextPanelTextarea = event.target && event.target.classList && event.target.classList.contains("edit-text-panel__textarea")
+  if (isTextPanelTextarea && !shouldRouteTextPanelKeyToGrid(event)) return false
+  if (!isTextPanelTextarea && isEditableTarget(event.target)) return false
+
+  const key = String(event.key || "")
+  const primary = event.ctrlKey || event.metaKey
+
+  // Arrow/Home/End/PageUp/PageDown.
+  const moveAction = classifyFocusKey(event)
+  if (moveAction) {
+    initGridFocusIfNeeded()
+    if (!hasActiveGridFocus()) return false
+    if (!event.shiftKey) commitGridTyping()
+    const moved = moveGridFocus(moveAction, { withShift: event.shiftKey })
+    if (moved) {
+      event.preventDefault()
+      event.stopPropagation()
+    }
+    return moved
+  }
+
+  // Shift+Space — select the whole focus row as a grid range (Excel parity).
+  if (event.shiftKey && !primary && !event.altKey && (key === " " || key === "Spacebar")) {
+    if (!hasActiveGridFocus()) return false
+    commitGridTyping()
+    const columns = getEditColumnNames()
+    if (columns.length === 0) return false
+    // If there's already a row-level anchor, extend the range to cover multiple rows.
+    const anchorRow = (gridRange.anchor && gridRange.anchor.rowKind === gridFocus.rowKind)
+      ? gridRange.anchor.rowIndex
+      : gridFocus.rowIndex
+    gridRange.anchor = {
+      rowKind: gridFocus.rowKind,
+      rowIndex: anchorRow,
+      columnName: columns[0],
+    }
+    gridRange.head = {
+      rowKind: gridFocus.rowKind,
+      rowIndex: gridFocus.rowIndex,
+      columnName: columns[columns.length - 1],
+    }
+    // Select all rows in the range for batch tools / Ctrl+C.
+    if (gridFocus.rowKind === "page") {
+      const startRow = Math.min(anchorRow, gridFocus.rowIndex)
+      const endRow = Math.max(anchorRow, gridFocus.rowIndex)
+      const newKeys = [...editSelectedRows.value]
+      for (let r = startRow; r <= endRow; r++) {
+        const row = tableView.rows[r]
+        const rowKey = row ? computeRowKey(row, r) : ""
+        if (rowKey && !editChanges.deletes.has(rowKey) && !newKeys.includes(rowKey)) {
+          newKeys.push(rowKey)
+        }
+      }
+      setEditSelectedRowKeys(newKeys)
+      editSelectionAnchorIndex.value = anchorRow
+    }
+    event.preventDefault()
+    event.stopPropagation()
+    return true
+  }
+
+  // Ctrl/Cmd+Z — undo the last edit change.
+  if (primary && !event.altKey && !event.shiftKey && key.toLowerCase() === "z") {
+    undoLastEditChange()
+    event.preventDefault()
+    event.stopPropagation()
+    return true
+  }
+
+  // Ctrl/Cmd+Shift+Z — redo the last undone change.
+  if (primary && !event.altKey && event.shiftKey && key.toLowerCase() === "z") {
+    redoLastEditChange()
+    event.preventDefault()
+    event.stopPropagation()
+    return true
+  }
+
+  // Ctrl/Cmd+Enter — insert a new row and jump focus to it.
+  if (primary && !event.altKey && key === "Enter") {
+    commitGridTyping()
+    addRowAndFocus()
+    event.preventDefault()
+    event.stopPropagation()
+    return true
+  }
+
+  // Ctrl/Cmd+Delete / Ctrl/Cmd+Minus — delete focused row (or range's rows).
+  if (
+    primary
+    && !event.altKey
+    && !event.shiftKey
+    && (key === "Delete" || key === "-" || key === "_")
+  ) {
+    if (!hasActiveGridFocus()) return false
+    commitGridTyping()
+    const deleted = deleteFocusedOrRangeRows()
+    event.preventDefault()
+    event.stopPropagation()
+    return deleted > 0
+  }
+
+  // F4 — toggle the 📝 文本选项 panel.
+  if (!primary && !event.shiftKey && !event.altKey && key === "F4") {
+    commitGridTyping()
+    toggleTextPanel()
+    event.preventDefault()
+    event.stopPropagation()
+    return true
+  }
+
+  // Enter / F2 — enter edit on the focus cell.
+  if (!primary && !event.shiftKey && !event.altKey && (key === "Enter" || key === "F2")) {
+    commitGridTyping()
+    if (!hasActiveGridFocus()) initGridFocusIfNeeded()
+    if (enterCellEditFromFocus()) {
+      event.preventDefault()
+      event.stopPropagation()
+      return true
+    }
+    return false
+  }
+
+  // Esc — clear the multi-cell selection while keeping focus.
+  if (!primary && !event.shiftKey && key === "Escape") {
+    const wasTyping = gridTypingActive.value
+    commitGridTyping()
+    if (getNormalizedGridRange()) {
+      clearGridRange()
+      event.preventDefault()
+      event.stopPropagation()
+      return true
+    }
+    if (wasTyping) {
+      event.preventDefault()
+      event.stopPropagation()
+      return true
+    }
+    return false
+  }
+
+  // Backspace inside the multi-cell typing buffer — trim by one character.
+  if (!primary && !event.shiftKey && key === "Backspace" && gridTypingActive.value) {
+    backspaceGridTyping()
+    event.preventDefault()
+    event.stopPropagation()
+    return true
+  }
+
+  // Delete / Backspace — clear the range (or the focus cell) to empty string.
+  if (!primary && !event.shiftKey && (key === "Delete" || key === "Backspace")) {
+    if (!hasActiveGridFocus()) return false
+    commitGridTyping()
+    const cleared = clearRangeCells()
+    if (cleared > 0) {
+      event.preventDefault()
+      event.stopPropagation()
+      return true
+    }
+    return false
+  }
+
+  // Ctrl/Cmd+D — fill-down.
+  if (primary && !event.altKey && !event.shiftKey && key.toLowerCase() === "d") {
+    commitGridTyping()
+    const applied = fillDownFromRange()
+    event.preventDefault()
+    event.stopPropagation()
+    return applied > 0
+  }
+
+  // Ctrl/Cmd+C — copy the range as TSV.
+  if (primary && !event.altKey && !event.shiftKey && key.toLowerCase() === "c") {
+    // Only hijack when there is an explicit multi-cell range or a focus cell.
+    // Fall back to the existing "editCopySelected" path when no grid focus is
+    // active so row-level copy still works.
+    if (!hasActiveGridFocus()) return false
+    const explicit = getNormalizedGridRange()
+    if (!explicit) return false
+    copyGridRangeToClipboard().catch(() => {})
+    event.preventDefault()
+    event.stopPropagation()
+    return true
+  }
+
+  // Ctrl/Cmd+V — paste TSV into the range.
+  if (primary && !event.altKey && !event.shiftKey && key.toLowerCase() === "v") {
+    if (!hasActiveGridFocus()) return false
+    commitGridTyping()
+    pasteTsvIntoGridRange().catch(() => {})
+    event.preventDefault()
+    event.stopPropagation()
+    return true
+  }
+
+  // Printable char — if the selection covers multiple cells we accumulate
+  // into a typing buffer so "77" types as "77" (not "7", "7"), and Backspace
+  // trims the buffer; otherwise enter edit mode with the typed char as prefill.
+  if (isPrintableChar(event)) {
+    if (!hasActiveGridFocus()) initGridFocusIfNeeded()
+    if (!hasActiveGridFocus()) return false
+    if (isMultiCellRangeActive()) {
+      startOrAppendGridTyping(key)
+      event.preventDefault()
+      event.stopPropagation()
+      return true
+    }
+    commitGridTyping()
+    if (enterCellEditFromFocus({ prefill: key })) {
+      event.preventDefault()
+      event.stopPropagation()
+      return true
+    }
+    return false
+  }
+
+  return false
 }
 
 // ── 编辑模式：保存 ──
@@ -8677,7 +10406,34 @@ async function confirmSave() {
     resetEditChanges()
     await loadTablePage({ resetFocus: false, clearHitCache: false })
   } catch (err) {
-    showCopyToast(`保存失败: ${String(err)}`, 'error')
+    const msg = String(err || "")
+    let hint = msg
+    // Try to extract column name from error for specific location.
+    const colMatch = msg.match(/column\s+['"`]?(\w+)['"`]?/i)
+      || msg.match(/field\s+['"`]?(\w+)['"`]?/i)
+      || msg.match(/['"`](\w+)['"`]\s+cannot/i)
+      || msg.match(/for\s+key\s+['"`]?(\w+)['"`]?/i)
+    const errorCol = colMatch ? colMatch[1] : ""
+    const colHint = errorCol ? `（字段：${errorCol}）` : ""
+
+    if (/duplicate/i.test(msg) || /unique/i.test(msg)) {
+      hint = `有重复的数据${colHint}，主键或唯一字段的值已经存在了`
+    } else if (/foreign key/i.test(msg) || /constraint/i.test(msg)) {
+      hint = `数据关联约束不满足${colHint}，引用的记录可能不存在`
+    } else if (/null/i.test(msg) && /not null/i.test(msg)) {
+      hint = `必填字段不能为空${colHint}，请补充内容`
+    } else if (/data too long/i.test(msg) || /truncat/i.test(msg)) {
+      hint = `内容太长${colHint}，超出了字段允许的长度`
+    } else if (/incorrect.*value/i.test(msg) || /type/i.test(msg) && /mismatch/i.test(msg)) {
+      hint = `数据类型不对${colHint}，比如数字字段填了文字`
+    } else if (/connect/i.test(msg) || /timeout/i.test(msg)) {
+      hint = "数据库连接失败或超时，请检查网络和数据库状态"
+    } else if (/permission/i.test(msg) || /denied/i.test(msg) || /access/i.test(msg)) {
+      hint = "没有权限执行这个操作，请联系管理员"
+    } else if (/deadlock/i.test(msg)) {
+      hint = "数据库繁忙（死锁），请稍后重试"
+    }
+    showCopyToast(`保存失败：${hint}`, 'error')
   }
 }
 function discardAndProceed() {
@@ -8798,6 +10554,7 @@ async function toggleDatabaseMenu() {
     closeDatabaseMenu();
     return;
   }
+  closeTemplateMenu();
   databaseMenuOpen.value = true;
   databaseMenuLoading.value = true;
   databaseMenuError.value = "";
@@ -9628,6 +11385,7 @@ function escapeHtml(str) {
       :data-surface-tone="weatherPresentation.surfaceTone"
       :data-text-tone="weatherPresentation.textTone"
       :data-weather-skin="weatherSkinState.category"
+      :data-time-phase="weatherPresentation.timePhase"
       :style="panelChromeStyle"
     >
       <!-- Phase 1: Sky gradient background -->
@@ -10014,6 +11772,29 @@ function escapeHtml(str) {
           </div>
         </div>
 
+        <div v-if="templateMenuOpen" class="database-menu-backdrop template-menu-backdrop" @click="closeTemplateMenu" @contextmenu.prevent="closeTemplateMenu"></div>
+        <div
+          v-if="templateMenuOpen" class="database-menu-popover template-menu-popover"
+          :style="{ left: templateMenuPosition.left + 'px', bottom: templateMenuPosition.bottom + 'px' }"
+        >
+          <div class="database-menu-title">选择连接模板</div>
+          <div class="database-menu-list template-menu-list">
+            <button
+              v-for="(tpl, idx) in config.shared.db_templates"
+              :key="`${tpl.name || 'template'}-${idx}`"
+              :class="['database-menu-item template-menu-item', { selected: idx === activeTemplateIndex }]"
+              :disabled="templateSwitching"
+              @click="selectTemplateFromMenu(idx)"
+            >
+              <span class="template-menu-copy">
+                <span class="template-menu-main">{{ tpl.name || '未命名模板' }}</span>
+                <span class="template-menu-sub">{{ tpl.db?.host || '-' }}:{{ tpl.db?.port || 3306 }}{{ tpl.db?.database ? `/${tpl.db.database}` : '' }}</span>
+              </span>
+              <span v-if="idx === activeTemplateIndex" class="database-menu-check">✓</span>
+            </button>
+          </div>
+        </div>
+
         <div v-if="itemCtxOpen" class="org-ctx-backdrop" @click="closeItemCtxMenu" @contextmenu.prevent="closeItemCtxMenu"></div>
         <div v-if="itemCtxOpen" class="org-ctx-menu" :style="{ left: itemCtxPos.x + 'px', top: itemCtxPos.y + 'px' }">
           <button class="org-ctx-item" @click="toggleStar(itemCtxTableName); closeItemCtxMenu()">
@@ -10075,7 +11856,14 @@ function escapeHtml(str) {
               >
                 ◀
               </button>
-              <span class="template-current-name" :title="activeTemplateName">{{ activeTemplateName }}</span>
+              <button
+                class="template-current-name template-current-button"
+                :title="config.shared.db_templates.length > 0 ? `${activeTemplateName}（点击切换模板）` : '暂无连接模板'"
+                :disabled="templateSwitching || config.shared.db_templates.length === 0"
+                @click="toggleTemplateMenu"
+              >
+                {{ activeTemplateName }}
+              </button>
               <button
                 class="small-btn template-switch-btn"
                 :disabled="templateSwitching || config.shared.db_templates.length === 0"
@@ -11086,7 +12874,7 @@ function escapeHtml(str) {
             </button>
           </div>
           <div v-show="!dataCollapsed" class="section-body">
-            <div class="data-head actions-only">
+            <div class="data-head" :class="{ 'actions-only': !editMode }">
               <div class="data-actions">
                 <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中(Q/E)</button>
                 <div class="pager">
@@ -11095,12 +12883,16 @@ function escapeHtml(str) {
                   <button :disabled="tableView.page >= totalPages" @click="nextPage">下一页</button>
                 </div>
               </div>
+              <div v-if="editMode" class="edit-shortcut-hint">
+                Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Ctrl+Enter 新行 · Ctrl+Delete 删行 · Ctrl+D 向下填充 · Shift+Space 选中整行 · F4 文本面板
+              </div>
             </div>
 
             <div ref="tableGridWrapRef" class="grid-wrap">
               <table class="data-table">
                 <thead>
                   <tr>
+                    <th v-if="editMode" class="edit-row-handle-col"></th>
                     <th v-if="editMode" class="edit-checkbox-col">
                       <input type="checkbox" title="选择当前页" @click.stop.prevent="toggleSelectAll"
                         :checked="editAllPageRowsSelected" />
@@ -11142,11 +12934,14 @@ function escapeHtml(str) {
                     }"
                     @contextmenu.prevent="copyRow(row)"
                   >
+                    <td v-if="editMode" class="edit-row-handle-col" @mousedown.stop.prevent="onRowHandleMouseDown(idx, 'page')" @mouseenter="onRowHandleMouseEnter(idx, 'page')" title="选中整行">
+                      <span class="edit-row-handle">⠿</span>
+                    </td>
                     <td v-if="editMode" class="edit-checkbox-col">
                       <input type="checkbox"
                         :checked="editSelectedRows.has(computeRowKey(row, idx))"
                         :disabled="isRowDeleted(row, idx)"
-                        @click.stop.prevent="toggleRowSelection(idx, $event)" />
+                        @click.stop="toggleRowSelection(idx, $event)" />
                     </td>
                     <td
                       v-for="col in tableView.columns"
@@ -11165,75 +12960,146 @@ function escapeHtml(str) {
                           tableFindFocus.columnName === col.column_name,
                         'edit-cell-modified': editMode && isCellModified(row, idx, col.column_name),
                         'edit-cell-active': editingCell.active && editingCell.rowIndex === idx && editingCell.columnName === col.column_name,
+                        'grid-focus': editMode && isGridFocused('page', idx, col.column_name),
+                        'grid-range': editMode && isCellInGridRange('page', idx, col.column_name),
                       }"
-                      @click="onPageCellClick(idx, col.column_name)"
+                      @click="onPageCellClick($event, idx, col.column_name)"
                       @dblclick="onPageCellDoubleClick(idx, col.column_name)"
+                      @mousedown="onGridCellMouseDown($event, 'page', idx, col.column_name)"
+                      @mouseenter="onGridCellMouseEnter($event, 'page', idx, col.column_name)"
                     >
                       <input v-if="editingCell.active && editingCell.rowIndex === idx && editingCell.columnName === col.column_name"
                         id="edit-cell-input"
                         class="edit-cell-input"
                         v-model="editingCell.currentValue"
-                        @blur="confirmCellEdit"
+                        @input="onCellEditInput"
+                        @blur="onCellEditBlur($event, confirmCellEdit)"
                         @keydown="onCellEditKeydown"
+                        @select="syncCursorToTextPanel"
+                        @click="syncCursorToTextPanel"
+                        @keyup="syncCursorToTextPanel"
                       />
-                      <div v-else class="td-clip" v-html="renderDataCell(row, col.column_name)"></div>
+                      <div v-else class="td-clip" v-html="renderDataCell(row, col.column_name, idx)"></div>
                     </td>
                   </tr>
                   <!-- 新增行 -->
                   <tr v-for="(newRow, nIdx) in editChanges.inserts" :key="'new-'+nIdx" class="edit-new-row">
+                    <td class="edit-row-handle-col" @mousedown.stop.prevent="onRowHandleMouseDown(nIdx, 'insert')" @mouseenter="onRowHandleMouseEnter(nIdx, 'insert')" title="选中整行">
+                      <span class="edit-row-handle">⠿</span>
+                    </td>
                     <td class="edit-checkbox-col">
                       <button class="edit-remove-insert-btn" @click="removeNewRow(nIdx)" title="移除">✕</button>
                     </td>
                     <td v-for="col in tableView.columns" :key="col.column_name"
                       :data-column-name="col.column_name"
                       :style="getColumnStyle(col.column_name)"
-                      :class="{ 'edit-cell-active': editingCell.active && editingCell.rowIndex === (tableView.rows.length + nIdx) && editingCell.columnName === col.column_name }"
-                      @click="onInsertCellClick(nIdx, col.column_name)"
+                      :class="{
+                        'edit-cell-active': editingCell.active && editingCell.rowIndex === (tableView.rows.length + nIdx) && editingCell.columnName === col.column_name,
+                        'grid-focus': editMode && isGridFocused('insert', nIdx, col.column_name),
+                        'grid-range': editMode && isCellInGridRange('insert', nIdx, col.column_name),
+                      }"
+                      @click="onInsertCellClick($event, nIdx, col.column_name)"
                       @dblclick="onInsertCellDoubleClick(nIdx, col.column_name)"
+                      @mousedown="onGridCellMouseDown($event, 'insert', nIdx, col.column_name)"
+                      @mouseenter="onGridCellMouseEnter($event, 'insert', nIdx, col.column_name)"
                     >
                       <input v-if="editingCell.active && editingCell.rowIndex === (tableView.rows.length + nIdx) && editingCell.columnName === col.column_name"
                         id="edit-cell-input"
                         class="edit-cell-input"
                         v-model="editingCell.currentValue"
-                        @blur="confirmNewRowCellEdit(nIdx)"
+                        @input="onCellEditInput"
+                        @blur="onCellEditBlur($event, () => confirmNewRowCellEdit(nIdx))"
                         @keydown="onNewRowCellEditKeydown($event, nIdx)"
+                        @select="syncCursorToTextPanel"
+                        @click="syncCursorToTextPanel"
+                        @keyup="syncCursorToTextPanel"
                       />
                       <div v-else class="td-clip">{{ newRow[col.column_name] || '' }}</div>
+                    </td>
+                  </tr>
+                  <!-- 快速追加新行的幽灵行（仅在编辑模式出现） -->
+                  <tr v-if="editMode" class="edit-ghost-row" @click="addRowAndFocus">
+                    <td class="edit-row-handle-col"></td>
+                    <td class="edit-checkbox-col">＋</td>
+                    <td :colspan="tableView.columns.length" class="edit-ghost-hint">
+                      点击这里或按 Ctrl+Enter 追加新行
                     </td>
                   </tr>
                 </tbody>
               </table>
             </div>
-            <!-- 编辑模式底部工具栏 -->
-            <div v-if="editMode" class="edit-toolbar">
-              <div class="edit-toolbar-left">
-                <button class="small-btn" @click="addNewRow">+ 添加行</button>
-                <button class="small-btn danger" :disabled="editCurrentPageSelectedCount === 0"
-                  @click="deleteSelectedRows">删除选中 ({{ editCurrentPageSelectedCount }})</button>
-                <button class="small-btn" :disabled="editCurrentPageSelectedCount === 0" @click="copySelectedRows">复制</button>
-                <div class="edit-batch-tools">
-                  <span class="edit-selection-count">{{ editCurrentPageSelectedCount }} 行</span>
-                  <select v-model="editBatchColumn" class="edit-batch-select" :disabled="editCurrentPageSelectedCount === 0">
-                    <option value="">选择字段</option>
-                    <option v-for="col in tableView.columns" :key="col.column_name" :value="col.column_name">
-                      {{ col.column_name }}
-                    </option>
-                  </select>
-                  <input
-                    v-model="editBatchValue"
-                    class="edit-batch-input"
-                    :disabled="editCurrentPageSelectedCount === 0"
-                    placeholder="值"
-                    @keydown.enter.prevent="applyBatchEditToSelectedRows"
-                  />
-                  <button class="small-btn" :disabled="!editBatchCanApply" @click="applyBatchEditToSelectedRows">应用</button>
+            <!-- 编辑模式底部：工具栏 + 文本选项面板（作为一个整体 sticky 到底部） -->
+            <div v-if="editMode" class="edit-bottom-stack">
+              <div class="edit-toolbar">
+                <div class="edit-toolbar-left">
+                  <button class="small-btn" @click="addRowAndFocus" title="Ctrl+Enter">+ 添加行</button>
+                  <button class="small-btn danger" :disabled="editCurrentPageSelectedCount === 0"
+                    @click="deleteSelectedRows">删除选中 ({{ editCurrentPageSelectedCount }})</button>
+                  <button
+                    class="small-btn"
+                    :class="{ active: textPanelOpen }"
+                    @click="toggleTextPanel"
+                    title="F4 切换文本面板"
+                  >📝 文本选项</button>
+                  <div class="edit-batch-tools">
+                    <span class="edit-selection-count">{{ editCurrentPageSelectedCount }} 行</span>
+                    <select v-model="editBatchColumn" class="edit-batch-select" :disabled="editCurrentPageSelectedCount === 0">
+                      <option value="">选择字段</option>
+                      <option v-for="col in tableView.columns" :key="col.column_name" :value="col.column_name">
+                        {{ col.column_name }}
+                      </option>
+                    </select>
+                    <input
+                      v-model="editBatchValue"
+                      class="edit-batch-input"
+                      :disabled="editCurrentPageSelectedCount === 0"
+                      placeholder="值"
+                      @keydown.enter.prevent="applyBatchEditToSelectedRows"
+                    />
+                    <button class="small-btn" :disabled="!editBatchCanApply" @click="applyBatchEditToSelectedRows">应用</button>
+                  </div>
+                </div>
+                <div class="edit-toolbar-right">
+                  <span v-if="editDirty" class="edit-dirty-badge">
+                    <span class="edit-dirty-dot"></span> {{ editSaveSummary.total }} 项未保存
+                  </span>
+                  <button class="primary-btn" :disabled="!editDirty" @click="openSaveDialog">保存更改</button>
                 </div>
               </div>
-              <div class="edit-toolbar-right">
-                <span v-if="editDirty" class="edit-dirty-badge">
-                  <span class="edit-dirty-dot"></span> {{ editSaveSummary.total }} 项未保存
-                </span>
-                <button class="primary-btn" :disabled="!editDirty" @click="openSaveDialog">保存更改</button>
+              <!-- 📝 文本选项：底部可拉伸文本编辑面板（位于工具栏下方、贴到最底部） -->
+              <div
+                v-if="textPanelOpen"
+                class="edit-text-panel"
+                :style="{ height: textPanelHeight + 'px' }"
+              >
+                <div class="edit-text-panel__resize" @pointerdown="onTextPanelResizeStart"></div>
+                <div class="edit-text-panel__header">
+                  <div class="edit-text-panel__title">
+                    {{ textPanelFocusTitle() }}
+                  </div>
+                  <div class="edit-text-panel__actions">
+                    <button class="small-btn" @click="copyTextPanelDraft">复制</button>
+                    <button class="small-btn" @click="toggleTextPanel" title="关闭 (F4)">✕</button>
+                  </div>
+                </div>
+                <div class="edit-text-panel__body">
+                  <div class="edit-text-panel__editor">
+                    <pre class="edit-text-panel__highlight" aria-hidden="true"><code v-html="textPanelHighlightedHtml"></code>
+</pre>
+                    <textarea
+                      class="edit-text-panel__textarea"
+                      :value="textPanelDraft"
+                      :disabled="!hasActiveGridFocus()"
+                      spellcheck="false"
+                      @input="onTextPanelInput"
+                      @select="syncCursorToCellInput"
+                      @click="syncCursorToCellInput"
+                      @keyup="syncCursorToCellInput"
+                      @scroll="onTextPanelScroll"
+                      @blur="onTextPanelBlur"
+                    ></textarea>
+                  </div>
+                </div>
               </div>
             </div>
           </div>

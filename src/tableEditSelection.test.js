@@ -95,6 +95,25 @@ test("buildSelectedRowsTsv copies selected rows in table column order without a 
   );
 });
 
+test("resolveRowSelection toggling the same row twice restores the initial selection", () => {
+  const initial = ["row-1"];
+  const afterAdd = resolveRowSelection({
+    rowKeys,
+    selectedKeys: initial,
+    rowIndex: 2,
+    additiveKey: true,
+  });
+  assert.deepEqual(afterAdd.selectedKeys, ["row-1", "row-3"]);
+
+  const afterRemove = resolveRowSelection({
+    rowKeys,
+    selectedKeys: afterAdd.selectedKeys,
+    rowIndex: 2,
+    additiveKey: true,
+  });
+  assert.deepEqual(afterRemove.selectedKeys, initial);
+});
+
 test("buildBatchCellChanges keeps empty string values so selected rows can be cleared", () => {
   assert.deepEqual(
     buildBatchCellChanges({

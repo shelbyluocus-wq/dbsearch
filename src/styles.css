@@ -3422,11 +3422,11 @@ mark {
   position: relative;
 }
 
-.table-modal.edit-mode-active .data-table td:not(.edit-checkbox-col) {
+.table-modal.edit-mode-active .data-table td:not(.edit-checkbox-col):not(.edit-row-handle-col) {
   cursor: text;
 }
 
-.table-modal.edit-mode-active .data-table td:not(.edit-checkbox-col):hover {
+.table-modal.edit-mode-active .data-table td:not(.edit-checkbox-col):not(.edit-row-handle-col):hover {
   background: color-mix(in srgb, var(--accent-soft) 52%, transparent);
 }
 
@@ -4709,6 +4709,9 @@ mark {
 }
 
 .template-current-name {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   max-width: 180px;
   font-size: 12px;
   color: var(--text-sub);
@@ -4719,6 +4722,23 @@ mark {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.template-current-button {
+  min-width: 0;
+  border: 1px solid var(--accent-line);
+  font: inherit;
+  cursor: pointer;
+}
+
+.template-current-button:hover:not(:disabled) {
+  color: var(--text-main);
+  background: var(--accent-soft);
+}
+
+.template-current-button:disabled {
+  cursor: default;
+  opacity: 0.72;
 }
 
 .theme-switcher {
@@ -4830,6 +4850,27 @@ mark {
   text-align: center;
   padding: 2px 4px !important;
 }
+
+.edit-row-handle-col {
+  width: 18px !important;
+  min-width: 18px !important;
+  max-width: 18px !important;
+  text-align: center;
+  padding: 0 !important;
+  cursor: pointer;
+  user-select: none;
+}
+.edit-row-handle-col:hover {
+  background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
+}
+.edit-row-handle {
+  font-size: 10px;
+  opacity: 0.5;
+  line-height: 1;
+}
+.edit-row-handle-col:hover .edit-row-handle {
+  opacity: 1;
+}
 .edit-checkbox-col input[type="checkbox"] {
   width: 14px;
   height: 14px;
@@ -4889,6 +4930,153 @@ mark {
   box-shadow: inset 0 0 0 1px var(--accent-ring);
 }
 
+/* Navicat-style grid focus + rectangular range selection */
+.data-table td.grid-focus {
+  position: relative;
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  z-index: 1;
+}
+.data-table td.grid-range {
+  background: color-mix(in srgb, var(--accent) 26%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 55%, transparent);
+  position: relative;
+}
+.data-table td.grid-range.grid-focus {
+  background: color-mix(in srgb, var(--accent) 40%, transparent) !important;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 70%, transparent);
+}
+.table-modal.edit-mode-active .data-table td:not(.edit-checkbox-col):not(.edit-row-handle-col) {
+  user-select: none;
+}
+
+/* Bottom text panel (📝 文本选项) */
+.edit-text-panel {
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  border-top: 1px solid var(--border-glass);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.edit-text-panel__resize {
+  height: 6px;
+  cursor: ns-resize;
+  background: linear-gradient(to bottom, transparent 40%, var(--border-glass) 40%, var(--border-glass) 60%, transparent 60%);
+  flex-shrink: 0;
+}
+.edit-text-panel__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border-glass);
+  font-size: 12px;
+}
+.edit-text-panel__title {
+  color: var(--text-dim);
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+}
+.edit-text-panel__dirty {
+  color: var(--accent);
+  margin-left: 6px;
+  font-weight: 600;
+}
+.edit-text-panel__actions {
+  display: flex;
+  gap: 6px;
+}
+.edit-text-panel__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px 12px 10px;
+}
+.edit-text-panel__editor {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--border-glass);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.edit-text-panel__highlight {
+  position: absolute;
+  inset: 0;
+  margin: 0;
+  padding: 8px;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  overflow: auto;
+  color: var(--text-main);
+  pointer-events: none;
+}
+.edit-text-panel__highlight code {
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+.edit-text-panel__highlight .hljs-comment,
+.edit-text-panel__highlight .hljs-quote {
+  color: var(--text-dim);
+}
+.edit-text-panel__highlight .hljs-keyword,
+.edit-text-panel__highlight .hljs-selector-tag,
+.edit-text-panel__highlight .hljs-literal {
+  color: var(--accent-text);
+}
+.edit-text-panel__highlight .hljs-string,
+.edit-text-panel__highlight .hljs-regexp {
+  color: color-mix(in srgb, var(--green) 74%, var(--text-main) 26%);
+}
+.edit-text-panel__highlight .hljs-number,
+.edit-text-panel__highlight .hljs-symbol,
+.edit-text-panel__highlight .hljs-bullet {
+  color: color-mix(in srgb, var(--accent) 64%, var(--text-main) 36%);
+}
+.edit-text-panel__highlight .hljs-title,
+.edit-text-panel__highlight .hljs-title.function_,
+.edit-text-panel__highlight .hljs-title.class_ {
+  color: color-mix(in srgb, var(--accent-dark) 74%, var(--text-main) 26%);
+}
+.edit-text-panel__highlight .hljs-params,
+.edit-text-panel__highlight .hljs-attr,
+.edit-text-panel__highlight .hljs-property {
+  color: color-mix(in srgb, var(--accent-text) 56%, var(--text-main) 44%);
+}
+.edit-text-panel__highlight .hljs-subst,
+.edit-text-panel__highlight .hljs-punctuation {
+  color: var(--text-main);
+}
+.edit-text-panel__textarea {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  resize: none;
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 13px;
+  line-height: 1.5;
+  border: none;
+  border-radius: 0;
+  padding: 8px;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text-main);
+  z-index: 1;
+}
+.edit-text-panel__textarea:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.edit-text-panel__hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding: 4px 12px 8px;
+}
+
 /* New row */
 .edit-new-row td {
   background: rgba(5, 150, 105, 0.06);
@@ -4911,19 +5099,84 @@ mark {
   border-radius: 3px;
 }
 
+/* Ghost row: click-to-add fast path at the tail of the editable table */
+.edit-ghost-row {
+  cursor: pointer;
+  color: var(--text-dim);
+  font-style: italic;
+}
+.edit-ghost-row td {
+  background: transparent;
+  border-top: 1px dashed var(--border-glass);
+  padding: 6px 8px;
+}
+.edit-ghost-row:hover td {
+  background: color-mix(in srgb, var(--accent-soft) 24%, transparent);
+  color: var(--text-main);
+}
+.edit-ghost-row .edit-checkbox-col {
+  text-align: center;
+  color: var(--accent);
+  font-size: 14px;
+}
+.edit-ghost-hint {
+  font-size: 12px;
+}
+
+.edit-toolbar-hint {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-left: 8px;
+}
+.edit-shortcut-hint {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  padding-left: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Keep the right-side toolbar controls on a single line — the 保存更改 button
+   and the unsaved-changes badge used to wrap / shrink when the hint was still
+   inside the toolbar. */
+.edit-toolbar-right {
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  white-space: nowrap;
+}
+.edit-toolbar-right .primary-btn {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.edit-toolbar-right .edit-dirty-badge {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+.small-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
 /* Bottom toolbar */
+.edit-bottom-stack {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-panel);
+  backdrop-filter: blur(12px);
+  border-top: 1px solid var(--border-glass);
+}
 .edit-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
   padding: 8px 14px;
-  background: var(--bg-panel);
-  border-top: 1px solid var(--border-glass);
-  backdrop-filter: blur(12px);
-  position: sticky;
-  bottom: 0;
-  z-index: 5;
+  background: transparent;
 }
 .edit-toolbar-left,
 .edit-toolbar-right {
@@ -7917,11 +8170,23 @@ mark {
   z-index: 0;
   overflow: hidden;
   border-radius: 24px;
+  background: var(--weather-sky-base, linear-gradient(135deg, #38bdf8, #bae6fd));
   transition: filter 1s ease-in-out;
 }
+
+.sky-background::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: var(--weather-scrim-bg, transparent);
+  pointer-events: none;
+}
+
 .sky-layer {
   position: absolute;
   inset: 0;
+  z-index: 1;
   transition: opacity 2s ease-in-out;
   will-change: opacity;
 }
@@ -7971,6 +8236,7 @@ mark {
 .weather-cloud {
   position: absolute;
   color: rgba(255, 255, 255, 0.5);
+  filter: opacity(var(--weather-cloud-opacity, 0.62));
   animation: float-cloud linear infinite;
   will-change: transform;
 }
@@ -8339,15 +8605,25 @@ mark {
   --demo-text-main: #10233a;
   --demo-text-sub: rgba(16, 35, 58, 0.78);
   --demo-text-dim: rgba(16, 35, 58, 0.56);
+  --demo-summary-text: rgba(16, 35, 58, 0.76);
+  --demo-summary-shadow: 0 1px 2px rgba(255, 255, 255, 0.42);
+  --demo-shell-bg: rgba(255, 255, 255, calc(0.28 * var(--panel-opacity)));
+  --demo-shell-border: rgba(255, 255, 255, calc(0.58 * var(--panel-opacity)));
+  --demo-shell-shadow: 0 30px 60px -15px rgba(15, 23, 42, 0.38);
   --demo-card-bg: rgba(255, 255, 255, calc(0.52 * var(--panel-opacity)));
   --demo-card-hover: rgba(255, 255, 255, calc(0.60 * var(--panel-opacity)));
   --demo-card-border: rgba(255, 255, 255, calc(0.50 * var(--panel-opacity)));
   --demo-card-shadow: 0 18px 40px rgba(15, 23, 42, 0.10);
   --demo-sidebar-bg: rgba(255, 255, 255, calc(0.40 * var(--panel-opacity)));
+  --demo-sidebar-bg-end: rgba(255, 255, 255, calc(0.22 * var(--panel-opacity)));
   --demo-header-bg: rgba(255, 255, 255, calc(0.38 * var(--panel-opacity)));
   --demo-footer-bg: rgba(255, 255, 255, calc(0.38 * var(--panel-opacity)));
   --demo-input-bg: rgba(255, 255, 255, calc(0.54 * var(--panel-opacity)));
   --demo-input-border: rgba(255, 255, 255, calc(0.58 * var(--panel-opacity)));
+  --demo-results-bg: rgba(255, 255, 255, calc(0.34 * var(--panel-opacity)));
+  --demo-results-bg-end: rgba(255, 255, 255, calc(0.22 * var(--panel-opacity)));
+  --demo-toolbar-bg: rgba(255, 255, 255, calc(0.30 * var(--panel-opacity)));
+  --demo-tabstrip-bg: rgba(255, 255, 255, calc(0.28 * var(--panel-opacity)));
   --glass-neutral: rgba(255, 255, 255, calc(0.40 * var(--panel-opacity)));
   --weather-sunny-glass: rgba(255, 246, 220, calc(0.38 * var(--panel-opacity)));
   --weather-cloudy-glass: rgba(225, 233, 245, calc(0.36 * var(--panel-opacity)));
@@ -8355,9 +8631,9 @@ mark {
   --weather-storm-glass: rgba(93, 116, 151, calc(0.38 * var(--panel-opacity)));
   --weather-snow-glass: rgba(244, 248, 255, calc(0.38 * var(--panel-opacity)));
   border-radius: var(--panel-shell-radius);
-  border: 1px solid rgba(255, 255, 255, calc(0.58 * var(--panel-opacity)));
-  box-shadow: 0 30px 60px -15px rgba(15, 23, 42, 0.38);
-  background: rgba(255, 255, 255, calc(0.28 * var(--panel-opacity)));
+  border: 1px solid var(--demo-shell-border);
+  box-shadow: var(--demo-shell-shadow);
+  background: var(--demo-shell-bg);
   backdrop-filter: blur(18px) saturate(1.3);
   -webkit-backdrop-filter: blur(18px) saturate(1.3);
   overflow: hidden;
@@ -8370,20 +8646,30 @@ mark {
   --demo-text-main: #f4f7fb;
   --demo-text-sub: rgba(244, 247, 251, 0.82);
   --demo-text-dim: rgba(226, 232, 240, 0.78);
+  --demo-summary-text: rgba(248, 252, 255, 0.92);
+  --demo-summary-shadow: 0 1px 2px rgba(2, 8, 23, 0.48);
+  --demo-shell-bg: rgba(12, 24, 42, calc(0.55 * var(--panel-opacity)));
+  --demo-shell-border: rgba(255, 255, 255, calc(0.18 * var(--panel-opacity)));
+  --demo-shell-shadow: 0 30px 60px -15px rgba(2, 6, 23, 0.44);
   --demo-card-bg: rgba(18, 33, 54, calc(0.68 * var(--panel-opacity)));
   --demo-card-hover: rgba(28, 45, 72, calc(0.75 * var(--panel-opacity)));
   --demo-card-border: rgba(255, 255, 255, calc(0.38 * var(--panel-opacity)));
   --demo-card-shadow: 0 20px 42px rgba(2, 6, 23, 0.22);
   --demo-sidebar-bg: rgba(12, 24, 42, calc(0.72 * var(--panel-opacity)));
+  --demo-sidebar-bg-end: rgba(12, 24, 42, calc(0.58 * var(--panel-opacity)));
   --demo-header-bg: rgba(12, 24, 42, calc(0.70 * var(--panel-opacity)));
   --demo-footer-bg: rgba(10, 18, 33, calc(0.72 * var(--panel-opacity)));
   --demo-input-bg: rgba(15, 23, 42, calc(0.68 * var(--panel-opacity)));
   --demo-input-border: rgba(255, 255, 255, calc(0.38 * var(--panel-opacity)));
+  --demo-results-bg: rgba(12, 24, 42, calc(0.45 * var(--panel-opacity)));
+  --demo-results-bg-end: rgba(12, 24, 42, calc(0.38 * var(--panel-opacity)));
+  --demo-toolbar-bg: rgba(12, 24, 42, calc(0.45 * var(--panel-opacity)));
+  --demo-tabstrip-bg: rgba(12, 24, 42, calc(0.50 * var(--panel-opacity)));
 }
 /* light text-tone structural overrides — must beat .panel-shell .widget--demo-shell.no-weather specificity (0,4,0) */
 .panel-shell .widget--demo-shell[data-text-tone="light"] {
-  background: rgba(12, 24, 42, calc(0.55 * var(--panel-opacity)));
-  border-color: rgba(255, 255, 255, calc(0.18 * var(--panel-opacity)));
+  background: var(--demo-shell-bg);
+  border-color: var(--demo-shell-border);
 }
 .panel-shell .widget--demo-shell[data-text-tone="light"] .widget-header--demo,
 .panel-shell .widget--demo-shell[data-text-tone="light"] .widget-header {
@@ -8391,20 +8677,20 @@ mark {
   border-bottom-color: rgba(255, 255, 255, calc(0.12 * var(--panel-opacity)));
 }
 .panel-shell .widget--demo-shell[data-text-tone="light"] .result-sidebar {
-  background: var(--demo-sidebar-bg);
+  background: linear-gradient(180deg, var(--demo-sidebar-bg), var(--demo-sidebar-bg-end));
   border-color: rgba(255, 255, 255, calc(0.12 * var(--panel-opacity)));
 }
 .panel-shell .widget--demo-shell[data-text-tone="light"] .panel-tab-strip--demo {
-  background: rgba(12, 24, 42, calc(0.50 * var(--panel-opacity)));
+  background: var(--demo-tabstrip-bg);
   border-bottom-color: rgba(255, 255, 255, calc(0.12 * var(--panel-opacity)));
 }
 .panel-shell .widget--demo-shell[data-text-tone="light"] .org-toolbar--demo,
 .panel-shell .widget--demo-shell[data-text-tone="light"] .org-toolbar {
-  background: rgba(12, 24, 42, calc(0.45 * var(--panel-opacity)));
+  background: var(--demo-toolbar-bg);
   border-color: rgba(255, 255, 255, calc(0.12 * var(--panel-opacity)));
 }
 .panel-shell .widget--demo-shell[data-text-tone="light"] .results-main {
-  background: rgba(12, 24, 42, calc(0.45 * var(--panel-opacity)));
+  background: linear-gradient(180deg, var(--demo-results-bg), var(--demo-results-bg-end));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, calc(0.08 * var(--panel-opacity)));
 }
 .panel-shell .widget--demo-shell[data-text-tone="light"] .panel-footer--demo,
@@ -8429,27 +8715,34 @@ mark {
   border-color: rgba(255, 255, 255, calc(0.18 * var(--panel-opacity)));
 }
 .panel-shell .widget--demo-shell[data-text-tone="light"] .result-group {
-  background: rgba(18, 33, 54, calc(0.60 * var(--panel-opacity)));
-  border-color: rgba(255, 255, 255, calc(0.14 * var(--panel-opacity)));
+  background: var(--demo-card-bg);
+  border-color: var(--demo-card-border);
 }
 
 [data-theme="typewrite_dark"] .widget--demo-shell[data-text-tone="light"] {
   --demo-text-main: #f3e8d6;
   --demo-text-sub: rgba(243, 232, 214, 0.82);
   --demo-text-dim: rgba(189, 168, 136, 0.88);
-  --demo-card-bg: rgba(50, 42, 36, calc(0.68 * var(--panel-opacity)));
-  --demo-card-hover: rgba(60, 50, 42, calc(0.75 * var(--panel-opacity)));
-  --demo-card-border: rgba(255, 228, 196, calc(0.38 * var(--panel-opacity)));
-  --demo-card-shadow: 0 20px 42px rgba(20, 16, 12, 0.22);
-  --demo-sidebar-bg: rgba(42, 36, 32, calc(0.72 * var(--panel-opacity)));
-  --demo-header-bg: rgba(42, 36, 32, calc(0.70 * var(--panel-opacity)));
-  --demo-footer-bg: rgba(42, 36, 32, calc(0.72 * var(--panel-opacity)));
-  --demo-input-bg: rgba(50, 42, 36, calc(0.68 * var(--panel-opacity)));
-  --demo-input-border: rgba(255, 228, 196, calc(0.38 * var(--panel-opacity)));
+  --demo-shell-bg: rgba(42, 36, 32, calc(0.88 * var(--panel-opacity)));
+  --demo-shell-border: rgba(255, 228, 196, calc(0.26 * var(--panel-opacity)));
+  --demo-card-bg: rgba(50, 42, 36, calc(0.86 * var(--panel-opacity)));
+  --demo-card-hover: rgba(60, 50, 42, calc(0.94 * var(--panel-opacity)));
+  --demo-card-border: rgba(255, 228, 196, calc(0.44 * var(--panel-opacity)));
+  --demo-card-shadow: 0 20px 42px rgba(20, 16, 12, 0.26);
+  --demo-sidebar-bg: rgba(42, 36, 32, calc(0.90 * var(--panel-opacity)));
+  --demo-sidebar-bg-end: rgba(36, 31, 28, calc(0.86 * var(--panel-opacity)));
+  --demo-header-bg: rgba(42, 36, 32, calc(0.92 * var(--panel-opacity)));
+  --demo-footer-bg: rgba(42, 36, 32, calc(0.90 * var(--panel-opacity)));
+  --demo-input-bg: rgba(50, 42, 36, calc(0.88 * var(--panel-opacity)));
+  --demo-input-border: rgba(255, 228, 196, calc(0.44 * var(--panel-opacity)));
+  --demo-results-bg: rgba(42, 36, 32, calc(0.88 * var(--panel-opacity)));
+  --demo-results-bg-end: rgba(36, 31, 28, calc(0.84 * var(--panel-opacity)));
+  --demo-toolbar-bg: rgba(42, 36, 32, calc(0.82 * var(--panel-opacity)));
+  --demo-tabstrip-bg: rgba(42, 36, 32, calc(0.86 * var(--panel-opacity)));
 }
 [data-theme="typewrite_dark"] .panel-shell .widget--demo-shell[data-text-tone="light"] {
-  background: rgba(42, 36, 32, calc(0.55 * var(--panel-opacity)));
-  border-color: rgba(255, 228, 196, calc(0.18 * var(--panel-opacity)));
+  background: var(--demo-shell-bg);
+  border-color: var(--demo-shell-border);
 }
 [data-theme="typewrite_dark"] .panel-shell .widget--demo-shell[data-text-tone="light"] .widget-header--demo,
 [data-theme="typewrite_dark"] .panel-shell .widget--demo-shell[data-text-tone="light"] .widget-header {
@@ -8457,20 +8750,20 @@ mark {
   border-bottom-color: rgba(255, 228, 196, calc(0.12 * var(--panel-opacity)));
 }
 [data-theme="typewrite_dark"] .panel-shell .widget--demo-shell[data-text-tone="light"] .result-sidebar {
-  background: var(--demo-sidebar-bg);
+  background: linear-gradient(180deg, var(--demo-sidebar-bg), var(--demo-sidebar-bg-end));
   border-color: rgba(255, 228, 196, calc(0.12 * var(--panel-opacity)));
 }
 [data-theme="typewrite_dark"] .panel-shell .widget--demo-shell[data-text-tone="light"] .panel-tab-strip--demo {
-  background: rgba(42, 36, 32, calc(0.50 * var(--panel-opacity)));
+  background: var(--demo-tabstrip-bg);
   border-bottom-color: rgba(255, 228, 196, calc(0.12 * var(--panel-opacity)));
 }
 [data-theme="typewrite_dark"] .panel-shell .widget--demo-shell[data-text-tone="light"] .org-toolbar--demo,
 [data-theme="typewrite_dark"] .panel-shell .widget--demo-shell[data-text-tone="light"] .org-toolbar {
-  background: rgba(42, 36, 32, calc(0.45 * var(--panel-opacity)));
+  background: var(--demo-toolbar-bg);
   border-color: rgba(255, 228, 196, calc(0.12 * var(--panel-opacity)));
 }
 [data-theme="typewrite_dark"] .panel-shell .widget--demo-shell[data-text-tone="light"] .results-main {
-  background: rgba(42, 36, 32, calc(0.45 * var(--panel-opacity)));
+  background: linear-gradient(180deg, var(--demo-results-bg), var(--demo-results-bg-end));
   box-shadow: inset 0 1px 0 rgba(255, 228, 196, calc(0.08 * var(--panel-opacity)));
 }
 [data-theme="typewrite_dark"] .panel-shell .widget--demo-shell[data-text-tone="light"] .panel-footer--demo,
@@ -8491,8 +8784,8 @@ mark {
   border-color: rgba(255, 228, 196, calc(0.14 * var(--panel-opacity)));
 }
 [data-theme="typewrite_dark"] .panel-shell .widget--demo-shell[data-text-tone="light"] .result-group {
-  background: rgba(50, 42, 36, calc(0.60 * var(--panel-opacity)));
-  border-color: rgba(255, 228, 196, calc(0.14 * var(--panel-opacity)));
+  background: var(--demo-card-bg);
+  border-color: var(--demo-card-border);
 }
 
 .widget--demo-shell .search-panel,
@@ -8513,6 +8806,12 @@ mark {
 .widget--demo-shell .template-current-name {
   color: var(--demo-text-dim);
   transition: color 800ms ease;
+}
+
+.widget--demo-shell .actions-row .muted {
+  color: var(--demo-summary-text);
+  font-weight: 700;
+  text-shadow: var(--demo-summary-shadow);
 }
 .widget--demo-shell .header-weather-city,
 .widget--demo-shell .db-name {
@@ -8903,7 +9202,7 @@ mark {
   border-radius: 0;
   border: none;
   border-bottom: 1px solid rgba(255, 255, 255, calc(0.34 * var(--panel-opacity)));
-  background: rgba(255, 255, 255, calc(0.28 * var(--panel-opacity)));
+  background: var(--demo-tabstrip-bg);
   box-shadow: none;
   backdrop-filter: blur(28px) saturate(1.3);
   -webkit-backdrop-filter: blur(28px) saturate(1.3);
@@ -9444,7 +9743,7 @@ mark {
   padding: 10px 14px;
   border: 1px solid rgba(255, 255, 255, calc(0.34 * var(--panel-opacity)));
   border-radius: 20px;
-  background: rgba(255, 255, 255, calc(0.30 * var(--panel-opacity)));
+  background: var(--demo-toolbar-bg);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, calc(0.28 * var(--panel-opacity)));
   backdrop-filter: blur(26px) saturate(1.3);
   -webkit-backdrop-filter: blur(26px) saturate(1.3);
@@ -9484,7 +9783,7 @@ mark {
   padding: 18px 12px 14px;
   border-radius: 24px;
   border: 1px solid rgba(255, 255, 255, calc(0.38 * var(--panel-opacity)));
-  background: linear-gradient(180deg, var(--demo-sidebar-bg), rgba(255, 255, 255, calc(0.22 * var(--panel-opacity))));
+  background: linear-gradient(180deg, var(--demo-sidebar-bg), var(--demo-sidebar-bg-end));
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, calc(0.28 * var(--panel-opacity)));
   backdrop-filter: blur(28px) saturate(1.3);
   -webkit-backdrop-filter: blur(28px) saturate(1.3);
@@ -9557,7 +9856,7 @@ mark {
 
 .widget--demo-shell .results-main {
   border-radius: 28px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, calc(0.34 * var(--panel-opacity))), rgba(255, 255, 255, calc(0.22 * var(--panel-opacity))));
+  background: linear-gradient(180deg, var(--demo-results-bg), var(--demo-results-bg-end));
   backdrop-filter: blur(26px) saturate(1.3);
   -webkit-backdrop-filter: blur(26px) saturate(1.3);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, calc(0.24 * var(--panel-opacity)));
@@ -9866,7 +10165,7 @@ mark {
   justify-content: space-between;
   min-height: 42px;
   padding: 6px 16px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, calc(0.22 * var(--panel-opacity))), var(--demo-footer-bg));
+  background: linear-gradient(180deg, var(--demo-toolbar-bg), var(--demo-footer-bg));
   border-top: 1px solid rgba(255, 255, 255, calc(0.38 * var(--panel-opacity)));
   backdrop-filter: blur(28px) saturate(1.3);
   -webkit-backdrop-filter: blur(28px) saturate(1.3);
@@ -9888,17 +10187,33 @@ mark {
 
 
 .widget--demo-shell[data-weather-skin="heavyRain"] .widget-header--demo,
-.widget--demo-shell[data-weather-skin="heavyRain"] .panel-tab-strip--demo,
-.widget--demo-shell[data-weather-skin="heavyRain"] .org-toolbar--demo,
-.widget--demo-shell[data-weather-skin="heavyRain"] .result-sidebar,
-.widget--demo-shell[data-weather-skin="heavyRain"] .results-main,
 .widget--demo-shell[data-weather-skin="heavyRain"] .panel-footer--demo {
-  background-color: rgba(9, 19, 35, calc(0.55 * var(--panel-opacity)));
+  background: var(--demo-header-bg);
+}
+
+.widget--demo-shell[data-weather-skin="heavyRain"] .panel-tab-strip--demo {
+  background: var(--demo-tabstrip-bg);
+}
+
+.widget--demo-shell[data-weather-skin="heavyRain"] .org-toolbar--demo {
+  background: var(--demo-toolbar-bg);
+}
+
+.widget--demo-shell[data-weather-skin="heavyRain"] .result-sidebar {
+  background: linear-gradient(180deg, var(--demo-sidebar-bg), var(--demo-sidebar-bg-end));
+}
+
+.widget--demo-shell[data-weather-skin="heavyRain"] .results-main {
+  background: linear-gradient(180deg, var(--demo-results-bg), var(--demo-results-bg-end));
+}
+
+.widget--demo-shell[data-weather-skin="heavyRain"] .panel-footer--demo {
+  background: linear-gradient(180deg, var(--demo-toolbar-bg), var(--demo-footer-bg));
 }
 
 .widget--demo-shell[data-weather-skin="snow"] .demo-result-card,
 .widget--demo-shell[data-weather-skin="sunny"] .demo-result-card {
-  background: rgba(255, 255, 255, calc(0.56 * var(--panel-opacity)));
+  background: var(--demo-card-bg);
 }
 
 .panel-shell.reduced-transparency .widget--demo-shell,
@@ -14950,6 +15265,10 @@ mark {
   color: #e5eefb;
 }
 
+.template-menu-popover {
+  width: 280px;
+}
+
 .database-menu-title {
   padding: 2px 4px 8px;
   color: #9fb0c8;
@@ -14984,6 +15303,42 @@ mark {
 .database-menu-item:hover,
 .database-menu-item.selected {
   background: rgba(34, 211, 238, 0.14);
+}
+
+.database-menu-item:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+
+.template-menu-item {
+  align-items: flex-start;
+  min-height: 44px;
+}
+
+.template-menu-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.template-menu-main,
+.template-menu-sub {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.template-menu-main {
+  color: #f8fafc;
+  font-weight: 700;
+}
+
+.template-menu-sub {
+  color: #9fb0c8;
+  font-size: 12px;
 }
 
 .database-menu-check {
