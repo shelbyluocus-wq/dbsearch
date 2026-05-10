@@ -17,8 +17,8 @@ use mouse_position::mouse_position::Mouse;
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sqlx::mysql::{MySqlConnectOptions, MySqlPoolOptions, MySqlSslMode};
-use sqlx::{MySqlPool, Row};
-use std::collections::HashMap;
+use sqlx::{MySql, MySqlPool, Row, Transaction};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -1138,6 +1138,74 @@ struct ExportResult {
     total_rows: u64,
     table_count: usize,
 }
+
+#[derive(Debug, Clone)]
+struct ParsedBatchImportFile {
+    path: String,
+    file_name: String,
+    table_name: String,
+    sheet_name: String,
+    headers: Vec<String>,
+    rows: Vec<HashMap<String, String>>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchImportPreview {
+    files: Vec<BatchImportPreviewItem>,
+    table_count: usize,
+    total_rows: u64,
+    can_import: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchImportPreviewItem {
+    path: String,
+    file_name: String,
+    table_name: String,
+    sheet_name: String,
+    headers: Vec<String>,
+    row_count: u64,
+    existing_rows: Option<u64>,
+    status: String,
+    errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchImportRequest {
+    paths: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchImportResult {
+    files: Vec<BatchImportResultItem>,
+    table_count: usize,
+    total_rows: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchImportResultItem {
+    path: String,
+    file_name: String,
+    table_name: String,
+    sheet_name: String,
+    imported_rows: u64,
+    previous_rows: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatchImportProgress {
+    current: usize,
+    total: usize,
+    table_name: String,
+    status: String,
+    percent: u8,
+}
 #[derive(Debug, Clone, Serialize)]
 struct SearchProgress {
     current: usize,
@@ -1813,6 +1881,452 @@ fn list_system_fonts() -> Result<Vec<String>, String> {
     sorted.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()));
     sorted.dedup();
     Ok(sorted)
+}
+
+fn batch_import_file_name_from_path(path: &str) -> Result<String, String> {
+    let normalized = path.replace('\\', "/");
+    let file_name = normalized
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .last()
+        .unwrap_or("")
+        .trim();
+    if file_name.is_empty() {
+        return Err("文件名为空".into());
+    }
+    Ok(file_name.to_string())
+}
+
+fn batch_import_table_name_from_path(path: &str) -> Result<String, String> {
+    let file_name = batch_import_file_name_from_path(path)?;
+    if !file_name.to_lowercase().ends_with(".xlsx") {
+        return Err("仅支持 .xlsx 文件".into());
+    }
+    let stem = &file_name[..file_name.len().saturating_sub(5)];
+    if stem.trim().is_empty() {
+        return Err("无法从文件名识别表名".into());
+    }
+    Ok(stem.to_string())
+}
+
+fn find_duplicate_import_targets(targets: &[String]) -> Vec<String> {
+    let mut seen: HashMap<String, String> = HashMap::new();
+    let mut duplicates: Vec<String> = Vec::new();
+    let mut emitted: HashSet<String> = HashSet::new();
+
+    for target in targets {
+        let normalized = target.to_lowercase();
+        if seen.contains_key(&normalized) {
+            if emitted.insert(normalized.clone()) {
+                duplicates.push(seen.get(&normalized).cloned().unwrap_or_else(|| target.clone()));
+            }
+        } else {
+            seen.insert(normalized, target.clone());
+        }
+    }
+
+    duplicates
+}
+
+fn validate_batch_import_headers(expected: &[ColumnMeta], actual: &[String]) -> Vec<String> {
+    let mut errors = Vec::new();
+    if expected.len() != actual.len() {
+        errors.push(format!(
+            "字段数量不一致：数据库 {} 个，文件 {} 个",
+            expected.len(),
+            actual.len()
+        ));
+    }
+
+    let max_len = expected.len().max(actual.len());
+    for index in 0..max_len {
+        let expected_name = expected
+            .get(index)
+            .map(|column| column.column_name.as_str())
+            .unwrap_or("<缺少>");
+        let actual_name = actual.get(index).map(String::as_str).unwrap_or("<缺少>");
+        if expected_name != actual_name {
+            errors.push(format!(
+                "第 {} 列不一致：数据库为 `{}`，文件为 `{}`",
+                index + 1,
+                expected_name,
+                actual_name
+            ));
+        }
+    }
+
+    errors
+}
+
+fn xlsx_cell_to_string(cell: &calamine::Data) -> String {
+    use calamine::Data;
+
+    match cell {
+        Data::Empty => String::new(),
+        Data::String(value) => value.clone(),
+        Data::Float(value) => {
+            if value.is_finite() && value.fract() == 0.0 {
+                format!("{value:.0}")
+            } else {
+                value.to_string()
+            }
+        }
+        Data::Int(value) => value.to_string(),
+        Data::Bool(value) => value.to_string(),
+        Data::DateTime(value) => value.to_string(),
+        Data::DateTimeIso(value) => value.clone(),
+        Data::DurationIso(value) => value.clone(),
+        Data::Error(value) => value.to_string(),
+    }
+}
+
+fn read_batch_import_xlsx(path: &str) -> Result<ParsedBatchImportFile, String> {
+    use calamine::{open_workbook_auto, Reader};
+
+    let table_name = batch_import_table_name_from_path(path)?;
+    let file_name = batch_import_file_name_from_path(path)?;
+    let mut workbook = open_workbook_auto(path).map_err(|e| format!("读取 Excel 失败: {e}"))?;
+    let sheet_name = workbook
+        .sheet_names()
+        .first()
+        .cloned()
+        .ok_or_else(|| "Excel 文件没有工作表".to_string())?;
+    let range = workbook
+        .worksheet_range(&sheet_name)
+        .map_err(|e| format!("读取工作表 `{sheet_name}` 失败: {e}"))?;
+    let mut rows_iter = range.rows();
+    let header_row = rows_iter
+        .next()
+        .ok_or_else(|| "Excel 文件缺少字段表头".to_string())?;
+    let headers = header_row.iter().map(xlsx_cell_to_string).collect::<Vec<_>>();
+    if headers.is_empty() || headers.iter().all(|header| header.is_empty()) {
+        return Err("Excel 文件第一行没有字段表头".into());
+    }
+
+    let mut rows = Vec::new();
+    for source_row in rows_iter {
+        let values = (0..headers.len())
+            .map(|index| source_row.get(index).map(xlsx_cell_to_string).unwrap_or_default())
+            .collect::<Vec<_>>();
+        if values.iter().all(|value| value.is_empty()) {
+            continue;
+        }
+        let mut row = HashMap::new();
+        for (header, value) in headers.iter().zip(values.into_iter()) {
+            row.insert(header.clone(), value);
+        }
+        rows.push(row);
+    }
+
+    Ok(ParsedBatchImportFile {
+        path: path.to_string(),
+        file_name,
+        table_name,
+        sheet_name,
+        headers,
+        rows,
+    })
+}
+
+async fn count_table_rows(pool: &MySqlPool, table_name: &str) -> Result<u64, String> {
+    let sql = format!("SELECT COUNT(*) as cnt FROM `{}`", escape_ident(table_name));
+    let row = sqlx::query(&sql)
+        .fetch_one(pool)
+        .await
+        .map_err(|e| format!("统计表 `{table_name}` 行数失败: {e}"))?;
+    let count: i64 = row.try_get("cnt").unwrap_or(0);
+    Ok(count.max(0) as u64)
+}
+
+async fn count_table_rows_in_tx(
+    tx: &mut Transaction<'_, MySql>,
+    table_name: &str,
+) -> Result<u64, String> {
+    let sql = format!("SELECT COUNT(*) as cnt FROM `{}`", escape_ident(table_name));
+    let row = sqlx::query(&sql)
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(|e| format!("统计表 `{table_name}` 行数失败: {e}"))?;
+    let count: i64 = row.try_get("cnt").unwrap_or(0);
+    Ok(count.max(0) as u64)
+}
+
+async fn delete_table_rows_in_tx(
+    tx: &mut Transaction<'_, MySql>,
+    table_name: &str,
+) -> Result<u64, String> {
+    let sql = format!("DELETE FROM `{}`", escape_ident(table_name));
+    let result = sqlx::query(&sql)
+        .execute(&mut **tx)
+        .await
+        .map_err(|e| format!("清空表 `{table_name}` 失败: {e}"))?;
+    Ok(result.rows_affected())
+}
+
+async fn insert_batch_import_rows_in_tx(
+    tx: &mut Transaction<'_, MySql>,
+    table: &TableMeta,
+    rows: &[HashMap<String, String>],
+) -> Result<u64, String> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let column_names = table
+        .columns
+        .iter()
+        .map(|column| format!("`{}`", escape_ident(&column.column_name)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let placeholders = table
+        .columns
+        .iter()
+        .map(|_| "?")
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "INSERT INTO `{}` ({}) VALUES ({})",
+        escape_ident(&table.table_name),
+        column_names,
+        placeholders
+    );
+    let mut inserted = 0;
+
+    for row in rows {
+        let mut query = sqlx::query(&sql);
+        for column in &table.columns {
+            let value = row.get(&column.column_name).cloned().unwrap_or_default();
+            query = query.bind(value);
+        }
+        let result = query
+            .execute(&mut **tx)
+            .await
+            .map_err(|e| format!("写入表 `{}` 失败: {e}", table.table_name))?;
+        inserted += result.rows_affected();
+    }
+
+    Ok(inserted)
+}
+
+async fn simulate_batch_import(
+    pool: &MySqlPool,
+    table: &TableMeta,
+    rows: &[HashMap<String, String>],
+) -> Result<(), String> {
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("开启导入检测事务失败: {e}"))?;
+    delete_table_rows_in_tx(&mut tx, &table.table_name).await?;
+    insert_batch_import_rows_in_tx(&mut tx, table, rows).await?;
+    tx.rollback()
+        .await
+        .map_err(|e| format!("回滚导入检测事务失败: {e}"))?;
+    Ok(())
+}
+
+#[tauri::command]
+async fn preview_batch_import_xlsx(
+    paths: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<BatchImportPreview, String> {
+    let (pool, schema) = {
+        let rt = state.runtime.lock().await;
+        if rt.fake_db_connected || rt.pool.is_none() {
+            return Err("请先连接真实数据库后再导入".into());
+        }
+        (
+            rt.pool.clone().expect("pool checked above"),
+            resolve_runtime_schema(runtime_db_connected(&rt), &rt.schema_cache),
+        )
+    };
+
+    let targets = paths
+        .iter()
+        .map(|path| batch_import_table_name_from_path(path).unwrap_or_default())
+        .collect::<Vec<_>>();
+    let duplicate_targets = find_duplicate_import_targets(&targets)
+        .into_iter()
+        .map(|item| item.to_lowercase())
+        .collect::<HashSet<_>>();
+    let mut files = Vec::new();
+
+    for path in paths {
+        let file_name = batch_import_file_name_from_path(&path).unwrap_or_else(|_| path.clone());
+        let table_name = batch_import_table_name_from_path(&path).unwrap_or_default();
+        let mut item = BatchImportPreviewItem {
+            path: path.clone(),
+            file_name,
+            table_name: table_name.clone(),
+            sheet_name: String::new(),
+            headers: Vec::new(),
+            row_count: 0,
+            existing_rows: None,
+            status: "ready".into(),
+            errors: Vec::new(),
+        };
+
+        if table_name.is_empty() {
+            item.status = "error".into();
+            item.errors.push("无法从文件名识别表名".into());
+            files.push(item);
+            continue;
+        }
+        if duplicate_targets.contains(&table_name.to_lowercase()) {
+            item.status = "error".into();
+            item.errors.push(format!("目标表 `{table_name}` 被多个文件选择"));
+            files.push(item);
+            continue;
+        }
+
+        let Some(table) = schema.tables.iter().find(|table| table.table_name == table_name) else {
+            item.status = "error".into();
+            item.errors.push(format!("目标表 `{table_name}` 不存在"));
+            files.push(item);
+            continue;
+        };
+
+        match read_batch_import_xlsx(&path) {
+            Ok(parsed) => {
+                item.sheet_name = parsed.sheet_name.clone();
+                item.headers = parsed.headers.clone();
+                item.row_count = parsed.rows.len() as u64;
+                item.existing_rows = Some(count_table_rows(&pool, &table_name).await?);
+                item.errors = validate_batch_import_headers(&table.columns, &parsed.headers);
+                if item.errors.is_empty() {
+                    if let Err(err) = simulate_batch_import(&pool, table, &parsed.rows).await {
+                        item.errors.push(err);
+                    }
+                }
+                if !item.errors.is_empty() {
+                    item.status = "error".into();
+                }
+            }
+            Err(err) => {
+                item.status = "error".into();
+                item.errors.push(err);
+            }
+        }
+
+        files.push(item);
+    }
+
+    let table_count = files.iter().filter(|item| item.status == "ready").count();
+    let total_rows = files
+        .iter()
+        .filter(|item| item.status == "ready")
+        .map(|item| item.row_count)
+        .sum();
+    let can_import = !files.is_empty() && files.iter().all(|item| item.status == "ready");
+
+    Ok(BatchImportPreview {
+        files,
+        table_count,
+        total_rows,
+        can_import,
+    })
+}
+
+#[tauri::command]
+async fn run_batch_import_xlsx(
+    request: BatchImportRequest,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<BatchImportResult, String> {
+    let (pool, schema) = {
+        let rt = state.runtime.lock().await;
+        if rt.fake_db_connected || rt.pool.is_none() {
+            return Err("请先连接真实数据库后再导入".into());
+        }
+        (
+            rt.pool.clone().expect("pool checked above"),
+            resolve_runtime_schema(runtime_db_connected(&rt), &rt.schema_cache),
+        )
+    };
+    let paths = request.paths;
+    if paths.is_empty() {
+        return Err("请选择要导入的 xlsx 文件".into());
+    }
+    let targets = paths
+        .iter()
+        .map(|path| batch_import_table_name_from_path(path))
+        .collect::<Result<Vec<_>, _>>()?;
+    let duplicates = find_duplicate_import_targets(&targets);
+    if !duplicates.is_empty() {
+        return Err(format!("目标表重复：{}", duplicates.join(", ")));
+    }
+
+    let mut import_items: Vec<(ParsedBatchImportFile, TableMeta)> = Vec::new();
+    for path in &paths {
+        let parsed = read_batch_import_xlsx(path)?;
+        let table = schema
+            .tables
+            .iter()
+            .find(|table| table.table_name == parsed.table_name)
+            .cloned()
+            .ok_or_else(|| format!("目标表 `{}` 不存在", parsed.table_name))?;
+        let header_errors = validate_batch_import_headers(&table.columns, &parsed.headers);
+        if !header_errors.is_empty() {
+            return Err(format!(
+                "文件 `{}` 字段不一致：{}",
+                parsed.file_name,
+                header_errors.join("；")
+            ));
+        }
+        import_items.push((parsed, table));
+    }
+
+    let total = import_items.len();
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("开启导入事务失败: {e}"))?;
+    let mut result_files = Vec::new();
+    let mut total_rows = 0;
+
+    for (index, (parsed, table)) in import_items.iter().enumerate() {
+        let _ = app.emit(
+            "batch-import-progress",
+            BatchImportProgress {
+                current: index + 1,
+                total,
+                table_name: parsed.table_name.clone(),
+                status: "importing".into(),
+                percent: ((index as f64 / total as f64) * 100.0).round() as u8,
+            },
+        );
+        let previous_rows = count_table_rows_in_tx(&mut tx, &table.table_name).await?;
+        delete_table_rows_in_tx(&mut tx, &table.table_name).await?;
+        let imported_rows = insert_batch_import_rows_in_tx(&mut tx, table, &parsed.rows).await?;
+        total_rows += imported_rows;
+        result_files.push(BatchImportResultItem {
+            path: parsed.path.clone(),
+            file_name: parsed.file_name.clone(),
+            table_name: parsed.table_name.clone(),
+            sheet_name: parsed.sheet_name.clone(),
+            imported_rows,
+            previous_rows,
+        });
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("提交导入事务失败: {e}"))?;
+    let _ = app.emit(
+        "batch-import-progress",
+        BatchImportProgress {
+            current: total,
+            total,
+            table_name: String::new(),
+            status: "done".into(),
+            percent: 100,
+        },
+    );
+
+    Ok(BatchImportResult {
+        files: result_files,
+        table_count: total,
+        total_rows,
+    })
 }
 
 #[tauri::command]
@@ -6332,6 +6846,8 @@ pub fn run() {
             save_table_changes,
             export_tables_xlsx,
             export_tables_xlsx_batch,
+            preview_batch_import_xlsx,
+            run_batch_import_xlsx,
             list_system_fonts,
             resize_pet_window,
             update_pet_hitbox,
@@ -6977,5 +7493,60 @@ mod tests {
 
         assert_eq!(profiles.len(), 2);
         assert_eq!(last_used_profile_id.as_deref(), Some("profile-a"));
+    }
+
+    #[test]
+    fn batch_import_table_name_uses_xlsx_file_stem() {
+        assert_eq!(
+            batch_import_table_name_from_path(r"C:\exports\demo_orders.xlsx").unwrap(),
+            "demo_orders"
+        );
+        assert_eq!(
+            batch_import_table_name_from_path("/tmp/demo.audit.logs.xlsx").unwrap(),
+            "demo.audit.logs"
+        );
+    }
+
+    #[test]
+    fn batch_import_header_validation_is_exact_and_ordered() {
+        let columns = vec![
+            ColumnMeta {
+                column_name: "id".into(),
+                column_type: "int".into(),
+                column_comment: String::new(),
+                is_primary_key: true,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "name".into(),
+                column_type: "varchar(32)".into(),
+                column_comment: String::new(),
+                is_primary_key: false,
+                is_nullable: true,
+            },
+        ];
+
+        assert!(validate_batch_import_headers(&columns, &["id".into(), "name".into()]).is_empty());
+
+        let errors = validate_batch_import_headers(&columns, &["ID".into(), "name ".into()]);
+
+        assert_eq!(errors.len(), 2);
+        assert!(errors[0].contains("1"));
+        assert!(errors[0].contains("id"));
+        assert!(errors[0].contains("ID"));
+        assert!(errors[1].contains("2"));
+        assert!(errors[1].contains("name"));
+        assert!(errors[1].contains("name "));
+    }
+
+    #[test]
+    fn batch_import_duplicate_targets_are_reported() {
+        let duplicates = find_duplicate_import_targets(&[
+            "demo_orders".into(),
+            "demo_audit_logs".into(),
+            "demo_orders".into(),
+        ]);
+
+        assert_eq!(duplicates, vec!["demo_orders".to_string()]);
     }
 }

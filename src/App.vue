@@ -126,6 +126,12 @@ import {
 } from "./tableCellRange.js";
 import { shouldStartCellTextEdit } from "./tableCellClickEdit.js";
 import {
+  buildBatchImportFileItems,
+  describeTableDefaultViewLabel,
+  summarizeBatchImportSelection,
+  toggleTableDefaultView,
+} from "./batchImport.js";
+import {
   buildFocusKey,
   clampTextPanelHeight,
   resolveTextPanelLoad,
@@ -1388,6 +1394,16 @@ const exportDialogOpen = ref(false)
 const exportSelectedTables = reactive(new Set())
 const exportFilter = ref("")
 const exportLoading = ref(false)
+const batchImportDialogOpen = ref(false)
+const batchImportFiles = ref([])
+const batchImportStep = ref("select")
+const batchImportLoading = ref(false)
+const batchImportError = ref("")
+const batchImportResult = ref(null)
+const batchImportProgress = reactive({
+  percent: 0,
+  text: "",
+})
 
 const historyOpen = ref(false);
 const resultZoomOpen = ref(false);
@@ -1856,6 +1872,7 @@ let unlistenArtTextIndexProgress = null;
 let unlistenArtTextOcrInstallProgress = null;
 let unlistenPetIdleStatesChanged = null;
 let unlistenPetIdlePreview = null;
+let unlistenBatchImportProgress = null;
 let welcomeCloseTimer = null;
 let copyToastTimer = null;
 let uiScalePersistTimer = null;
@@ -3224,12 +3241,18 @@ const totalResultCount = computed(() =>
 );
 
 const resultTabs = computed(() => [
-  { key: '全部',  label: '全部',  count: totalResultCount.value },
-  { key: '表名',  label: '表名',  count: tableTabCount.value },
-  { key: '字段名', label: '字段名', count: sortedSearchColumnResults.value.length },
-  { key: '备注',  label: '备注',  count: sortedSearchCommentResults.value.length },
-  { key: '数据值', label: '数据值', count: isKeywordEmpty.value ? 0 : sortedSearchDataResults.value.length },
+  { key: '全部',  label: '全部',  icon: 'all', count: totalResultCount.value },
+  { key: '表名',  label: '表名',  icon: 'table', count: tableTabCount.value },
+  { key: '字段名', label: '字段名', icon: 'columns', count: sortedSearchColumnResults.value.length },
+  { key: '备注',  label: '备注',  icon: 'comment', count: sortedSearchCommentResults.value.length },
+  { key: '数据值', label: '数据值', icon: 'data', count: isKeywordEmpty.value ? 0 : sortedSearchDataResults.value.length },
 ]);
+const panelTableDefaultViewLabel = computed(() =>
+  describeTableDefaultViewLabel(config.personal.table_default_view),
+);
+const panelTableDefaultViewTitle = computed(() =>
+  `${panelTableDefaultViewLabel.value}，点击切换为${describeTableDefaultViewLabel(toggleTableDefaultView(config.personal.table_default_view))}`,
+);
 const panelTabs = computed(() =>
   buildPanelTabs({
     starredTables: [...starredTables],
@@ -4595,6 +4618,11 @@ async function activateTableTab(tabId, { skipSnapshot = false } = {}) {
   }
   scheduleAdaptiveTablePageSize();
   scrollTableTabIntoView(next.id);
+  if (next.needsReload) {
+    next.needsReload = false;
+    tableView.page = 1;
+    await loadTablePage({ resetFocus: true, clearHitCache: true });
+  }
 }
 
 async function openOrActivateTableTab(tableName, rowIndex = null, columnName = null, hitContext = {}) {
@@ -5052,6 +5080,11 @@ onMounted(async () => {
     await refreshConnectionStatus();
     syncSummaryAfterConnectionCheck();
     await attachProgressListener();
+    if (isTauriWindow) {
+      unlistenBatchImportProgress = await listen("batch-import-progress", (event) => {
+        handleBatchImportProgress(event.payload || {});
+      });
+    }
     await loadTableOptions();
     loadOrgData();
     loadRecentTables();
@@ -5295,6 +5328,10 @@ onBeforeUnmount(() => {
   if (unlistenPetIdlePreview) {
     unlistenPetIdlePreview();
     unlistenPetIdlePreview = null;
+  }
+  if (unlistenBatchImportProgress) {
+    unlistenBatchImportProgress();
+    unlistenBatchImportProgress = null;
   }
   if (resetIdleHandler) {
     document.removeEventListener("mousemove", resetIdleHandler);
@@ -6267,9 +6304,7 @@ function onWindowKeydown(event) {
 
   if (!isEditableTarget(event.target) && isEventMatchingHotkey(event, config.personal.always_on_top_hotkey)) {
     event.preventDefault();
-    config.personal.always_on_top = !config.personal.always_on_top;
-    invoke("set_panel_always_on_top", { alwaysOnTop: config.personal.always_on_top }).catch(() => {});
-    showCopyToast(config.personal.always_on_top ? "已置顶" : "已取消置顶", "success");
+    togglePanelAlwaysOnTop().catch(() => {});
     return;
   }
 
@@ -10674,6 +10709,7 @@ const filteredExportTables = computed(() => {
     (t) => t.table_name.toLowerCase().includes(q) || (t.table_comment || "").toLowerCase().includes(q)
   );
 });
+const batchImportSummary = computed(() => summarizeBatchImportSelection(batchImportFiles.value));
 
 async function exportCurrentTable() {
   if (!tableView.tableName) return;
@@ -10729,6 +10765,164 @@ async function doBatchExport() {
   } finally {
     exportLoading.value = false;
   }
+}
+
+function resetBatchImportState() {
+  batchImportFiles.value = [];
+  batchImportStep.value = "select";
+  batchImportLoading.value = false;
+  batchImportError.value = "";
+  batchImportResult.value = null;
+  batchImportProgress.percent = 0;
+  batchImportProgress.text = "";
+}
+
+function openBatchImport() {
+  resetBatchImportState();
+  batchImportDialogOpen.value = true;
+}
+
+function closeBatchImport() {
+  if (batchImportLoading.value && batchImportStep.value === "running") return;
+  batchImportDialogOpen.value = false;
+}
+
+async function chooseBatchImportFiles() {
+  const paths = await open({
+    multiple: true,
+    title: "选择要批量导入的 Excel 文件",
+    filters: [{ name: "Excel", extensions: ["xlsx"] }],
+  });
+  const selectedPaths = Array.isArray(paths) ? paths : (paths ? [paths] : []);
+  if (selectedPaths.length === 0) return;
+  batchImportFiles.value = buildBatchImportFileItems(selectedPaths);
+  batchImportStep.value = "select";
+  batchImportError.value = "";
+  batchImportResult.value = null;
+}
+
+function toggleBatchImportFile(path) {
+  batchImportFiles.value = batchImportFiles.value.map((item) =>
+    item.path === path ? { ...item, selected: !item.selected } : item
+  );
+}
+
+function toggleBatchImportSelectAll() {
+  const allSelected = batchImportFiles.value.length > 0 && batchImportFiles.value.every((item) => item.selected);
+  batchImportFiles.value = batchImportFiles.value.map((item) => ({ ...item, selected: !allSelected }));
+}
+
+function mergeBatchImportPreview(preview) {
+  const byPath = new Map((preview?.files || []).map((item) => [item.path, item]));
+  batchImportFiles.value = batchImportFiles.value.map((item) => {
+    const next = byPath.get(item.path);
+    if (!next) return item;
+    return {
+      ...item,
+      ...next,
+      selected: item.selected,
+      status: next.status || (Array.isArray(next.errors) && next.errors.length > 0 ? "error" : "ready"),
+      errors: Array.isArray(next.errors) ? next.errors : [],
+      rowCount: Number(next.rowCount) || 0,
+      existingRows: next.existingRows ?? null,
+      sheetName: next.sheetName || "",
+    };
+  });
+}
+
+async function previewBatchImportFiles() {
+  const paths = batchImportFiles.value.filter((item) => item.selected).map((item) => item.path);
+  if (paths.length === 0 || batchImportLoading.value) return;
+  batchImportLoading.value = true;
+  batchImportError.value = "";
+  batchImportResult.value = null;
+  batchImportStep.value = "preview";
+  try {
+    const preview = await invoke("preview_batch_import_xlsx", { paths });
+    mergeBatchImportPreview(preview);
+    if (preview?.canImport) {
+      showCopyToast(`检测通过：${preview.tableCount} 张表，${preview.totalRows} 行`, "success");
+    } else {
+      showCopyToast("检测发现问题，请检查文件列表", "error");
+    }
+  } catch (error) {
+    batchImportError.value = String(error);
+    showCopyToast(`导入检测失败：${error}`, "error");
+  } finally {
+    batchImportLoading.value = false;
+  }
+}
+
+function handleBatchImportProgress(payload = {}) {
+  const percent = Math.max(0, Math.min(100, Number(payload.percent) || 0));
+  batchImportProgress.percent = percent;
+  if (payload.status === "done") {
+    batchImportProgress.text = "导入完成";
+    batchImportProgress.percent = 100;
+    return;
+  }
+  batchImportProgress.text = `正在导入 ${payload.tableName || "..."} (${payload.current || 0}/${payload.total || 0})`;
+}
+
+async function refreshImportedTableTabs(tableNames = []) {
+  const imported = new Set(tableNames.map((name) => String(name || "").toLowerCase()).filter(Boolean));
+  if (imported.size === 0) return;
+  let activeNeedsReload = false;
+  tableTabs.value = tableTabs.value.map((tab) => {
+    const matches = imported.has(String(tab.tableName || "").toLowerCase());
+    if (!matches) return tab;
+    if (tab.id === activeTableTabId.value) {
+      activeNeedsReload = true;
+      return tab;
+    }
+    return { ...tab, needsReload: true };
+  });
+  if (activeNeedsReload && tableOpen.value) {
+    resetEditChanges();
+    tableView.page = 1;
+    await loadTablePage({ resetFocus: true, clearHitCache: true });
+  }
+}
+
+async function runBatchImport() {
+  if (!batchImportSummary.value.canImport || batchImportLoading.value) return;
+  const paths = batchImportFiles.value.filter((item) => item.selected).map((item) => item.path);
+  batchImportLoading.value = true;
+  batchImportStep.value = "running";
+  batchImportError.value = "";
+  batchImportProgress.percent = 0;
+  batchImportProgress.text = "准备导入...";
+  try {
+    const result = await invoke("run_batch_import_xlsx", { request: { paths } });
+    batchImportResult.value = result;
+    batchImportStep.value = "result";
+    await refreshImportedTableTabs((result?.files || []).map((item) => item.tableName));
+    showCopyToast(`导入完成：${result.tableCount} 张表，${result.totalRows} 行`, "success");
+  } catch (error) {
+    batchImportStep.value = "preview";
+    batchImportError.value = String(error);
+    showCopyToast(`导入失败：${error}`, "error");
+  } finally {
+    batchImportLoading.value = false;
+  }
+}
+
+async function togglePanelAlwaysOnTop() {
+  config.personal.always_on_top = !config.personal.always_on_top;
+  if (isTauriWindow) {
+    await invoke("set_panel_always_on_top", { alwaysOnTop: config.personal.always_on_top }).catch(() => {});
+  }
+  showCopyToast(config.personal.always_on_top ? "已置顶" : "已取消置顶", "success");
+}
+
+async function toggleDefaultTableViewFromPanel() {
+  config.personal.table_default_view = toggleTableDefaultView(config.personal.table_default_view);
+  tableDetailView.value = normalizeTableDefaultView(config.personal.table_default_view);
+  await persistConfig().catch(() => {});
+  showCopyToast(
+    `默认视图：${describeTableDefaultViewLabel(config.personal.table_default_view)}`,
+    "success",
+  );
 }
 
 function triggerImport() {
@@ -11625,17 +11819,64 @@ function escapeHtml(str) {
         </div>
       </section>
 
-      <div class="results-layout" id="resultsWrap">
+        <div class="results-layout" id="resultsWrap">
         <aside :class="['result-sidebar', { 'kb-zone': navZone === 'sidebar' }]">
           <div class="demo-sidebar-heading">Data Explorer</div>
-          <button
-            v-for="tab in resultTabs" :key="tab.key"
-            :class="['sidebar-item sidebar-item--demo', { active: activeResultTab === tab.key }]"
-            @click="activeResultTab = tab.key; navZone = 'sidebar'"
-          >
-            <span>{{ tab.label }}</span>
-            <span class="sidebar-count" v-if="tab.count > 0">{{ tab.count }}</span>
-          </button>
+          <div class="result-sidebar-tabs">
+            <button
+              v-for="tab in resultTabs" :key="tab.key"
+              :class="['sidebar-item sidebar-item--demo', { active: activeResultTab === tab.key }]"
+              @click="activeResultTab = tab.key; navZone = 'sidebar'"
+            >
+              <span class="sidebar-item-main">
+                <span class="sidebar-item-icon" :data-icon="tab.icon" aria-hidden="true"></span>
+                <span class="sidebar-item-label">{{ tab.label }}</span>
+              </span>
+              <span class="sidebar-count" v-if="tab.count > 0">{{ tab.count }}</span>
+            </button>
+          </div>
+          <div class="sidebar-tool-grid" aria-label="批量工具">
+            <button class="sidebar-tool-btn" type="button" title="批量导出" @click="openBatchExport">
+              <svg class="sidebar-tool-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M7 20h10a2 2 0 0 0 2-2v-5" />
+                <path d="M5 13v5a2 2 0 0 0 2 2" />
+                <path d="M12 4v10" />
+                <path d="M8 8l4-4 4 4" />
+                <path d="M8 14h8" />
+              </svg>
+              <span class="sidebar-tool-label">批量导出</span>
+            </button>
+            <button class="sidebar-tool-btn" type="button" title="批量导入" @click="openBatchImport">
+              <svg class="sidebar-tool-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M7 4h10a2 2 0 0 1 2 2v5" />
+                <path d="M5 11V6a2 2 0 0 1 2-2" />
+                <path d="M12 20V10" />
+                <path d="M8 16l4 4 4-4" />
+                <path d="M8 10h8" />
+              </svg>
+              <span class="sidebar-tool-label">批量导入</span>
+            </button>
+            <button class="sidebar-tool-btn" type="button" :title="panelTableDefaultViewTitle" @click="toggleDefaultTableViewFromPanel">
+              <svg class="sidebar-tool-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M4 5h16v14H4z" />
+                <path d="M4 10h16" />
+                <path d="M9 10v9" />
+                <path d="M14 10v9" />
+              </svg>
+              <span class="sidebar-tool-label">{{ panelTableDefaultViewLabel }}</span>
+            </button>
+            <button
+              :class="['sidebar-tool-btn', 'sidebar-tool-btn--pin', { active: config.personal.always_on_top }]"
+              type="button"
+              :title="config.personal.always_on_top ? '取消置顶' : '钉住窗口'"
+              @click="togglePanelAlwaysOnTop"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+                <path d="M14 3l7 7-3 1-4 4v4l-2 2-3-6-6-3 2-2h4l4-4 1-3z" />
+              </svg>
+              <span class="sidebar-tool-label">{{ config.personal.always_on_top ? '已钉住' : '钉住' }}</span>
+            </button>
+          </div>
         </aside>
 
         <section
@@ -12741,6 +12982,9 @@ function escapeHtml(str) {
           ></h3>
           <button class="copy-icon-btn modal-copy-btn"
             @click.stop="copyText(tableView.tableName)" title="复制表名">⎘</button>
+          <button class="table-title-action-btn" :disabled="exportLoading" @click.stop="exportCurrentTable">
+            {{ exportLoading ? '导出中...' : '导出Excel' }}
+          </button>
         </div>
         <div class="table-header-actions">
           <button class="small-btn" @click="toggleTableDetailView">{{ tableDetailView === 'full' ? '只看命中(Tab)' : '返回原页(Tab)' }}</button>
@@ -12812,9 +13056,12 @@ function escapeHtml(str) {
         <section class="schema-box">
           <div class="section-head">
             <h4>Schema 信息</h4>
-            <button class="section-toggle-btn" @click="toggleSchemaCollapsed">
-              {{ schemaCollapsed ? "展开" : "收起" }}
-            </button>
+            <div class="section-head-actions">
+              <button class="section-action-btn" @click="openTableFind">搜索</button>
+              <button class="section-toggle-btn" @click="toggleSchemaCollapsed">
+                {{ schemaCollapsed ? "展开" : "收起" }}
+              </button>
+            </div>
           </div>
           <div v-show="!schemaCollapsed" class="section-body">
             <div
@@ -13811,6 +14058,84 @@ function escapeHtml(str) {
         <button class="small-btn" @click="exportDialogOpen = false">取消</button>
         <button class="primary-btn" :disabled="exportSelectedTables.size === 0 || exportLoading" @click="doBatchExport">
           {{ exportLoading ? '导出中...' : `导出 ${exportSelectedTables.size} 张表` }}
+        </button>
+      </footer>
+    </section>
+  </div>
+
+  <!-- 批量导入弹窗 -->
+  <div v-if="batchImportDialogOpen" class="dialog-mask" @click.self="closeBatchImport">
+    <section class="modal-card import-dialog">
+      <header class="modal-header">
+        <h3>批量导入</h3>
+        <button class="icon-btn" :disabled="batchImportLoading && batchImportStep === 'running'" @click="closeBatchImport">✕</button>
+      </header>
+      <div class="import-dialog-body">
+        <div class="import-mode-row">
+          <span class="import-mode-pill">覆盖模式</span>
+          <span class="muted">导入后目标表会完全变成 Excel 文件中的数据</span>
+        </div>
+        <div class="import-toolbar">
+          <button class="small-btn" :disabled="batchImportLoading" @click="chooseBatchImportFiles">选择 xlsx 文件</button>
+          <label v-if="batchImportFiles.length > 0" class="export-select-all">
+            <input type="checkbox"
+              :checked="batchImportFiles.length > 0 && batchImportFiles.every(item => item.selected)"
+              @change="toggleBatchImportSelectAll" />
+            全选 ({{ batchImportSummary.selectedCount }}/{{ batchImportFiles.length }})
+          </label>
+          <span v-if="batchImportFiles.length > 0" class="import-summary">
+            {{ batchImportSummary.readyCount }} 通过 · {{ batchImportSummary.errorCount }} 异常 · {{ batchImportSummary.totalRows }} 行
+          </span>
+        </div>
+        <div v-if="batchImportError" class="import-error">{{ batchImportError }}</div>
+        <div v-if="batchImportFiles.length === 0" class="import-empty">
+          请选择一个或多个 xlsx 文件，文件名需要与目标表名一致。
+        </div>
+        <div v-else class="import-file-list">
+          <label v-for="item in batchImportFiles" :key="item.path" :class="['import-file-item', item.status]">
+            <input type="checkbox" :checked="item.selected" :disabled="batchImportLoading" @change="toggleBatchImportFile(item.path)" />
+            <div class="import-file-main">
+              <div class="import-file-title">
+                <span class="import-file-name">{{ item.fileName }}</span>
+                <span class="import-arrow">→</span>
+                <code>{{ item.tableName || '-' }}</code>
+              </div>
+              <div class="import-file-meta">
+                <span v-if="item.sheetName">工作表：{{ item.sheetName }}</span>
+                <span v-if="item.status === 'ready'">将导入 {{ item.rowCount }} 行，覆盖现有 {{ item.existingRows ?? 0 }} 行</span>
+                <span v-else-if="item.status === 'pending'">等待检测</span>
+                <span v-else>检测未通过</span>
+              </div>
+              <ul v-if="item.errors && item.errors.length" class="import-file-errors">
+                <li v-for="error in item.errors" :key="error">{{ error }}</li>
+              </ul>
+            </div>
+            <span :class="['import-status-badge', item.status]">
+              {{ item.status === 'ready' ? '通过' : item.status === 'error' ? '异常' : '待检测' }}
+            </span>
+          </label>
+        </div>
+        <div v-if="batchImportStep === 'running'" class="import-progress">
+          <div class="progress-info"><span>{{ batchImportProgress.text }}</span></div>
+          <div class="bar"><div class="bar-inner" :style="{ width: `${batchImportProgress.percent}%` }"></div></div>
+        </div>
+        <div v-if="batchImportStep === 'result' && batchImportResult" class="import-result">
+          <h4>导入结果</h4>
+          <div v-for="item in batchImportResult.files" :key="item.path" class="import-result-row">
+            <code>{{ item.tableName }}</code>
+            <span>{{ item.previousRows }} 行 → {{ item.importedRows }} 行</span>
+          </div>
+        </div>
+      </div>
+      <footer class="modal-footer">
+        <button class="small-btn" :disabled="batchImportLoading && batchImportStep === 'running'" @click="closeBatchImport">
+          {{ batchImportStep === 'result' ? '关闭' : '取消' }}
+        </button>
+        <button class="small-btn" :disabled="!batchImportSummary.canPreview || batchImportLoading" @click="previewBatchImportFiles">
+          {{ batchImportLoading && batchImportStep === 'preview' ? '检测中...' : '检测能否导入' }}
+        </button>
+        <button class="primary-btn" :disabled="!batchImportSummary.canImport || batchImportLoading" @click="runBatchImport">
+          {{ batchImportLoading && batchImportStep === 'running' ? '导入中...' : `导入 ${batchImportSummary.selectedCount} 张表` }}
         </button>
       </footer>
     </section>
