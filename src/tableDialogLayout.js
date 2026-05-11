@@ -3,6 +3,18 @@ function toPositiveNumber(value) {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
 }
 
+export function shouldApplyAdaptiveTablePageSize({
+  currentPageSize,
+  nextPageSize,
+  fullscreenTransitioning = false,
+  seamlessScrolling = false,
+} = {}) {
+  if (fullscreenTransitioning || seamlessScrolling) return false;
+  const current = Number(currentPageSize);
+  const next = Number(nextPageSize);
+  return Number.isFinite(next) && next > 0 && next !== current;
+}
+
 export function resolveAdaptiveTablePageSize({
   visibleHeight,
   headerHeight,

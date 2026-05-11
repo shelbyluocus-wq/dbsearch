@@ -721,6 +721,10 @@ body,
   background: var(--bg-glass-hover);
 }
 
+.table-fullscreen-btn {
+  min-width: 92px;
+}
+
 .actions-row {
   margin-top: 10px;
   display: flex;
@@ -2580,6 +2584,22 @@ mark {
   resize: none;
 }
 
+.table-modal.table-modal--fullscreen-transition {
+  transition: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.table-modal.fullscreen .grid-wrap {
+  background: color-mix(in srgb, var(--bg-panel) 96%, transparent);
+  contain: paint;
+}
+
+.table-modal.fullscreen .data-table th,
+.table-modal.fullscreen .data-table td {
+  background-clip: padding-box;
+}
+
 .modal-title-row {
   display: flex;
   align-items: center;
@@ -3397,6 +3417,11 @@ mark {
   cursor: not-allowed;
 }
 
+.seamless-pager-status {
+  color: var(--text-sub);
+  font-size: 12px;
+}
+
 .grid-wrap {
   margin-top: 8px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -3410,6 +3435,15 @@ mark {
 }
 .grid-wrap::-webkit-scrollbar { display: none; }
 
+.seamless-table-loading {
+  position: sticky;
+  bottom: 0;
+  padding: 8px 12px;
+  text-align: center;
+  color: var(--text-sub);
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+}
+
 .data-table {
   width: 100%;
   border-collapse: collapse;
@@ -3418,6 +3452,7 @@ mark {
 
 .data-table th,
 .data-table td {
+  box-sizing: border-box;
   text-align: left;
   white-space: nowrap;
   padding: 6px 8px;
@@ -3510,6 +3545,92 @@ mark {
   background: var(--accent-tint);
   color: var(--accent-text);
   border-color: var(--accent-line);
+}
+
+/* Freeze toolbar */
+.freeze-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 8px;
+}
+
+.freeze-toolbar > .active {
+  border-color: var(--accent-line);
+  background: var(--accent-tint);
+  color: var(--accent-text);
+}
+
+.freeze-status {
+  color: var(--text-sub);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+/* Freeze pick mode */
+.grid-wrap.freeze-pick-mode {
+  outline: 1px solid color-mix(in srgb, var(--accent) 50%, transparent);
+  outline-offset: 2px;
+}
+
+.grid-wrap.freeze-pick-mode .data-table th,
+.grid-wrap.freeze-pick-mode .data-table td {
+  cursor: crosshair;
+}
+
+/* Freeze preview */
+.data-table th.freeze-preview-column,
+.data-table td.freeze-preview-column {
+  background: color-mix(in srgb, var(--surface-card) 96%, var(--accent-soft));
+}
+
+.data-table th.freeze-preview-column-edge,
+.data-table td.freeze-preview-column-edge {
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--accent-line) 60%, transparent);
+}
+
+.data-table td.freeze-preview-row {
+  background: color-mix(in srgb, var(--surface-card) 96%, var(--accent-soft));
+}
+
+.data-table td.freeze-preview-row-edge {
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent-line) 60%, transparent);
+}
+
+.data-table th.frozen-column,
+.data-table td.frozen-column,
+.data-table .edit-row-handle-col,
+.data-table .edit-checkbox-col {
+  background: color-mix(in srgb, var(--bg-panel) 94%, var(--accent-soft));
+  background-clip: padding-box;
+}
+
+.data-table th.frozen-column-edge,
+.data-table td.frozen-column-edge {
+  box-shadow: 3px 0 0 color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.data-table tr.frozen-row td {
+  background: color-mix(in srgb, var(--bg-panel) 92%, var(--accent-soft));
+  background-clip: padding-box;
+}
+
+.data-table tr.frozen-row-edge td {
+  box-shadow: 0 3px 0 color-mix(in srgb, var(--accent) 20%, transparent);
+}
+
+.table-modal.fullscreen .data-table th.frozen-column-edge,
+.table-modal.fullscreen .data-table td.frozen-column-edge {
+  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--accent) 28%, transparent);
+}
+
+.table-modal.fullscreen .data-table tr.frozen-row-edge td {
+  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent) 24%, transparent);
+}
+
+.data-table .row-freeze-handle-col {
+  background: inherit;
+  background-clip: padding-box;
 }
 
 .col-resize-handle {
@@ -5069,9 +5190,9 @@ mark {
 }
 
 .edit-row-handle-col {
-  width: 18px !important;
-  min-width: 18px !important;
-  max-width: 18px !important;
+  width: 36px !important;
+  min-width: 36px !important;
+  max-width: 36px !important;
   text-align: center;
   padding: 0 !important;
   cursor: pointer;
@@ -5080,13 +5201,10 @@ mark {
 .edit-row-handle-col:hover {
   background: color-mix(in srgb, var(--accent-soft) 60%, transparent);
 }
-.edit-row-handle {
-  font-size: 10px;
-  opacity: 0.5;
+.row-number {
+  font-size: 11px;
+  color: var(--text-sub);
   line-height: 1;
-}
-.edit-row-handle-col:hover .edit-row-handle {
-  opacity: 1;
 }
 .edit-checkbox-col input[type="checkbox"] {
   width: 14px;

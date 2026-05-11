@@ -288,6 +288,22 @@ export function getDefaultTableDialogState() {
   };
 }
 
+export function buildTableDialogClasses({ fullscreen = false, transitioning = false } = {}) {
+  return {
+    fullscreen: !!fullscreen,
+    "table-modal--fullscreen-transition": !!transitioning,
+  };
+}
+
+export function resolveTableFullscreenButtonLabel({
+  fullscreen = false,
+  transitioning = false,
+  previousFullscreen = false,
+} = {}) {
+  const visibleFullscreen = transitioning ? previousFullscreen : fullscreen;
+  return visibleFullscreen ? "退出全屏(W)" : "全屏查看(W)";
+}
+
 export function resolveTableDialogSurfaceMode({
   isPanelWindow = false,
 } = {}) {

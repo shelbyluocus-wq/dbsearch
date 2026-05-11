@@ -19,6 +19,8 @@ import { WeatherEngine } from "./weatherEngine.js";
 import {
   buildFavoritesMenuItems,
   buildPanelTabs,
+  buildTableDialogClasses,
+  resolveTableFullscreenButtonLabel,
   describeTableFolderChip,
   findHighlightRanges,
   getDefaultTableDialogState,
@@ -102,7 +104,17 @@ import {
   hasExceededTabDragThreshold,
   resolveTabStripDropIndex,
 } from "./tableTabDrag.js";
-import { resolveAdaptiveTablePageSize } from "./tableDialogLayout.js";
+import {
+  resolveAdaptiveTablePageSize,
+  shouldApplyAdaptiveTablePageSize,
+} from "./tableDialogLayout.js";
+import {
+  buildSeamlessRows,
+  getSeamlessBlockNumber,
+  pruneSeamlessBlocks,
+  shouldLoadNextSeamlessBlock,
+  shouldLoadPreviousSeamlessBlock,
+} from "./tableSeamlessScroll.js";
 import {
   resolvePendingCellValue,
   setPendingCellChange,
@@ -155,6 +167,11 @@ import {
   isQuickPasteMixedSnippet,
   isQuickPasteTextLikeSnippet,
 } from "./quickPasteCategories.js";
+import {
+  normalizeFreezeBoundary,
+  buildFrozenColumnMeta,
+  buildFrozenRowMeta,
+} from "./tableFreeze.js";
 
 const APP_VERSION = APP_PACKAGE_VERSION;
 const VERSION_DISPLAY_LABEL = resolveSettingsVersionLabel(APP_VERSION);
@@ -1297,6 +1314,8 @@ const TABLE_DIALOG_DEFAULTS = getDefaultTableDialogState();
 const tableOpen = ref(false);
 const tableDetailView = ref("hits");
 const tableFullscreen = ref(TABLE_DIALOG_DEFAULTS.fullscreen);
+const tableFullscreenTransitioning = ref(false);
+const tableFullscreenTransitionPrevious = ref(TABLE_DIALOG_DEFAULTS.fullscreen);
 const schemaCollapsed = ref(true);
 const dataCollapsed = ref(false);
 
@@ -1958,6 +1977,21 @@ const SPRITE_SHEET_IDLE_STATES = {
 };
 const TABLE_TAB_LIMIT = 8;
 const TABLE_COMMAND_LIMIT = 12;
+const TABLE_ROW_HANDLE_WIDTH = 36;
+const TABLE_EDIT_CHECKBOX_WIDTH = 32;
+const TABLE_HEADER_HEIGHT = 34;
+const TABLE_ROW_HEIGHT = 31;
+const SEAMLESS_TABLE_BLOCK_SIZE = 150;
+const SEAMLESS_TABLE_CACHE_RADIUS = 1;
+const SEAMLESS_TABLE_LOAD_THRESHOLD_PX = 360;
+
+const frozenColumnName = ref(null);
+const frozenRowIndex = ref(null);
+const freezePickMode = ref(false);
+const freezePreview = reactive({
+  columnName: null,
+  rowIndex: null,
+});
 
 const tableView = reactive({
   tableName: "",
@@ -1972,9 +2006,78 @@ const tableView = reactive({
   hitNavCursor: -1,
   focusedHitLocalIndex: null,
 });
+const seamlessTable = reactive({
+  enabled: false,
+  loading: false,
+  blocks: new Map(),
+  totalRows: 0,
+  activeBlock: 1,
+});
+const seamlessTableRows = computed(() =>
+  buildSeamlessRows({
+    blocks: seamlessTable.blocks,
+    blockSize: SEAMLESS_TABLE_BLOCK_SIZE,
+  }),
+);
+const seamlessTotalBlocks = computed(() =>
+  Math.max(1, Math.ceil((Number(seamlessTable.totalRows) || tableView.totalRows || 0) / SEAMLESS_TABLE_BLOCK_SIZE)),
+);
+const shouldUseSeamlessTable = computed(() =>
+  tableOpen.value &&
+  tableDetailView.value === "full" &&
+  !editMode.value &&
+  !dataCollapsed.value &&
+  seamlessTable.enabled,
+);
+const displayedTableRows = computed(() =>
+  shouldUseSeamlessTable.value
+    ? seamlessTableRows.value.map((item) => ({
+      ...item.row,
+      __globalIndex: item.globalIndex,
+      __seamlessBlock: item.block,
+      __seamlessLocalIndex: item.localIndex,
+    }))
+    : tableView.rows,
+);
 const editPageRowKeys = computed(() =>
   tableView.rows.map((row, idx) => computeRowKey(row, idx)),
 );
+const tableLeadingStickyWidth = computed(() =>
+  TABLE_ROW_HANDLE_WIDTH + (editMode.value ? TABLE_EDIT_CHECKBOX_WIDTH : 0),
+);
+const frozenColumnMeta = computed(() =>
+  buildFrozenColumnMeta({
+    columns: tableView.columns.map((col) => col.column_name),
+    columnWidths: Object.fromEntries(tableView.columns.map((col) => [col.column_name, getColumnWidth(col.column_name)])),
+    frozenColumnName: frozenColumnName.value,
+    leadingWidth: tableLeadingStickyWidth.value,
+  }),
+);
+const frozenRowMeta = computed(() =>
+  buildFrozenRowMeta({
+    rowCount: tableView.rows.length,
+    frozenRowIndex: frozenRowIndex.value,
+    headerHeight: TABLE_HEADER_HEIGHT,
+    rowHeight: TABLE_ROW_HEIGHT,
+  }),
+);
+const hasFreezePreview = computed(() => freezePreview.columnName !== null || freezePreview.rowIndex !== null);
+const freezePreviewText = computed(() => {
+  const parts = [];
+  if (freezePreview.rowIndex !== null) parts.push(`第 ${freezePreview.rowIndex + 1} 行`);
+  if (freezePreview.columnName) parts.push(`列 ${freezePreview.columnName}`);
+  return parts.length > 0 ? `预览冻结到 ${parts.join(" / ")}` : "选择表头、行柄或单元格";
+});
+const freezeAppliedText = computed(() => {
+  const parts = [];
+  if (frozenRowIndex.value !== null) parts.push(`第 ${frozenRowIndex.value + 1} 行`);
+  if (frozenColumnName.value) parts.push(`列 ${frozenColumnName.value}`);
+  return parts.length > 0 ? `已冻结到 ${parts.join(" / ")}` : "未冻结";
+});
+const freezeToolbarLabel = computed(() => {
+  if (!freezePickMode.value) return frozenColumnName.value || frozenRowIndex.value !== null ? "重新选择冻结" : "选择冻结";
+  return hasFreezePreview.value ? "确认冻结" : "选择冻结范围";
+});
 const editDeletedRowKeys = computed(() =>
   tableView.rows
     .map((row, idx) => (isRowDeleted(row, idx) ? computeRowKey(row, idx) : ""))
@@ -3632,6 +3735,19 @@ const tableDialogSurfaceMode = computed(() =>
     isPanelWindow: isPanelWindow.value,
   }),
 );
+const tableDialogClasses = computed(() =>
+  buildTableDialogClasses({
+    fullscreen: tableFullscreen.value,
+    transitioning: tableFullscreenTransitioning.value,
+  }),
+);
+const tableFullscreenButtonLabel = computed(() =>
+  resolveTableFullscreenButtonLabel({
+    fullscreen: tableFullscreen.value,
+    transitioning: tableFullscreenTransitioning.value,
+    previousFullscreen: tableFullscreenTransitionPrevious.value,
+  }),
+);
 const contentScaleStyle = computed(() => ({
   "--content-scale": String(normalizeUiScale(config.personal.ui_scale)),
 }));
@@ -4425,6 +4541,8 @@ function applyCollapsedColumnState(nextCollapsedMap = {}, nextRestoreWidthMap = 
 
 function restoreLiveStateFromTableSnapshot(tab) {
   if (!tab) return;
+  resetSeamlessTable();
+  resetTableFreeze();
   tableTabRestoring = true;
   tableDetailView.value = normalizeTableDefaultView(tab.tableDetailView);
   schemaCollapsed.value = !!tab.schemaCollapsed;
@@ -4623,6 +4741,9 @@ async function activateTableTab(tabId, { skipSnapshot = false } = {}) {
     tableView.page = 1;
     await loadTablePage({ resetFocus: true, clearHitCache: true });
   }
+  if (tableDetailView.value === "full" && !editMode.value && !dataCollapsed.value) {
+    enableSeamlessTableFromCurrentPage().catch(() => {});
+  }
 }
 
 async function openOrActivateTableTab(tableName, rowIndex = null, columnName = null, hitContext = {}) {
@@ -4662,6 +4783,8 @@ async function openOrActivateTableTab(tableName, rowIndex = null, columnName = n
   await loadTablePage({ resetFocus: true, clearHitCache: true });
   if (tableDetailView.value === "hits") {
     collectAllHitRows().catch(() => {});
+  } else if (!editMode.value) {
+    enableSeamlessTableFromCurrentPage().catch(() => {});
   }
   await startTableLayoutObserver();
   scheduleAdaptiveTablePageSize();
@@ -5626,10 +5749,14 @@ watch(tableDetailView, (view) => {
   if (tableTabRestoring) return;
   if (!tableOpen.value) return;
   if (view === "hits") {
+    resetSeamlessTable();
     stopTableLayoutObserver();
     collectAllHitRows().catch(() => {});
   } else {
     startTableLayoutObserver().catch(() => {});
+    if (!editMode.value) {
+      enableSeamlessTableFromCurrentPage().catch(() => {});
+    }
   }
   scheduleAdaptiveTablePageSize();
 });
@@ -6309,6 +6436,11 @@ function onWindowKeydown(event) {
   }
 
   if (event.key !== "Escape") return;
+
+  if (tableOpen.value && freezePickMode.value) {
+    cancelFreezePickMode();
+    return;
+  }
 
   if (exportDialogOpen.value) {
     exportDialogOpen.value = false;
@@ -7173,7 +7305,11 @@ function toggleTableDetailView() {
   tableDetailView.value = tableDetailView.value === "full" ? "hits" : "full";
   if (tableDetailView.value === "full") {
     startTableLayoutObserver().catch(() => {});
+    if (!editMode.value) {
+      enableSeamlessTableFromCurrentPage().catch(() => {});
+    }
   } else {
+    resetSeamlessTable();
     stopTableLayoutObserver();
   }
   scheduleAdaptiveTablePageSize();
@@ -7182,6 +7318,12 @@ function toggleTableDetailView() {
 function resetTableFullscreenTracking() {
   tableFullscreenMode.value = "none";
   tableFullscreenRestoreMaximized.value = false;
+}
+
+function waitForTableFullscreenPaint() {
+  return new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  });
 }
 
 async function enterTableFullscreen() {
@@ -7241,12 +7383,18 @@ async function exitTableFullscreen() {
 }
 
 async function toggleTableFullscreen() {
-  if (tableFullscreen.value) {
-    await exitTableFullscreen();
-  } else {
-    await enterTableFullscreen();
+  tableFullscreenTransitionPrevious.value = tableFullscreen.value;
+  tableFullscreenTransitioning.value = true;
+  try {
+    if (tableFullscreen.value) {
+      await exitTableFullscreen();
+    } else {
+      await enterTableFullscreen();
+    }
+    await waitForTableFullscreenPaint();
+  } finally {
+    tableFullscreenTransitioning.value = false;
   }
-  scheduleAdaptiveTablePageSize();
 }
 
 function getTargetColumns(columnNames = null) {
@@ -7430,7 +7578,12 @@ function readAdaptiveTablePageSize() {
 
 async function applyAdaptiveTablePageSize() {
   const nextPageSize = readAdaptiveTablePageSize();
-  if (!nextPageSize || nextPageSize === tableView.pageSize) return;
+  if (!shouldApplyAdaptiveTablePageSize({
+    currentPageSize: tableView.pageSize,
+    nextPageSize,
+    fullscreenTransitioning: tableFullscreenTransitioning.value,
+    seamlessScrolling: shouldUseSeamlessTable.value,
+  })) return;
   const token = ++tablePageSizeAdjustToken;
   const anchorGlobalStart = Math.max(0, (tableView.page - 1) * tableView.pageSize);
   tableView.pageSize = nextPageSize;
@@ -7869,14 +8022,170 @@ function handleColumnCollapseToggle(columnName) {
   scheduleColumnOverflowMeasure();
 }
 
+function getColumnWidth(columnName) {
+  return Number(columnWidthMap[columnName] || 0);
+}
+
 function getColumnStyle(columnName) {
-  const width = Number(columnWidthMap[columnName] || 0);
+  const width = getColumnWidth(columnName);
   if (width <= 0) return null;
   return {
     width: `${width}px`,
     minWidth: `${width}px`,
     maxWidth: `${width}px`,
   };
+}
+
+function getFrozenColumnStyle(columnName) {
+  const base = getColumnStyle(columnName) || {};
+  const meta = frozenColumnMeta.value[columnName];
+  if (!meta?.frozen) return base;
+  return {
+    ...base,
+    position: "sticky",
+    left: `${meta.left}px`,
+    zIndex: 4,
+  };
+}
+
+function getFrozenHeaderColumnStyle(columnName) {
+  const base = getColumnStyle(columnName) || {};
+  const meta = frozenColumnMeta.value[columnName];
+  if (!meta?.frozen) return base;
+  return { ...base, position: "sticky", left: `${meta.left}px`, zIndex: 11 };
+}
+
+function getFrozenRowStyle(rowIndex) {
+  const meta = frozenRowMeta.value[rowIndex];
+  if (!meta?.frozen) return null;
+  return { position: "sticky", top: `${meta.top}px`, zIndex: 3 };
+}
+
+function getFrozenHeaderHandleStyle() {
+  return { position: "sticky", left: "0px", zIndex: 13 };
+}
+
+function getFrozenEditActionStyle() {
+  return { position: "sticky", left: `${TABLE_ROW_HANDLE_WIDTH}px`, zIndex: 5 };
+}
+
+function getFrozenHeaderActionStyle() {
+  return { ...getFrozenEditActionStyle(), zIndex: 12 };
+}
+
+function getDisplayedRowNumber(localIndex, row = null) {
+  if (shouldUseSeamlessTable.value && row?.__globalIndex) return row.__globalIndex;
+  return (tableView.page - 1) * tableView.pageSize + localIndex + 1;
+}
+
+function getFrozenRowHandleStyle(rowIndex) {
+  return {
+    ...(getFrozenRowStyle(rowIndex) || {}),
+    position: "sticky",
+    left: "0px",
+    zIndex: frozenRowMeta.value[rowIndex]?.frozen ? 7 : 5,
+  };
+}
+
+function getFrozenRowActionStyle(rowIndex) {
+  return {
+    ...(getFrozenRowStyle(rowIndex) || {}),
+    ...getFrozenEditActionStyle(),
+    zIndex: frozenRowMeta.value[rowIndex]?.frozen ? 6 : 5,
+  };
+}
+
+function getFrozenCellStyle(columnName, rowIndex) {
+  const rowFrozen = !!frozenRowMeta.value[rowIndex]?.frozen;
+  const columnFrozen = !!frozenColumnMeta.value[columnName]?.frozen;
+  return {
+    ...(getFrozenRowStyle(rowIndex) || {}),
+    ...getFrozenColumnStyle(columnName),
+    zIndex: rowFrozen && columnFrozen ? 8 : rowFrozen ? 6 : columnFrozen ? 4 : undefined,
+  };
+}
+
+function getFrozenInsertRowHandleStyle() {
+  return { position: "sticky", left: "0px", zIndex: 5 };
+}
+
+function getFrozenInsertActionStyle() {
+  return getFrozenEditActionStyle();
+}
+
+function getFrozenInsertCellStyle(columnName) {
+  return getFrozenColumnStyle(columnName);
+}
+
+function clearFreezePreview() {
+  freezePreview.columnName = null;
+  freezePreview.rowIndex = null;
+}
+
+function cancelFreezePickMode() {
+  freezePickMode.value = false;
+  clearFreezePreview();
+}
+
+function applyFreezePreview() {
+  if (!hasFreezePreview.value) return;
+  frozenColumnName.value = freezePreview.columnName;
+  frozenRowIndex.value = freezePreview.rowIndex;
+  cancelFreezePickMode();
+}
+
+function toggleFreezePickMode() {
+  if (freezePickMode.value) {
+    applyFreezePreview();
+    return;
+  }
+  freezePickMode.value = true;
+  clearFreezePreview();
+}
+
+function clearFreeze() {
+  frozenColumnName.value = null;
+  frozenRowIndex.value = null;
+  cancelFreezePickMode();
+}
+
+function selectFreezeColumn(columnName) {
+  if (!freezePickMode.value) return;
+  freezePreview.columnName = columnName;
+  freezePreview.rowIndex = null;
+}
+
+function selectFreezeRow(idx) {
+  if (!freezePickMode.value) return;
+  freezePreview.rowIndex = idx;
+  freezePreview.columnName = null;
+}
+
+function selectFreezeCell(idx, columnName) {
+  if (!freezePickMode.value) return;
+  freezePreview.rowIndex = idx;
+  freezePreview.columnName = columnName;
+}
+
+function isFreezePreviewColumn(columnName) {
+  if (!freezePickMode.value || !freezePreview.columnName) return false;
+  const columns = tableView.columns.map((col) => col.column_name);
+  const previewIndex = columns.indexOf(freezePreview.columnName);
+  const columnIndex = columns.indexOf(columnName);
+  return previewIndex >= 0 && columnIndex >= 0 && columnIndex <= previewIndex;
+}
+
+function isFreezePreviewRow(idx) {
+  return freezePickMode.value && freezePreview.rowIndex !== null && idx <= freezePreview.rowIndex;
+}
+
+function resetFrozenRow() {
+  frozenRowIndex.value = null;
+  if (freezePreview.rowIndex !== null) freezePreview.rowIndex = null;
+}
+
+function resetTableFreeze() {
+  clearFreeze();
 }
 
 function getSchemaColumnStyle(columnName) {
@@ -8115,8 +8424,87 @@ async function openTable(tableName, rowIndex = null, columnName = null, hitConte
   await openOrActivateTableTab(tableName, rowIndex, columnName, hitContext);
 }
 
+function resetSeamlessTable() {
+  seamlessTable.enabled = false;
+  seamlessTable.loading = false;
+  seamlessTable.blocks = new Map();
+  seamlessTable.totalRows = 0;
+  seamlessTable.activeBlock = 1;
+}
+
+async function loadSeamlessTableBlock(blockNumber, { replace = false } = {}) {
+  if (!tableView.tableName || seamlessTable.loading) return;
+  const block = Math.max(1, Math.min(seamlessTotalBlocks.value, Number(blockNumber) || 1));
+  if (!replace && seamlessTable.blocks.has(block)) return;
+  seamlessTable.loading = true;
+  try {
+    const payload = await invoke("get_table_data", {
+      tableName: tableView.tableName,
+      page: block,
+      pageSize: SEAMLESS_TABLE_BLOCK_SIZE,
+    });
+    if (replace) {
+      seamlessTable.blocks = new Map();
+    }
+    seamlessTable.blocks.set(block, payload.rows || []);
+    seamlessTable.blocks = pruneSeamlessBlocks({
+      blocks: seamlessTable.blocks,
+      centerBlock: block,
+      radius: SEAMLESS_TABLE_CACHE_RADIUS,
+    });
+    seamlessTable.totalRows = Number(payload.totalRows) || 0;
+    tableView.totalRows = seamlessTable.totalRows;
+    seamlessTable.activeBlock = block;
+  } finally {
+    seamlessTable.loading = false;
+  }
+}
+
+async function enableSeamlessTableFromCurrentPage() {
+  if (!tableView.tableName || editMode.value || tableDetailView.value !== "full") return;
+  seamlessTable.enabled = true;
+  seamlessTable.totalRows = tableView.totalRows;
+  const currentBlock = getSeamlessBlockNumber({
+    rowIndex: Math.max(0, (tableView.page - 1) * tableView.pageSize),
+    blockSize: SEAMLESS_TABLE_BLOCK_SIZE,
+  });
+  await loadSeamlessTableBlock(currentBlock, { replace: true });
+}
+
+async function onTableGridScroll(event) {
+  if (!shouldUseSeamlessTable.value) return;
+  const target = event.currentTarget;
+  if (!(target instanceof HTMLElement)) return;
+  const loadedBlocks = [...seamlessTable.blocks.keys()].sort((a, b) => a - b);
+  if (loadedBlocks.length === 0) return;
+  const lowestLoadedBlock = loadedBlocks[0];
+  const highestLoadedBlock = loadedBlocks[loadedBlocks.length - 1];
+
+  if (shouldLoadNextSeamlessBlock({
+    scrollTop: target.scrollTop,
+    clientHeight: target.clientHeight,
+    scrollHeight: target.scrollHeight,
+    thresholdPx: SEAMLESS_TABLE_LOAD_THRESHOLD_PX,
+    loading: seamlessTable.loading,
+    highestLoadedBlock,
+    totalBlocks: seamlessTotalBlocks.value,
+  })) {
+    await loadSeamlessTableBlock(highestLoadedBlock + 1);
+    return;
+  }
+
+  if (shouldLoadPreviousSeamlessBlock({
+    scrollTop: target.scrollTop,
+    thresholdPx: SEAMLESS_TABLE_LOAD_THRESHOLD_PX,
+    loading: seamlessTable.loading,
+    lowestLoadedBlock,
+  })) {
+    await loadSeamlessTableBlock(lowestLoadedBlock - 1);
+  }
+}
+
 async function loadTablePage(options = {}) {
-  const { resetFocus = true, clearHitCache = true } = options;
+  const { resetFocus = true, clearHitCache = true, preserveSeamless = false } = options;
   if (!tableView.tableName) return;
   try {
     const payload = await invoke("get_table_data", {
@@ -8125,8 +8513,12 @@ async function loadTablePage(options = {}) {
       pageSize: tableView.pageSize,
     });
 
+    if (!preserveSeamless) {
+      resetSeamlessTable();
+    }
     tableView.columns = payload.columns || [];
     tableView.rows = payload.rows || [];
+    resetFrozenRow();
     tableView.totalRows = payload.totalRows || 0;
     tableView.tableComment = payload.tableComment || "";
     syncEditSelectionToCurrentPage();
@@ -8199,6 +8591,7 @@ function doCloseTableDialog() {
   stopSchemaColumnResize();
   exitTableFullscreen().catch(() => {});
   closeTableCommandPalette();
+  resetSeamlessTable();
   tableOpen.value = false;
   tableDetailView.value = normalizeTableDefaultView(config.personal.table_default_view);
   hitCollectToken += 1;
@@ -8578,6 +8971,7 @@ function resetEditChanges() {
   Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
 }
 function enterEditMode() {
+  resetSeamlessTable()
   resetEditChanges()
   tableDetailView.value = "full"
   dataCollapsed.value = false
@@ -12966,8 +13360,8 @@ function escapeHtml(str) {
   >
     <section ref="tableModalRef" tabindex="-1" :class="[
       'modal-card', 'wide', 'table-modal', 'table-modal--instant',
+      tableDialogClasses,
       { 'table-modal--host-fill': tableDialogSurfaceMode.fillHostWindow },
-      { fullscreen: tableFullscreen },
       editGlowPhase !== 'none' ? `edit-glow-${editGlowPhase}` : '',
       { 'edit-mode-active': editMode },
       { 'reduced-transparency': reducedTransparencyEnabled },
@@ -12988,7 +13382,7 @@ function escapeHtml(str) {
         </div>
         <div class="table-header-actions">
           <button class="small-btn" @click="toggleTableDetailView">{{ tableDetailView === 'full' ? '只看命中(Tab)' : '返回原页(Tab)' }}</button>
-          <button class="small-btn" @click="toggleTableFullscreen">{{ tableFullscreen ? '退出全屏(W)' : '全屏查看(W)' }}</button>
+          <button class="small-btn table-fullscreen-btn" :disabled="tableFullscreenTransitioning" @click="toggleTableFullscreen">{{ tableFullscreenButtonLabel }}</button>
           <button :class="['small-btn', 'edit-toggle-btn', { active: editMode }]"
             :disabled="!canEditCurrentTable" @click="onEditToggleClick"
             :title="editMode ? '退出编辑模式' : (offlineDemoMode ? '进入离线演示编辑模式' : '进入编辑模式')">
@@ -13124,23 +13518,34 @@ function escapeHtml(str) {
             <div class="data-head" :class="{ 'actions-only': !editMode }">
               <div class="data-actions">
                 <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中(Q/E)</button>
-                <div class="pager">
+                <div v-if="!shouldUseSeamlessTable" class="pager">
                   <button :disabled="tableView.page <= 1" @click="prevPage">上一页</button>
                   <span>{{ tableView.page }} / {{ totalPages }}</span>
                   <button :disabled="tableView.page >= totalPages" @click="nextPage">下一页</button>
                 </div>
+                <div v-else class="pager seamless-pager-status">
+                  {{ seamlessTableRows.length }} / {{ seamlessTable.totalRows || tableView.totalRows }} 行
+                </div>
+              </div>
+              <div class="freeze-toolbar" :class="{ 'freeze-pick-mode': freezePickMode }">
+                <button class="small-btn" :class="{ active: freezePickMode }" @click="toggleFreezePickMode" :disabled="freezePickMode && !hasFreezePreview">
+                  {{ freezeToolbarLabel }}
+                </button>
+                <button v-if="freezePickMode" class="small-btn" @click="cancelFreezePickMode">取消</button>
+                <button v-if="!freezePickMode && (frozenColumnName || frozenRowIndex !== null)" class="small-btn danger" @click="clearFreeze">取消冻结</button>
+                <span class="freeze-status">{{ freezePickMode ? freezePreviewText : freezeAppliedText }}</span>
               </div>
               <div v-if="editMode" class="edit-shortcut-hint">
                 Ctrl+Z 撤销 · Ctrl+Shift+Z 重做 · Ctrl+Enter 新行 · Ctrl+Delete 删行 · Ctrl+D 向下填充 · Shift+Space 选中整行 · F4 文本面板
               </div>
             </div>
 
-            <div ref="tableGridWrapRef" class="grid-wrap">
+            <div ref="tableGridWrapRef" class="grid-wrap" :class="{ 'freeze-pick-mode': freezePickMode }" @scroll="onTableGridScroll">
               <table class="data-table">
                 <thead>
                   <tr>
-                    <th v-if="editMode" class="edit-row-handle-col"></th>
-                    <th v-if="editMode" class="edit-checkbox-col">
+                    <th class="edit-row-handle-col row-freeze-handle-col" :style="getFrozenHeaderHandleStyle()" title="冻结行控制"></th>
+                    <th v-if="editMode" class="edit-checkbox-col" :style="getFrozenHeaderActionStyle()">
                       <input type="checkbox" title="选择当前页" @click.stop.prevent="toggleSelectAll"
                         :checked="editAllPageRowsSelected" />
                     </th>
@@ -13148,8 +13553,15 @@ function escapeHtml(str) {
                       v-for="col in tableView.columns"
                       :key="col.column_name"
                       :data-column-name="col.column_name"
-                      :class="{ 'hit-col': isDataColumnHit(col.column_name) }"
-                      :style="getColumnStyle(col.column_name)"
+                      :class="{
+                        'hit-col': isDataColumnHit(col.column_name),
+                        'frozen-column': frozenColumnMeta[col.column_name]?.frozen,
+                        'frozen-column-edge': frozenColumnMeta[col.column_name]?.edge,
+                        'freeze-preview-column': isFreezePreviewColumn(col.column_name),
+                        'freeze-preview-column-edge': freezePreview.columnName === col.column_name,
+                      }"
+                      :style="getFrozenHeaderColumnStyle(col.column_name)"
+                      @click="freezePickMode && selectFreezeColumn(col.column_name)"
                     >
                       <div class="th-content">
                         <span class="th-label" v-html="renderTableColumnHeader(col.column_name)"></span>
@@ -13168,8 +13580,8 @@ function escapeHtml(str) {
                 </thead>
                 <tbody>
                   <tr
-                    v-for="(row, idx) in tableView.rows"
-                    :key="idx"
+                    v-for="(row, idx) in displayedTableRows"
+                    :key="shouldUseSeamlessTable ? row.__globalIndex : idx"
                     :data-hit-row-index="idx"
                     :class="{
                       hit: isDataRowHit(row, idx),
@@ -13178,13 +13590,26 @@ function escapeHtml(str) {
                       'edit-deleted': editMode && isRowDeleted(row, idx),
                       'edit-modified': editMode && isRowModified(row, idx),
                       'edit-selected': editMode && isRowSelected(row, idx),
+                      'frozen-row': frozenRowMeta[idx]?.frozen,
+                      'frozen-row-edge': frozenRowMeta[idx]?.edge,
                     }"
                     @contextmenu.prevent="copyRow(row)"
                   >
-                    <td v-if="editMode" class="edit-row-handle-col" @mousedown.stop.prevent="onRowHandleMouseDown(idx, 'page')" @mouseenter="onRowHandleMouseEnter(idx, 'page')" title="选中整行">
-                      <span class="edit-row-handle">⠿</span>
+                    <td
+                      class="edit-row-handle-col row-freeze-handle-col"
+                      :class="{
+                        'freeze-preview-row': isFreezePreviewRow(idx),
+                        'frozen-row': frozenRowMeta[idx]?.frozen,
+                        'frozen-row-edge': frozenRowMeta[idx]?.edge,
+                      }"
+                      :style="getFrozenRowHandleStyle(idx)"
+                      @mousedown.stop.prevent="freezePickMode ? selectFreezeRow(idx) : (editMode && onRowHandleMouseDown(idx, 'page'))"
+                      @mouseenter="!freezePickMode && editMode && onRowHandleMouseEnter(idx, 'page')"
+                      :title="freezePickMode ? '选择冻结到此行' : '选中整行'"
+                    >
+                      <span class="row-number">{{ getDisplayedRowNumber(idx, row) }}</span>
                     </td>
-                    <td v-if="editMode" class="edit-checkbox-col">
+                    <td v-if="editMode" class="edit-checkbox-col" :style="getFrozenRowActionStyle(idx)">
                       <input type="checkbox"
                         :checked="editSelectedRows.has(computeRowKey(row, idx))"
                         :disabled="isRowDeleted(row, idx)"
@@ -13197,7 +13622,7 @@ function escapeHtml(str) {
                       :data-find-page="tableView.page"
                       :data-find-row="idx"
                       :data-find-col="col.column_name"
-                      :style="getColumnStyle(col.column_name)"
+                      :style="getFrozenCellStyle(col.column_name, idx)"
                       :class="{
                         'hit-cell': isDataCellHit(row, col.column_name),
                         'find-active-cell':
@@ -13209,11 +13634,17 @@ function escapeHtml(str) {
                         'edit-cell-active': editingCell.active && editingCell.rowIndex === idx && editingCell.columnName === col.column_name,
                         'grid-focus': editMode && isGridFocused('page', idx, col.column_name),
                         'grid-range': editMode && isCellInGridRange('page', idx, col.column_name),
+                        'frozen-column': frozenColumnMeta[col.column_name]?.frozen,
+                        'frozen-column-edge': frozenColumnMeta[col.column_name]?.edge,
+                        'freeze-preview-column': isFreezePreviewColumn(col.column_name),
+                        'frozen-row': frozenRowMeta[idx]?.frozen,
+                        'frozen-row-edge': frozenRowMeta[idx]?.edge,
+                        'freeze-preview-row': isFreezePreviewRow(idx),
                       }"
-                      @click="onPageCellClick($event, idx, col.column_name)"
-                      @dblclick="onPageCellDoubleClick(idx, col.column_name)"
-                      @mousedown="onGridCellMouseDown($event, 'page', idx, col.column_name)"
-                      @mouseenter="onGridCellMouseEnter($event, 'page', idx, col.column_name)"
+                      @click="freezePickMode ? selectFreezeCell(idx, col.column_name) : onPageCellClick($event, idx, col.column_name)"
+                      @dblclick="!freezePickMode && onPageCellDoubleClick(idx, col.column_name)"
+                      @mousedown="!freezePickMode && onGridCellMouseDown($event, 'page', idx, col.column_name)"
+                      @mouseenter="!freezePickMode && onGridCellMouseEnter($event, 'page', idx, col.column_name)"
                     >
                       <input v-if="editingCell.active && editingCell.rowIndex === idx && editingCell.columnName === col.column_name"
                         id="edit-cell-input"
@@ -13231,19 +13662,21 @@ function escapeHtml(str) {
                   </tr>
                   <!-- 新增行 -->
                   <tr v-for="(newRow, nIdx) in editChanges.inserts" :key="'new-'+nIdx" class="edit-new-row">
-                    <td class="edit-row-handle-col" @mousedown.stop.prevent="onRowHandleMouseDown(nIdx, 'insert')" @mouseenter="onRowHandleMouseEnter(nIdx, 'insert')" title="选中整行">
+                    <td class="edit-row-handle-col row-freeze-handle-col" :style="getFrozenInsertRowHandleStyle()" @mousedown.stop.prevent="onRowHandleMouseDown(nIdx, 'insert')" @mouseenter="onRowHandleMouseEnter(nIdx, 'insert')" title="选中整行">
                       <span class="edit-row-handle">⠿</span>
                     </td>
-                    <td class="edit-checkbox-col">
+                    <td class="edit-checkbox-col" :style="getFrozenInsertActionStyle()">
                       <button class="edit-remove-insert-btn" @click="removeNewRow(nIdx)" title="移除">✕</button>
                     </td>
                     <td v-for="col in tableView.columns" :key="col.column_name"
                       :data-column-name="col.column_name"
-                      :style="getColumnStyle(col.column_name)"
+                      :style="getFrozenInsertCellStyle(col.column_name)"
                       :class="{
                         'edit-cell-active': editingCell.active && editingCell.rowIndex === (tableView.rows.length + nIdx) && editingCell.columnName === col.column_name,
                         'grid-focus': editMode && isGridFocused('insert', nIdx, col.column_name),
                         'grid-range': editMode && isCellInGridRange('insert', nIdx, col.column_name),
+                        'frozen-column': frozenColumnMeta[col.column_name]?.frozen,
+                        'frozen-column-edge': frozenColumnMeta[col.column_name]?.edge,
                       }"
                       @click="onInsertCellClick($event, nIdx, col.column_name)"
                       @dblclick="onInsertCellDoubleClick(nIdx, col.column_name)"
@@ -13266,14 +13699,15 @@ function escapeHtml(str) {
                   </tr>
                   <!-- 快速追加新行的幽灵行（仅在编辑模式出现） -->
                   <tr v-if="editMode" class="edit-ghost-row" @click="addRowAndFocus">
-                    <td class="edit-row-handle-col"></td>
-                    <td class="edit-checkbox-col">＋</td>
+                    <td class="edit-row-handle-col row-freeze-handle-col" :style="getFrozenInsertRowHandleStyle()"></td>
+                    <td class="edit-checkbox-col" :style="getFrozenInsertActionStyle()">＋</td>
                     <td :colspan="tableView.columns.length" class="edit-ghost-hint">
                       点击这里或按 Ctrl+Enter 追加新行
                     </td>
                   </tr>
                 </tbody>
               </table>
+              <div v-if="shouldUseSeamlessTable && seamlessTable.loading" class="seamless-table-loading">加载更多...</div>
             </div>
             <!-- 编辑模式底部：工具栏 + 文本选项面板（作为一个整体 sticky 到底部） -->
             <div v-if="editMode" class="edit-bottom-stack">

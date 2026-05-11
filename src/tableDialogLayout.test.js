@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { resolveAdaptiveTablePageSize } from "./tableDialogLayout.js";
+import {
+  resolveAdaptiveTablePageSize,
+  shouldApplyAdaptiveTablePageSize,
+} from "./tableDialogLayout.js";
 
 test("resolveAdaptiveTablePageSize computes rows from measurements in the same visual coordinate system", () => {
   assert.equal(
@@ -50,5 +53,47 @@ test("resolveAdaptiveTablePageSize degrades safely for invalid or tiny measureme
       maxRows: 200,
     }),
     null,
+  );
+});
+
+test("shouldApplyAdaptiveTablePageSize skips reload-prone resizing during fullscreen transitions", () => {
+  assert.equal(
+    shouldApplyAdaptiveTablePageSize({
+      currentPageSize: 50,
+      nextPageSize: 72,
+      fullscreenTransitioning: true,
+    }),
+    false,
+  );
+});
+
+test("shouldApplyAdaptiveTablePageSize skips reload-prone resizing during seamless scrolling", () => {
+  assert.equal(
+    shouldApplyAdaptiveTablePageSize({
+      currentPageSize: 50,
+      nextPageSize: 72,
+      seamlessScrolling: true,
+    }),
+    false,
+  );
+});
+
+test("shouldApplyAdaptiveTablePageSize applies stable page size changes only when needed", () => {
+  assert.equal(
+    shouldApplyAdaptiveTablePageSize({
+      currentPageSize: 50,
+      nextPageSize: 72,
+      fullscreenTransitioning: false,
+    }),
+    true,
+  );
+
+  assert.equal(
+    shouldApplyAdaptiveTablePageSize({
+      currentPageSize: 50,
+      nextPageSize: 50,
+      fullscreenTransitioning: false,
+    }),
+    false,
   );
 });

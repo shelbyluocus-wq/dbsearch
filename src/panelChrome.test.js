@@ -8,6 +8,8 @@ import {
   describeTableFolderChip,
   findHighlightRanges,
   getDefaultTableDialogState,
+  buildTableDialogClasses,
+  resolveTableFullscreenButtonLabel,
   getTableSortMeta,
   normalizeBackgroundOpacity,
   resolvePanelActivatedFocusTarget,
@@ -293,6 +295,50 @@ test("getDefaultTableDialogState keeps backdrop close disabled and leaves fullsc
     fullscreen: false,
     backdropClosable: false,
   });
+});
+
+test("buildTableDialogClasses marks fullscreen transition state", () => {
+  assert.deepEqual(
+    buildTableDialogClasses({ fullscreen: true, transitioning: true }),
+    {
+      fullscreen: true,
+      "table-modal--fullscreen-transition": true,
+    },
+  );
+});
+
+test("buildTableDialogClasses omits transition class when stable", () => {
+  assert.deepEqual(
+    buildTableDialogClasses({ fullscreen: true, transitioning: false }),
+    {
+      fullscreen: true,
+      "table-modal--fullscreen-transition": false,
+    },
+  );
+});
+
+test("resolveTableFullscreenButtonLabel keeps the previous label during transitions", () => {
+  assert.equal(
+    resolveTableFullscreenButtonLabel({ fullscreen: true, transitioning: true, previousFullscreen: false }),
+    "全屏查看(W)",
+  );
+
+  assert.equal(
+    resolveTableFullscreenButtonLabel({ fullscreen: false, transitioning: true, previousFullscreen: true }),
+    "退出全屏(W)",
+  );
+});
+
+test("resolveTableFullscreenButtonLabel follows stable fullscreen state", () => {
+  assert.equal(
+    resolveTableFullscreenButtonLabel({ fullscreen: false, transitioning: false, previousFullscreen: false }),
+    "全屏查看(W)",
+  );
+
+  assert.equal(
+    resolveTableFullscreenButtonLabel({ fullscreen: true, transitioning: false, previousFullscreen: false }),
+    "退出全屏(W)",
+  );
 });
 
 test("resolveTableDialogSurfaceMode makes table dialogs fill panel windows without an overlay backdrop", () => {
