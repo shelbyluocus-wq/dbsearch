@@ -2582,6 +2582,8 @@ mark {
   max-height: none;
   max-width: none;
   resize: none;
+  padding: 8px;
+  border-radius: 0;
 }
 
 .table-modal.table-modal--fullscreen-transition {
@@ -2590,7 +2592,124 @@ mark {
   -webkit-backdrop-filter: none;
 }
 
+.table-modal.fullscreen .modal-header {
+  min-height: 36px;
+  padding: 0 4px 6px;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.table-modal.fullscreen .modal-title-row {
+  gap: 6px;
+  min-width: 0;
+}
+
+.table-modal.fullscreen .modal-table-title {
+  max-width: 32vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.table-modal.fullscreen .modal-copy-btn,
+.table-modal.fullscreen .modal-title-row > .table-title-action-btn:not(.table-title-find-btn),
+.table-modal.fullscreen .table-header-actions > .small-btn:not(.table-fullscreen-btn),
+.table-modal.fullscreen .table-header-actions > .edit-toggle-btn,
+.table-modal.fullscreen .table-tabs,
+.table-modal.fullscreen .edit-no-pk-warning,
+.table-modal.fullscreen .schema-box,
+.table-modal.fullscreen .data-box > .section-head,
+.table-modal.fullscreen .data-head .freeze-toolbar,
+.table-modal.fullscreen .data-head .edit-shortcut-hint,
+.table-modal.fullscreen .data-actions > .small-btn {
+  display: none !important;
+}
+
+.table-modal.fullscreen .table-content,
+.table-modal.fullscreen .table-content-viewport,
+.table-modal.fullscreen .table-content-scale,
+.table-modal.fullscreen .data-box,
+.table-modal.fullscreen .data-box > .section-body {
+  flex: 1;
+  min-height: 0;
+}
+
+.table-modal.fullscreen .table-content {
+  padding: 0;
+}
+
+.table-modal.fullscreen .table-content-scale {
+  gap: 0;
+}
+
+.table-modal.fullscreen .data-box {
+  padding: 0;
+  background: transparent;
+}
+
+.table-modal.fullscreen .data-box > .section-body {
+  margin-top: 0;
+}
+
+.table-modal.fullscreen .data-head {
+  display: none;
+}
+
+.table-modal.fullscreen .table-find-bar {
+  min-height: 32px;
+  padding: 4px 6px 6px;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.table-modal.fullscreen .table-find-bar input {
+  height: 28px;
+}
+
+.table-modal.fullscreen .table-find-bar .small-btn {
+  height: 26px;
+  padding: 0 8px;
+}
+
+.table-modal.fullscreen .fullscreen-freeze-toolbar .small-btn {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+}
+
+.table-modal.fullscreen .fullscreen-row-range,
+.table-modal.fullscreen .fullscreen-freeze-toolbar {
+  min-height: 26px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface-card) 72%, transparent);
+  color: var(--text-sub);
+  font-size: 12px;
+  white-space: nowrap;
+  display: inline-flex;
+  align-items: center;
+}
+
+.table-modal.fullscreen .fullscreen-freeze-toolbar {
+  max-width: 34vw;
+  overflow: hidden;
+}
+
+.table-modal.fullscreen .fullscreen-freeze-toolbar .freeze-status {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.table-modal.fullscreen .data-actions {
+  min-width: 0;
+}
+
 .table-modal.fullscreen .grid-wrap {
+  margin-top: 0;
+  border-radius: 0;
   background: color-mix(in srgb, var(--bg-panel) 96%, transparent);
   contain: paint;
 }
@@ -3430,10 +3549,36 @@ mark {
   flex: 1;
   min-height: 140px;
   max-height: none;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
 }
-.grid-wrap::-webkit-scrollbar { display: none; }
+
+.grid-wrap::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.grid-wrap::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.grid-wrap::-webkit-scrollbar-thumb {
+  min-height: 36px;
+  background: var(--scrollbar-thumb);
+  border: 3px solid transparent;
+  border-radius: 999px;
+  background-clip: padding-box;
+}
+
+.grid-wrap::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: padding-box;
+}
+
+.grid-wrap::-webkit-scrollbar-corner {
+  background: transparent;
+}
 
 .seamless-table-loading {
   position: sticky;
@@ -3444,9 +3589,26 @@ mark {
   background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
 }
 
+.seamless-spacer-row,
+.seamless-spacer-row:hover {
+  background: transparent;
+}
+
+.data-table td.seamless-table-spacer {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  pointer-events: none;
+}
+
 .data-table {
+  --table-header-bg: rgba(226, 236, 248, 0.98);
+  --table-freeze-cell-bg: color-mix(in srgb, var(--bg-panel) 99%, #eef6ff 1%);
+  --table-freeze-header-bg: color-mix(in srgb, var(--table-header-bg) 94%, #ffffff 6%);
+  --table-freeze-row-header-bg: transparent;
   width: 100%;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
   font-size: 12px;
 }
 
@@ -3483,7 +3645,7 @@ mark {
 .data-table th {
   position: sticky;
   top: 0;
-  background: rgba(226, 236, 248, 0.98);
+  background: var(--table-header-bg);
   color: #1e293b;
   font-size: 13px;
   font-weight: 700;
@@ -3599,38 +3761,67 @@ mark {
 
 .data-table th.frozen-column,
 .data-table td.frozen-column,
-.data-table .edit-row-handle-col,
 .data-table .edit-checkbox-col {
-  background: color-mix(in srgb, var(--bg-panel) 94%, var(--accent-soft));
+  background: var(--table-freeze-cell-bg);
   background-clip: padding-box;
+}
+
+.data-table .edit-row-handle-col {
+  background: transparent;
+  color: inherit;
+  background-clip: padding-box;
+}
+
+.data-table th.frozen-column,
+.data-table th.edit-row-handle-col,
+.data-table th.edit-checkbox-col {
+  background: var(--table-freeze-header-bg);
+}
+
+.data-table .edit-checkbox-col {
+  background: var(--table-freeze-row-header-bg);
 }
 
 .data-table th.frozen-column-edge,
 .data-table td.frozen-column-edge {
-  box-shadow: 3px 0 0 color-mix(in srgb, var(--accent) 24%, transparent);
+  box-shadow:
+    inset -1px 0 0 color-mix(in srgb, var(--text-main) 20%, transparent),
+    8px 0 14px -13px color-mix(in srgb, var(--text-main) 44%, transparent);
 }
 
 .data-table tr.frozen-row td {
-  background: color-mix(in srgb, var(--bg-panel) 92%, var(--accent-soft));
+  background: var(--table-freeze-cell-bg);
   background-clip: padding-box;
 }
 
 .data-table tr.frozen-row-edge td {
-  box-shadow: 0 3px 0 color-mix(in srgb, var(--accent) 20%, transparent);
+  box-shadow:
+    inset 0 -1px 0 color-mix(in srgb, var(--text-main) 18%, transparent),
+    0 8px 14px -14px color-mix(in srgb, var(--text-main) 42%, transparent);
 }
 
 .table-modal.fullscreen .data-table th.frozen-column-edge,
 .table-modal.fullscreen .data-table td.frozen-column-edge {
-  box-shadow: inset -1px 0 0 color-mix(in srgb, var(--accent) 28%, transparent);
+  box-shadow:
+    inset -1px 0 0 color-mix(in srgb, var(--text-main) 22%, transparent),
+    8px 0 16px -14px color-mix(in srgb, var(--text-main) 48%, transparent);
 }
 
 .table-modal.fullscreen .data-table tr.frozen-row-edge td {
-  box-shadow: inset 0 -1px 0 color-mix(in srgb, var(--accent) 24%, transparent);
+  box-shadow:
+    inset 0 -1px 0 color-mix(in srgb, var(--text-main) 20%, transparent),
+    0 8px 16px -14px color-mix(in srgb, var(--text-main) 46%, transparent);
 }
 
 .data-table .row-freeze-handle-col {
-  background: inherit;
+  background: transparent;
+  color: inherit;
   background-clip: padding-box;
+}
+
+.data-table th.row-freeze-handle-col,
+.data-table th.edit-checkbox-col {
+  background: var(--table-freeze-header-bg);
 }
 
 .col-resize-handle {

@@ -89,6 +89,7 @@ import hljs from "highlight.js/lib/core";
 import {
   clearCollapsedColumnState,
   computeAutoCollapsedWidth,
+  computeAutoOpenColumnWidth,
   measureColumnHeaderTextWidth,
   shouldShowColumnCollapseBadge,
   toggleColumnCollapsedState,
@@ -109,11 +110,10 @@ import {
   shouldApplyAdaptiveTablePageSize,
 } from "./tableDialogLayout.js";
 import {
-  buildSeamlessRows,
+  buildSeamlessViewport,
   getSeamlessBlockNumber,
   pruneSeamlessBlocks,
-  shouldLoadNextSeamlessBlock,
-  shouldLoadPreviousSeamlessBlock,
+  shouldUseSeamlessTableView,
 } from "./tableSeamlessScroll.js";
 import {
   resolvePendingCellValue,
@@ -1331,6 +1331,7 @@ const editChanges = reactive({
   inserts: [],
   deletes: new Set(),
 })
+const editDeletedRowData = reactive(new Map())
 // Use ref(new Set()) + whole-set replacement so template bindings like
 // :checked="editSelectedRows.has(...)" always see a fresh value. Mutating a
 // reactive Set via .clear()+.add() can cause the :checked binding to miss
@@ -1908,6 +1909,7 @@ let idleTimer = null;
 let idleStateTimer = null;
 let resetIdleHandler = null;
 const columnWidthMap = reactive({});
+const renderedColumnWidthMap = reactive({});
 const schemaColumnWidthMap = reactive({});
 const collapsedColumnMap = reactive({});
 const collapsedColumnRestoreWidthMap = reactive({});
@@ -1931,8 +1933,12 @@ const TABLE_PAGE_SIZE_MIN = 1;
 const TABLE_PAGE_SIZE_MAX = 200;
 const TABLE_ROW_HEIGHT_FALLBACK = 28;
 const TABLE_HEADER_HEIGHT_FALLBACK = 32;
+const TABLE_COLUMN_WIDTH_FALLBACK = 120;
 const TABLE_TAB_DRAG_THRESHOLD = 6;
 const SCHEMA_COLUMN_WIDTH_MIN = 80;
+const TABLE_AUTO_COLUMN_WIDTH_MIN = 80;
+const TABLE_AUTO_COLUMN_WIDTH_MAX = 180;
+const TABLE_AUTO_COLUMN_HORIZONTAL_PADDING = 28;
 const COLUMN_COLLAPSE_HORIZONTAL_PADDING = 16;
 const COLUMN_COLLAPSE_BADGE_ALLOWANCE = 20;
 const COLUMN_COLLAPSE_RESIZE_ALLOWANCE = 8;
@@ -2009,29 +2015,39 @@ const tableView = reactive({
 const seamlessTable = reactive({
   enabled: false,
   loading: false,
+  loadingBlocks: new Set(),
   blocks: new Map(),
   totalRows: 0,
   activeBlock: 1,
+  scrollTop: 0,
+  clientHeight: 0,
+  generation: 0,
 });
-const seamlessTableRows = computed(() =>
-  buildSeamlessRows({
+const seamlessViewport = computed(() =>
+  buildSeamlessViewport({
     blocks: seamlessTable.blocks,
     blockSize: SEAMLESS_TABLE_BLOCK_SIZE,
+    totalRows: Number(seamlessTable.totalRows) || tableView.totalRows,
+    rowHeight: TABLE_ROW_HEIGHT,
+    scrollTop: seamlessTable.scrollTop,
+    clientHeight: seamlessTable.clientHeight,
+    cacheRadius: SEAMLESS_TABLE_CACHE_RADIUS,
   }),
 );
 const seamlessTotalBlocks = computed(() =>
   Math.max(1, Math.ceil((Number(seamlessTable.totalRows) || tableView.totalRows || 0) / SEAMLESS_TABLE_BLOCK_SIZE)),
 );
 const shouldUseSeamlessTable = computed(() =>
-  tableOpen.value &&
-  tableDetailView.value === "full" &&
-  !editMode.value &&
-  !dataCollapsed.value &&
-  seamlessTable.enabled,
+  shouldUseSeamlessTableView({
+    tableOpen: tableOpen.value,
+    tableDetailView: tableDetailView.value,
+    editMode: editMode.value,
+    dataCollapsed: dataCollapsed.value,
+  }),
 );
 const displayedTableRows = computed(() =>
   shouldUseSeamlessTable.value
-    ? seamlessTableRows.value.map((item) => ({
+    ? seamlessViewport.value.rows.map((item) => ({
       ...item.row,
       __globalIndex: item.globalIndex,
       __seamlessBlock: item.block,
@@ -2040,7 +2056,7 @@ const displayedTableRows = computed(() =>
     : tableView.rows,
 );
 const editPageRowKeys = computed(() =>
-  tableView.rows.map((row, idx) => computeRowKey(row, idx)),
+  displayedTableRows.value.map((row, idx) => getDisplayedEditRowContext(idx, row).rowKey).filter(Boolean),
 );
 const tableLeadingStickyWidth = computed(() =>
   TABLE_ROW_HANDLE_WIDTH + (editMode.value ? TABLE_EDIT_CHECKBOX_WIDTH : 0),
@@ -2049,13 +2065,15 @@ const frozenColumnMeta = computed(() =>
   buildFrozenColumnMeta({
     columns: tableView.columns.map((col) => col.column_name),
     columnWidths: Object.fromEntries(tableView.columns.map((col) => [col.column_name, getColumnWidth(col.column_name)])),
+    measuredColumnWidths: renderedColumnWidthMap,
     frozenColumnName: frozenColumnName.value,
     leadingWidth: tableLeadingStickyWidth.value,
+    fallbackWidth: TABLE_COLUMN_WIDTH_FALLBACK,
   }),
 );
 const frozenRowMeta = computed(() =>
   buildFrozenRowMeta({
-    rowCount: tableView.rows.length,
+    rowCount: displayedTableRows.value.length,
     frozenRowIndex: frozenRowIndex.value,
     headerHeight: TABLE_HEADER_HEIGHT,
     rowHeight: TABLE_ROW_HEIGHT,
@@ -2078,9 +2096,31 @@ const freezeToolbarLabel = computed(() => {
   if (!freezePickMode.value) return frozenColumnName.value || frozenRowIndex.value !== null ? "重新选择冻结" : "选择冻结";
   return hasFreezePreview.value ? "确认冻结" : "选择冻结范围";
 });
+const tableGridColumnSpan = computed(() =>
+  tableView.columns.length + 1 + (editMode.value ? 1 : 0),
+);
+const seamlessVisibleRangeText = computed(() => {
+  const total = Number(seamlessTable.totalRows) || tableView.totalRows || 0;
+  const rows = seamlessViewport.value.rows;
+  if (rows.length > 0) {
+    const first = rows[0]?.globalIndex || 1;
+    const last = rows[rows.length - 1]?.globalIndex || first;
+    return `第 ${first}-${last} 行 / 共 ${total} 行`;
+  }
+  if (total > 0) {
+    const block = Math.max(1, seamlessViewport.value.targetBlock || 1);
+    const first = Math.min(total, (block - 1) * SEAMLESS_TABLE_BLOCK_SIZE + 1);
+    const last = Math.min(total, block * SEAMLESS_TABLE_BLOCK_SIZE);
+    return `第 ${first}-${last} 行加载中 / 共 ${total} 行`;
+  }
+  return "0 行";
+});
 const editDeletedRowKeys = computed(() =>
-  tableView.rows
-    .map((row, idx) => (isRowDeleted(row, idx) ? computeRowKey(row, idx) : ""))
+  displayedTableRows.value
+    .map((row, idx) => {
+      const context = getDisplayedEditRowContext(idx, row);
+      return context.rowKey && editChanges.deletes.has(context.rowKey) ? context.rowKey : "";
+    })
     .filter(Boolean),
 );
 const editCurrentPageSelectedCount = computed(() => {
@@ -7720,7 +7760,16 @@ async function focusTableFindMatch(match) {
   tableDetailView.value = "full";
 
   if (match.type === "data") {
-    if (tableView.page !== match.page) {
+    if (shouldUseSeamlessTable.value) {
+      const wrap = tableGridWrapRef.value;
+      const globalIndex = (Math.max(1, Number(match.page) || 1) - 1) * tableView.pageSize + (Number(match.localIndex) || 0);
+      seamlessTable.scrollTop = globalIndex * TABLE_ROW_HEIGHT;
+      if (wrap instanceof HTMLElement) {
+        seamlessTable.clientHeight = wrap.clientHeight;
+        wrap.scrollTop = seamlessTable.scrollTop;
+      }
+      await loadVisibleSeamlessBlocks();
+    } else if (tableView.page !== match.page) {
       tableView.page = match.page;
       await loadTablePage({ resetFocus: false, clearHitCache: false });
     }
@@ -7931,7 +7980,7 @@ function renderTableColumnHeader(columnName) {
 
 function renderDataCell(row, columnName, rowIndex = null) {
   const value = Number.isInteger(rowIndex)
-    ? resolvePageCellValue(rowIndex, columnName)
+    ? resolvePageCellValue(rowIndex, columnName, row)
     : String(row?.[columnName] ?? "");
   return renderDetailHighlighted(value);
 }
@@ -7946,6 +7995,10 @@ function clearOverflowingColumns() {
   Object.keys(overflowingColumnMap).forEach((key) => { delete overflowingColumnMap[key]; });
 }
 
+function clearRenderedColumnWidths() {
+  Object.keys(renderedColumnWidthMap).forEach((key) => { delete renderedColumnWidthMap[key]; });
+}
+
 function getRenderedHeaderCell(columnName) {
   const escaped = typeof CSS !== "undefined" && typeof CSS.escape === "function"
     ? CSS.escape(columnName)
@@ -7957,6 +8010,19 @@ function getRenderedColumnWidth(columnName) {
   const th = getRenderedHeaderCell(columnName);
   const rect = th?.getBoundingClientRect?.();
   return Math.round(Number(rect?.width) || 0);
+}
+
+function measureRenderedColumnWidths(columnNames = getActiveDataGridColumns()) {
+  const active = new Set(columnNames);
+  Object.keys(renderedColumnWidthMap).forEach((key) => {
+    if (!active.has(key)) delete renderedColumnWidthMap[key];
+  });
+  columnNames.forEach((columnName) => {
+    const width = getRenderedColumnWidth(columnName);
+    if (width > 0) {
+      renderedColumnWidthMap[columnName] = width;
+    }
+  });
 }
 
 function getHeaderContentWidth(columnName) {
@@ -8044,7 +8110,7 @@ function getFrozenColumnStyle(columnName) {
     ...base,
     position: "sticky",
     left: `${meta.left}px`,
-    zIndex: 4,
+    zIndex: 5,
   };
 }
 
@@ -8058,7 +8124,7 @@ function getFrozenHeaderColumnStyle(columnName) {
 function getFrozenRowStyle(rowIndex) {
   const meta = frozenRowMeta.value[rowIndex];
   if (!meta?.frozen) return null;
-  return { position: "sticky", top: `${meta.top}px`, zIndex: 3 };
+  return { position: "sticky", top: `${meta.top}px`, zIndex: 6 };
 }
 
 function getFrozenHeaderHandleStyle() {
@@ -8078,12 +8144,28 @@ function getDisplayedRowNumber(localIndex, row = null) {
   return (tableView.page - 1) * tableView.pageSize + localIndex + 1;
 }
 
+function getDisplayedRowPage(row = null) {
+  if (shouldUseSeamlessTable.value && row?.__seamlessBlock) return row.__seamlessBlock;
+  return tableView.page;
+}
+
+function getDisplayedRowLocalIndex(localIndex, row = null) {
+  if (shouldUseSeamlessTable.value && Number.isInteger(row?.__seamlessLocalIndex)) return row.__seamlessLocalIndex;
+  return localIndex;
+}
+
+function isTableFindFocusForDisplayedRow(localIndex, row = null) {
+  return tableFindFocus.type === "data" &&
+    tableFindFocus.page === getDisplayedRowPage(row) &&
+    tableFindFocus.localIndex === getDisplayedRowLocalIndex(localIndex, row);
+}
+
 function getFrozenRowHandleStyle(rowIndex) {
   return {
     ...(getFrozenRowStyle(rowIndex) || {}),
     position: "sticky",
     left: "0px",
-    zIndex: frozenRowMeta.value[rowIndex]?.frozen ? 7 : 5,
+    zIndex: frozenRowMeta.value[rowIndex]?.frozen ? 10 : 7,
   };
 }
 
@@ -8091,7 +8173,7 @@ function getFrozenRowActionStyle(rowIndex) {
   return {
     ...(getFrozenRowStyle(rowIndex) || {}),
     ...getFrozenEditActionStyle(),
-    zIndex: frozenRowMeta.value[rowIndex]?.frozen ? 6 : 5,
+    zIndex: frozenRowMeta.value[rowIndex]?.frozen ? 9 : 7,
   };
 }
 
@@ -8101,7 +8183,7 @@ function getFrozenCellStyle(columnName, rowIndex) {
   return {
     ...(getFrozenRowStyle(rowIndex) || {}),
     ...getFrozenColumnStyle(columnName),
-    zIndex: rowFrozen && columnFrozen ? 8 : rowFrozen ? 6 : columnFrozen ? 4 : undefined,
+    zIndex: rowFrozen && columnFrozen ? 10 : rowFrozen ? 8 : columnFrozen ? 5 : undefined,
   };
 }
 
@@ -8117,6 +8199,11 @@ function getFrozenInsertCellStyle(columnName) {
   return getFrozenColumnStyle(columnName);
 }
 
+function getSeamlessSpacerStyle(height) {
+  const spacerHeight = Math.max(0, Math.round(Number(height) || 0));
+  return { height: `${spacerHeight}px` };
+}
+
 function clearFreezePreview() {
   freezePreview.columnName = null;
   freezePreview.rowIndex = null;
@@ -8127,16 +8214,18 @@ function cancelFreezePickMode() {
   clearFreezePreview();
 }
 
-function applyFreezePreview() {
+async function applyFreezePreview() {
   if (!hasFreezePreview.value) return;
+  await nextTick();
+  measureRenderedColumnWidths();
   frozenColumnName.value = freezePreview.columnName;
   frozenRowIndex.value = freezePreview.rowIndex;
   cancelFreezePickMode();
 }
 
-function toggleFreezePickMode() {
+async function toggleFreezePickMode() {
   if (freezePickMode.value) {
-    applyFreezePreview();
+    await applyFreezePreview();
     return;
   }
   freezePickMode.value = true;
@@ -8206,6 +8295,25 @@ function seedColumnWidth(columnName, width) {
   }
 }
 
+function computeAutoTableColumnWidth(columnName) {
+  return computeAutoOpenColumnWidth({
+    headerTextWidth: getHeaderContentWidth(columnName),
+    horizontalPadding: TABLE_AUTO_COLUMN_HORIZONTAL_PADDING,
+    resizeHandleAllowance: COLUMN_COLLAPSE_RESIZE_ALLOWANCE,
+    minimumWidth: TABLE_AUTO_COLUMN_WIDTH_MIN,
+    maximumWidth: TABLE_AUTO_COLUMN_WIDTH_MAX,
+  });
+}
+
+function seedAutoColumnWidths(columns = tableView.columns, { force = false } = {}) {
+  (Array.isArray(columns) ? columns : []).forEach((col) => {
+    const columnName = String(col?.column_name || col || "");
+    if (!columnName) return;
+    if (!force && Number(columnWidthMap[columnName]) > 0) return;
+    columnWidthMap[columnName] = computeAutoTableColumnWidth(columnName);
+  });
+}
+
 function clearColumnWidths() {
   Object.keys(columnWidthMap).forEach((key) => { delete columnWidthMap[key]; });
 }
@@ -8219,6 +8327,7 @@ function measureOverflowingColumns() {
   if (!tableOpen.value || dataCollapsed.value) return;
   const columns = getActiveDataGridColumns();
   if (columns.length === 0) return;
+  measureRenderedColumnWidths(columns);
   columns.forEach((columnName) => {
     const headerTextWidth = getHeaderContentWidth(columnName);
     if (headerTextWidth <= 0) return;
@@ -8427,80 +8536,101 @@ async function openTable(tableName, rowIndex = null, columnName = null, hitConte
 function resetSeamlessTable() {
   seamlessTable.enabled = false;
   seamlessTable.loading = false;
+  seamlessTable.loadingBlocks = new Set();
   seamlessTable.blocks = new Map();
   seamlessTable.totalRows = 0;
   seamlessTable.activeBlock = 1;
+  seamlessTable.scrollTop = 0;
+  seamlessTable.clientHeight = 0;
+  seamlessTable.generation += 1;
 }
 
 async function loadSeamlessTableBlock(blockNumber, { replace = false } = {}) {
-  if (!tableView.tableName || seamlessTable.loading) return;
+  if (!tableView.tableName) return;
   const block = Math.max(1, Math.min(seamlessTotalBlocks.value, Number(blockNumber) || 1));
-  if (!replace && seamlessTable.blocks.has(block)) return;
-  seamlessTable.loading = true;
+  if (!replace && (seamlessTable.blocks.has(block) || seamlessTable.loadingBlocks.has(block))) return;
+  if (replace) {
+    seamlessTable.generation += 1;
+    seamlessTable.blocks = new Map();
+    seamlessTable.loadingBlocks = new Set();
+  }
+  const generation = seamlessTable.generation;
+  const loadingBlocks = seamlessTable.loadingBlocks;
+  loadingBlocks.add(block);
+  seamlessTable.loading = loadingBlocks.size > 0;
   try {
     const payload = await invoke("get_table_data", {
       tableName: tableView.tableName,
       page: block,
       pageSize: SEAMLESS_TABLE_BLOCK_SIZE,
     });
-    if (replace) {
-      seamlessTable.blocks = new Map();
-    }
-    seamlessTable.blocks.set(block, payload.rows || []);
+    if (generation !== seamlessTable.generation) return;
+    const nextBlocks = new Map(seamlessTable.blocks);
+    nextBlocks.set(block, payload.rows || []);
     seamlessTable.blocks = pruneSeamlessBlocks({
-      blocks: seamlessTable.blocks,
-      centerBlock: block,
+      blocks: nextBlocks,
+      centerBlock: seamlessViewport.value.targetBlock || block,
       radius: SEAMLESS_TABLE_CACHE_RADIUS,
     });
     seamlessTable.totalRows = Number(payload.totalRows) || 0;
     tableView.totalRows = seamlessTable.totalRows;
-    seamlessTable.activeBlock = block;
+    seamlessTable.activeBlock = seamlessViewport.value.targetBlock || block;
   } finally {
-    seamlessTable.loading = false;
+    loadingBlocks.delete(block);
+    if (seamlessTable.loadingBlocks === loadingBlocks) {
+      seamlessTable.loading = loadingBlocks.size > 0;
+    }
   }
 }
 
 async function enableSeamlessTableFromCurrentPage() {
-  if (!tableView.tableName || editMode.value || tableDetailView.value !== "full") return;
+  if (!tableView.tableName || tableDetailView.value !== "full" || dataCollapsed.value) return;
   seamlessTable.enabled = true;
   seamlessTable.totalRows = tableView.totalRows;
+  const anchorRowIndex = Math.max(0, (tableView.page - 1) * tableView.pageSize);
+  const anchorScrollTop = anchorRowIndex * TABLE_ROW_HEIGHT;
+  const wrap = tableGridWrapRef.value;
+  if (wrap instanceof HTMLElement) {
+    seamlessTable.scrollTop = anchorScrollTop;
+    seamlessTable.clientHeight = wrap.clientHeight;
+  }
   const currentBlock = getSeamlessBlockNumber({
-    rowIndex: Math.max(0, (tableView.page - 1) * tableView.pageSize),
+    rowIndex: anchorRowIndex,
     blockSize: SEAMLESS_TABLE_BLOCK_SIZE,
   });
-  await loadSeamlessTableBlock(currentBlock, { replace: true });
+  const seededCurrentBlock =
+    Number(tableView.pageSize) === SEAMLESS_TABLE_BLOCK_SIZE &&
+    Number(tableView.page) === currentBlock &&
+    Array.isArray(tableView.rows) &&
+    tableView.rows.length > 0;
+  if (seededCurrentBlock) {
+    seamlessTable.blocks = new Map([[currentBlock, cloneRows(tableView.rows)]]);
+    seamlessTable.activeBlock = currentBlock;
+  }
+  if (!seededCurrentBlock) {
+    await loadSeamlessTableBlock(currentBlock, { replace: true });
+  }
+  await loadVisibleSeamlessBlocks();
+  await nextTick();
+  if (wrap instanceof HTMLElement) {
+    wrap.scrollTop = anchorScrollTop;
+  }
 }
 
 async function onTableGridScroll(event) {
   if (!shouldUseSeamlessTable.value) return;
   const target = event.currentTarget;
   if (!(target instanceof HTMLElement)) return;
-  const loadedBlocks = [...seamlessTable.blocks.keys()].sort((a, b) => a - b);
-  if (loadedBlocks.length === 0) return;
-  const lowestLoadedBlock = loadedBlocks[0];
-  const highestLoadedBlock = loadedBlocks[loadedBlocks.length - 1];
+  seamlessTable.scrollTop = target.scrollTop;
+  seamlessTable.clientHeight = target.clientHeight;
+  seamlessTable.activeBlock = seamlessViewport.value.targetBlock;
+  await loadVisibleSeamlessBlocks();
+}
 
-  if (shouldLoadNextSeamlessBlock({
-    scrollTop: target.scrollTop,
-    clientHeight: target.clientHeight,
-    scrollHeight: target.scrollHeight,
-    thresholdPx: SEAMLESS_TABLE_LOAD_THRESHOLD_PX,
-    loading: seamlessTable.loading,
-    highestLoadedBlock,
-    totalBlocks: seamlessTotalBlocks.value,
-  })) {
-    await loadSeamlessTableBlock(highestLoadedBlock + 1);
-    return;
-  }
-
-  if (shouldLoadPreviousSeamlessBlock({
-    scrollTop: target.scrollTop,
-    thresholdPx: SEAMLESS_TABLE_LOAD_THRESHOLD_PX,
-    loading: seamlessTable.loading,
-    lowestLoadedBlock,
-  })) {
-    await loadSeamlessTableBlock(lowestLoadedBlock - 1);
-  }
+async function loadVisibleSeamlessBlocks() {
+  if (!shouldUseSeamlessTable.value) return;
+  const blocks = seamlessViewport.value.blocksToLoad;
+  await Promise.all(blocks.map((block) => loadSeamlessTableBlock(block)));
 }
 
 async function loadTablePage(options = {}) {
@@ -8518,6 +8648,11 @@ async function loadTablePage(options = {}) {
     }
     tableView.columns = payload.columns || [];
     tableView.rows = payload.rows || [];
+    clearRenderedColumnWidths();
+    if (Object.keys(columnWidthMap).length === 0) {
+      await nextTick();
+      seedAutoColumnWidths(tableView.columns);
+    }
     resetFrozenRow();
     tableView.totalRows = payload.totalRows || 0;
     tableView.tableComment = payload.tableComment || "";
@@ -8533,6 +8668,9 @@ async function loadTablePage(options = {}) {
       tableView.hitNavCursor = -1;
     }
     scheduleColumnOverflowMeasure();
+    if (!preserveSeamless && shouldUseSeamlessTable.value) {
+      enableSeamlessTableFromCurrentPage().catch(() => {});
+    }
   } catch (error) {
     summaryText.value = `读取表数据失败：${String(error)}`;
   }
@@ -8583,6 +8721,7 @@ function doCloseTableDialog() {
   snapshotActiveTableTab();
   resetTableFindState();
   clearColumnWidths();
+  clearRenderedColumnWidths();
   clearSchemaColumnWidths();
   clearTableTabDragState();
   stopTableTabsCompressionMeasure();
@@ -8634,12 +8773,12 @@ function discardCellViewerChanges() {
   forceCloseCellViewer()
 }
 
-function resolvePageCellValue(rowIndex, columnName) {
-  const row = tableView.rows[rowIndex]
-  if (!row) return ""
+function resolvePageCellValue(rowIndex, columnName, row = null) {
+  const context = getDisplayedEditRowContext(rowIndex, row)
+  if (!context.row) return ""
   return resolvePendingCellValue({
-    row,
-    rowKey: computeRowKey(row, rowIndex),
+    row: context.row,
+    rowKey: context.rowKey,
     columnName,
     updates: editChanges.updates,
   })
@@ -8675,12 +8814,14 @@ function openCellViewer({
   cellViewerOpen.value = true
 }
 
-function openPageCellViewer(rowIndex, columnName) {
+function openPageCellViewer(rowIndex, columnName, row = null) {
+  const context = getDisplayedEditRowContext(rowIndex, row)
   openCellViewer({
     rowIndex,
     columnName,
-    value: resolvePageCellValue(rowIndex, columnName),
-    globalIndex: (tableView.page - 1) * tableView.pageSize + rowIndex + 1,
+    value: resolvePageCellValue(rowIndex, columnName, context.row),
+    page: context.page,
+    globalIndex: context.globalIndex,
     sourceKind: "page",
   })
 }
@@ -8712,7 +8853,7 @@ function resetGridClickEditState() {
   gridPointerDownTargetIsInput = false
 }
 
-function onPageCellClick(event, rowIndex, columnName) {
+function onPageCellClick(event, rowIndex, columnName, row = null) {
   // Focus and range are already handled by onGridCellMouseDown.
   // Only commit typing if needed.
   if (!editMode.value) return
@@ -8724,19 +8865,19 @@ function onPageCellClick(event, rowIndex, columnName) {
     targetIsInput: gridPointerDownTargetIsInput,
   })) {
     resetGridClickEditState()
-    startCellEdit(rowIndex, columnName)
+    startCellEdit(rowIndex, columnName, row)
     return
   }
   resetGridClickEditState()
   commitGridTyping()
 }
 
-function onPageCellDoubleClick(rowIndex, columnName) {
+function onPageCellDoubleClick(rowIndex, columnName, row = null) {
   if (editMode.value) {
-    startCellEdit(rowIndex, columnName)
+    startCellEdit(rowIndex, columnName, row)
     return
   }
-  openPageCellViewer(rowIndex, columnName)
+  openPageCellViewer(rowIndex, columnName, row)
 }
 
 function onInsertCellClick(event, insertIndex, columnName) {
@@ -8862,10 +9003,29 @@ function getTablePrimaryKeys() {
 function hasTablePrimaryKey() {
   return getTablePrimaryKeys().length > 0
 }
-function computeRowKey(row, idx) {
+function computeRowKeyForPage(row, idx, page = tableView.page) {
   const pks = getTablePrimaryKeys()
-  if (pks.length > 0) return pks.map(k => String(row[k] ?? '')).join('||')
-  return `__idx_${tableView.page}_${idx}`
+  if (pks.length > 0) return pks.map(k => String(row?.[k] ?? '')).join('||')
+  return `__idx_${page}_${idx}`
+}
+function computeRowKey(row, idx) {
+  return computeRowKeyForPage(row, idx, tableView.page)
+}
+function getDisplayedEditRowContext(rowIndex, row = null) {
+  const sourceRow = row || displayedTableRows.value[rowIndex] || tableView.rows[rowIndex] || null
+  if (!sourceRow) {
+    return { row: null, page: tableView.page, localIndex: rowIndex, globalIndex: null, rowKey: "" }
+  }
+  const page = getDisplayedRowPage(sourceRow)
+  const localIndex = getDisplayedRowLocalIndex(rowIndex, sourceRow)
+  const globalIndex = sourceRow.__globalIndex ?? ((page - 1) * tableView.pageSize + localIndex + 1)
+  return {
+    row: sourceRow,
+    page,
+    localIndex,
+    globalIndex,
+    rowKey: computeRowKeyForPage(sourceRow, localIndex, page),
+  }
 }
 
 const editSaveSummary = computed(() => {
@@ -8875,15 +9035,15 @@ const editSaveSummary = computed(() => {
   return { updates, inserts, deletes, total: updates + inserts + deletes }
 })
 
-function applyRowCellChange(rowIndex, columnName, nextValue) {
-  const row = tableView.rows[rowIndex]
-  if (!row) return false
-  const key = computeRowKey(row, rowIndex)
+function applyRowCellChange(rowIndex, columnName, nextValue, row = null) {
+  const context = getDisplayedEditRowContext(rowIndex, row)
+  if (!context.row) return false
+  const key = context.rowKey
   if (editChanges.deletes.has(key)) return false
   setPendingCellChange({
     updates: editChanges.updates,
     rowKey: key,
-    row,
+    row: context.row,
     columns: tableView.columns,
     primaryKeys: getTablePrimaryKeys(),
     columnName,
@@ -8953,6 +9113,7 @@ function resetEditChanges() {
   editChanges.updates.clear()
   editChanges.inserts.splice(0)
   editChanges.deletes.clear()
+  editDeletedRowData.clear()
   editSelectedRows.value = new Set()
   editSelectionAnchorIndex.value = -1
   editBatchColumn.value = ""
@@ -8971,7 +9132,6 @@ function resetEditChanges() {
   Object.assign(editingCell, { active: false, rowIndex: -1, columnName: '', originalValue: '', currentValue: '' })
 }
 function enterEditMode() {
-  resetSeamlessTable()
   resetEditChanges()
   tableDetailView.value = "full"
   dataCollapsed.value = false
@@ -8980,7 +9140,7 @@ function enterEditMode() {
   triggerEditGlow()
   nextTick(() => {
     startTableLayoutObserver().catch(() => {})
-    scheduleAdaptiveTablePageSize()
+    enableSeamlessTableFromCurrentPage().catch(() => {})
     initGridFocusIfNeeded()
   })
 }
@@ -9027,11 +9187,11 @@ function triggerExitGlow(callback) {
 }
 
 // ── 编辑模式：单元格编辑 ──
-function startCellEdit(rowIndex, columnName) {
+function startCellEdit(rowIndex, columnName, row = null) {
   if (!editMode.value) return
-  const key = computeRowKey(tableView.rows[rowIndex], rowIndex)
-  if (editChanges.deletes.has(key)) return
-  const original = resolvePageCellValue(rowIndex, columnName)
+  const context = getDisplayedEditRowContext(rowIndex, row)
+  if (!context.row || editChanges.deletes.has(context.rowKey)) return
+  const original = resolvePageCellValue(rowIndex, columnName, context.row)
   Object.assign(editingCell, { active: true, rowIndex, columnName, originalValue: original, currentValue: original })
   editMirrorSelection.start = original.length
   editMirrorSelection.end = original.length
@@ -9079,7 +9239,7 @@ function navigatePageCellAfterConfirm(action) {
     rowIndex: editingCell.rowIndex,
     columnName: editingCell.columnName,
     columns: getEditColumnNames(),
-    rowCount: tableView.rows.length,
+    rowCount: displayedTableRows.value.length,
     action,
   })
   confirmCellEdit()
@@ -9231,9 +9391,8 @@ function setEditSelectedRowKeys(keys = []) {
   editSelectedRows.value = next
 }
 function syncEditSelectionToCurrentPage() {
-  const current = new Set(editPageRowKeys.value)
-  const deleted = new Set(editDeletedRowKeys.value)
-  const next = [...editSelectedRows.value].filter((key) => current.has(key) && !deleted.has(key))
+  const deleted = new Set(editChanges.deletes)
+  const next = [...editSelectedRows.value].filter((key) => !deleted.has(key))
   if (next.length !== editSelectedRows.value.size) {
     setEditSelectedRowKeys(next)
   }
@@ -9278,8 +9437,7 @@ function selectWholeRow(idx, event = {}) {
     gridRange.head = { rowKind: "page", rowIndex: idx, columnName: columns[columns.length - 1] }
   }
   // Also add to row selection for Ctrl+C / batch operations.
-  const row = tableView.rows[idx]
-  const rowKey = row ? computeRowKey(row, idx) : ""
+  const { rowKey } = getDisplayedEditRowContext(idx)
   if (rowKey && !editChanges.deletes.has(rowKey)) {
     if (event.shiftKey && editSelectionAnchorIndex.value >= 0) {
       const result = resolveRowSelection({
@@ -9336,8 +9494,7 @@ function onRowHandleMouseDown(idx, rowKind) {
   gridRange.anchor = { rowKind, rowIndex: idx, columnName: columns[0] }
   gridRange.head = { rowKind, rowIndex: idx, columnName: columns[columns.length - 1] }
   if (rowKind === "page") {
-    const row = tableView.rows[idx]
-    const rowKey = row ? computeRowKey(row, idx) : ""
+    const { rowKey } = getDisplayedEditRowContext(idx)
     if (rowKey && !editChanges.deletes.has(rowKey)) {
       setEditSelectedRowKeys([rowKey])
       editSelectionAnchorIndex.value = idx
@@ -9364,8 +9521,7 @@ function onRowHandleMouseEnter(idx, rowKind) {
     const endRow = Math.max(gridRange.anchor.rowIndex, idx)
     const keys = []
     for (let r = startRow; r <= endRow; r++) {
-      const row = tableView.rows[r]
-      const rowKey = row ? computeRowKey(row, r) : ""
+      const { rowKey } = getDisplayedEditRowContext(r)
       if (rowKey && !editChanges.deletes.has(rowKey)) keys.push(rowKey)
     }
     setEditSelectedRowKeys(keys)
@@ -9393,7 +9549,7 @@ function selectAllPageRows() {
 async function copySelectedRows() {
   confirmCellEdit()
   const text = buildSelectedRowsTsv({
-    rows: tableView.rows,
+    rows: displayedTableRows.value,
     columns: getEditColumnNames(),
     rowKeys: editPageRowKeys.value,
     selectedKeys: [...editSelectedRows.value],
@@ -9417,8 +9573,8 @@ function applyBatchEditToSelectedRows() {
   })
   if (changes.length === 0) return
   changes.forEach(({ rowKey, columnName, value }) => {
-    const rowIndex = tableView.rows.findIndex((row, idx) => computeRowKey(row, idx) === rowKey)
-    if (rowIndex >= 0) applyRowCellChange(rowIndex, columnName, value)
+    const rowIndex = displayedTableRows.value.findIndex((row, idx) => getDisplayedEditRowContext(idx, row).rowKey === rowKey)
+    if (rowIndex >= 0) applyRowCellChange(rowIndex, columnName, value, displayedTableRows.value[rowIndex])
   })
   showCopyToast(`已批量修改 ${changes.length} 行`, "success")
 }
@@ -9452,6 +9608,9 @@ function deleteSelectedRows() {
         changes: { ...(prev.changes || {}) },
       }
     }
+    const rowIndex = displayedTableRows.value.findIndex((row, idx) => getDisplayedEditRowContext(idx, row).rowKey === key)
+    const row = rowIndex >= 0 ? displayedTableRows.value[rowIndex] : null
+    if (row) editDeletedRowData.set(key, { ...row })
     editChanges.deletes.add(key)
     // Remove any pending updates for deleted rows
     editChanges.updates.delete(key)
@@ -9464,17 +9623,20 @@ function deleteSelectedRows() {
   editDirty.value = true
 }
 function isRowDeleted(row, idx) {
-  return editChanges.deletes.has(computeRowKey(row, idx))
+  const { rowKey } = getDisplayedEditRowContext(idx, row)
+  return !!rowKey && editChanges.deletes.has(rowKey)
 }
 function isRowSelected(row, idx) {
-  return editSelectedRows.value.has(computeRowKey(row, idx))
+  const { rowKey } = getDisplayedEditRowContext(idx, row)
+  return !!rowKey && editSelectedRows.value.has(rowKey)
 }
 function isRowModified(row, idx) {
-  return editChanges.updates.has(computeRowKey(row, idx))
+  const { rowKey } = getDisplayedEditRowContext(idx, row)
+  return !!rowKey && editChanges.updates.has(rowKey)
 }
 function isCellModified(row, idx, columnName) {
-  const key = computeRowKey(row, idx)
-  const upd = editChanges.updates.get(key)
+  const { rowKey } = getDisplayedEditRowContext(idx, row)
+  const upd = rowKey ? editChanges.updates.get(rowKey) : null
   return upd ? columnName in upd.changes : false
 }
 
@@ -9482,7 +9644,7 @@ function isCellModified(row, idx, columnName) {
 
 function getEditGridCounts() {
   return {
-    pageCount: Array.isArray(tableView.rows) ? tableView.rows.length : 0,
+    pageCount: Array.isArray(displayedTableRows.value) ? displayedTableRows.value.length : 0,
     insertCount: Array.isArray(editChanges.inserts) ? editChanges.inserts.length : 0,
   }
 }
@@ -9707,6 +9869,7 @@ function undoLastEditChange() {
       // Page-row deletes live in editChanges.deletes — just remove keys.
       for (const key of snap.pageKeys) {
         editChanges.deletes.delete(key)
+        editDeletedRowData.delete(key)
         if (snap.prevUpdates && Object.prototype.hasOwnProperty.call(snap.prevUpdates, key)) {
           const prev = snap.prevUpdates[key]
           editChanges.updates.set(key, {
@@ -9786,6 +9949,9 @@ function redoLastEditChange() {
     if (snap.kind === "delete") {
       // Re-delete the rows.
       for (const key of snap.pageKeys) {
+        const rowIndex = displayedTableRows.value.findIndex((row, idx) => getDisplayedEditRowContext(idx, row).rowKey === key)
+        const row = rowIndex >= 0 ? displayedTableRows.value[rowIndex] : null
+        if (row) editDeletedRowData.set(key, { ...row })
         editChanges.deletes.add(key)
         if (snap.prevUpdates && Object.prototype.hasOwnProperty.call(snap.prevUpdates, key)) {
           editChanges.updates.delete(key)
@@ -9985,7 +10151,8 @@ function cssEscape(value) {
 function enterCellEditFromFocus({ prefill = null } = {}) {
   if (!hasActiveGridFocus()) return false
   if (gridFocus.rowKind === "page") {
-    if (editChanges.deletes.has(computeRowKey(tableView.rows[gridFocus.rowIndex], gridFocus.rowIndex))) return false
+    const { rowKey } = getDisplayedEditRowContext(gridFocus.rowIndex)
+    if (!rowKey || editChanges.deletes.has(rowKey)) return false
     startCellEdit(gridFocus.rowIndex, gridFocus.columnName)
     if (prefill !== null) {
       editingCell.currentValue = String(prefill)
@@ -10260,9 +10427,9 @@ function deleteFocusedOrRangeRows() {
   let deleted = 0
   if (pageRowsToDelete.size > 0) {
     for (const rowIdx of pageRowsToDelete) {
-      const row = tableView.rows[rowIdx]
-      if (!row) continue
-      const key = computeRowKey(row, rowIdx)
+      const context = getDisplayedEditRowContext(rowIdx)
+      const key = context.rowKey
+      if (!context.row || !key) continue
       if (editChanges.deletes.has(key)) continue
       undoPageKeys.push(key)
       if (editChanges.updates.has(key)) {
@@ -10272,6 +10439,7 @@ function deleteFocusedOrRangeRows() {
           changes: { ...(prev.changes || {}) },
         }
       }
+      editDeletedRowData.set(key, { ...context.row })
       editChanges.deletes.add(key)
       editChanges.updates.delete(key)
       deleted += 1
@@ -10608,8 +10776,7 @@ function handleGridFocusKeydown(event) {
       const endRow = Math.max(anchorRow, gridFocus.rowIndex)
       const newKeys = [...editSelectedRows.value]
       for (let r = startRow; r <= endRow; r++) {
-        const row = tableView.rows[r]
-        const rowKey = row ? computeRowKey(row, r) : ""
+        const { rowKey } = getDisplayedEditRowContext(r)
         if (rowKey && !editChanges.deletes.has(rowKey) && !newKeys.includes(rowKey)) {
           newKeys.push(rowKey)
         }
@@ -10795,10 +10962,9 @@ async function confirmSave() {
 
   const deletes = []
   editChanges.deletes.forEach(key => {
-    // Find matching row
-    const rowIdx = tableView.rows.findIndex((r, i) => computeRowKey(r, i) === key)
-    if (rowIdx >= 0) {
-      const row = tableView.rows[rowIdx]
+    const row = editDeletedRowData.get(key)
+      || displayedTableRows.value.find((r, i) => getDisplayedEditRowContext(i, r).rowKey === key)
+    if (row) {
       const rowData = {}
       if (hasPk) {
         pks.forEach(pk => { rowData[pk] = String(row[pk] ?? '') })
@@ -10988,7 +11154,7 @@ async function toggleDatabaseMenu() {
   databaseMenuLoading.value = true;
   databaseMenuError.value = "";
   if (demoDbConnected.value) {
-    availableDatabases.value = ["demo_feature_test", "demo_shop", "demo_ops"];
+    availableDatabases.value = DEMO_TABLE_OPTIONS.map((item) => item.table_name);
     databaseMenuLoading.value = false;
     return;
   }
@@ -13376,6 +13542,18 @@ function escapeHtml(str) {
           ></h3>
           <button class="copy-icon-btn modal-copy-btn"
             @click.stop="copyText(tableView.tableName)" title="复制表名">⎘</button>
+          <button v-if="tableFullscreen" class="table-title-action-btn table-title-find-btn" @click.stop="openTableFind">
+            搜索
+          </button>
+          <span v-if="tableFullscreen" class="fullscreen-row-range">{{ seamlessVisibleRangeText }}</span>
+          <div v-if="tableFullscreen" class="fullscreen-freeze-toolbar freeze-toolbar" :class="{ 'freeze-pick-mode': freezePickMode }">
+            <button class="small-btn" :class="{ active: freezePickMode }" @click.stop="toggleFreezePickMode" :disabled="freezePickMode && !hasFreezePreview">
+              {{ freezeToolbarLabel }}
+            </button>
+            <button v-if="freezePickMode" class="small-btn" @click.stop="cancelFreezePickMode">取消</button>
+            <button v-if="!freezePickMode && (frozenColumnName || frozenRowIndex !== null)" class="small-btn danger" @click.stop="clearFreeze">取消冻结</button>
+            <span class="freeze-status">{{ freezePickMode ? freezePreviewText : freezeAppliedText }}</span>
+          </div>
           <button class="table-title-action-btn" :disabled="exportLoading" @click.stop="exportCurrentTable">
             {{ exportLoading ? '导出中...' : '导出Excel' }}
           </button>
@@ -13518,13 +13696,8 @@ function escapeHtml(str) {
             <div class="data-head" :class="{ 'actions-only': !editMode }">
               <div class="data-actions">
                 <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中(Q/E)</button>
-                <div v-if="!shouldUseSeamlessTable" class="pager">
-                  <button :disabled="tableView.page <= 1" @click="prevPage">上一页</button>
-                  <span>{{ tableView.page }} / {{ totalPages }}</span>
-                  <button :disabled="tableView.page >= totalPages" @click="nextPage">下一页</button>
-                </div>
-                <div v-else class="pager seamless-pager-status">
-                  {{ seamlessTableRows.length }} / {{ seamlessTable.totalRows || tableView.totalRows }} 行
+                <div class="pager seamless-pager-status">
+                  {{ seamlessVisibleRangeText }}
                 </div>
               </div>
               <div class="freeze-toolbar" :class="{ 'freeze-pick-mode': freezePickMode }">
@@ -13546,7 +13719,7 @@ function escapeHtml(str) {
                   <tr>
                     <th class="edit-row-handle-col row-freeze-handle-col" :style="getFrozenHeaderHandleStyle()" title="冻结行控制"></th>
                     <th v-if="editMode" class="edit-checkbox-col" :style="getFrozenHeaderActionStyle()">
-                      <input type="checkbox" title="选择当前页" @click.stop.prevent="toggleSelectAll"
+                      <input type="checkbox" title="选择当前可见范围" @click.stop.prevent="toggleSelectAll"
                         :checked="editAllPageRowsSelected" />
                     </th>
                     <th
@@ -13580,13 +13753,24 @@ function escapeHtml(str) {
                 </thead>
                 <tbody>
                   <tr
+                    v-if="shouldUseSeamlessTable && seamlessViewport.topSpacerHeight > 0"
+                    class="seamless-spacer-row"
+                    aria-hidden="true"
+                  >
+                    <td
+                      class="seamless-table-spacer"
+                      :colspan="tableGridColumnSpan"
+                      :style="getSeamlessSpacerStyle(seamlessViewport.topSpacerHeight)"
+                    ></td>
+                  </tr>
+                  <tr
                     v-for="(row, idx) in displayedTableRows"
                     :key="shouldUseSeamlessTable ? row.__globalIndex : idx"
                     :data-hit-row-index="idx"
                     :class="{
                       hit: isDataRowHit(row, idx),
                       'hit-active': tableView.focusedHitLocalIndex === idx,
-                      'find-active-row': tableFindFocus.type === 'data' && tableFindFocus.page === tableView.page && tableFindFocus.localIndex === idx,
+                      'find-active-row': isTableFindFocusForDisplayedRow(idx, row),
                       'edit-deleted': editMode && isRowDeleted(row, idx),
                       'edit-modified': editMode && isRowModified(row, idx),
                       'edit-selected': editMode && isRowSelected(row, idx),
@@ -13610,8 +13794,8 @@ function escapeHtml(str) {
                       <span class="row-number">{{ getDisplayedRowNumber(idx, row) }}</span>
                     </td>
                     <td v-if="editMode" class="edit-checkbox-col" :style="getFrozenRowActionStyle(idx)">
-                      <input type="checkbox"
-                        :checked="editSelectedRows.has(computeRowKey(row, idx))"
+                                      <input type="checkbox"
+                        :checked="isRowSelected(row, idx)"
                         :disabled="isRowDeleted(row, idx)"
                         @click.stop="toggleRowSelection(idx, $event)" />
                     </td>
@@ -13619,16 +13803,15 @@ function escapeHtml(str) {
                       v-for="col in tableView.columns"
                       :key="col.column_name"
                       :data-column-name="col.column_name"
-                      :data-find-page="tableView.page"
-                      :data-find-row="idx"
+                      :data-find-page="getDisplayedRowPage(row)"
+                      :data-find-row="getDisplayedRowLocalIndex(idx, row)"
                       :data-find-col="col.column_name"
                       :style="getFrozenCellStyle(col.column_name, idx)"
                       :class="{
                         'hit-cell': isDataCellHit(row, col.column_name),
                         'find-active-cell':
                           tableFindFocus.type === 'data' &&
-                          tableFindFocus.page === tableView.page &&
-                          tableFindFocus.localIndex === idx &&
+                          isTableFindFocusForDisplayedRow(idx, row) &&
                           tableFindFocus.columnName === col.column_name,
                         'edit-cell-modified': editMode && isCellModified(row, idx, col.column_name),
                         'edit-cell-active': editingCell.active && editingCell.rowIndex === idx && editingCell.columnName === col.column_name,
@@ -13641,8 +13824,8 @@ function escapeHtml(str) {
                         'frozen-row-edge': frozenRowMeta[idx]?.edge,
                         'freeze-preview-row': isFreezePreviewRow(idx),
                       }"
-                      @click="freezePickMode ? selectFreezeCell(idx, col.column_name) : onPageCellClick($event, idx, col.column_name)"
-                      @dblclick="!freezePickMode && onPageCellDoubleClick(idx, col.column_name)"
+                      @click="freezePickMode ? selectFreezeCell(idx, col.column_name) : onPageCellClick($event, idx, col.column_name, row)"
+                      @dblclick="!freezePickMode && onPageCellDoubleClick(idx, col.column_name, row)"
                       @mousedown="!freezePickMode && onGridCellMouseDown($event, 'page', idx, col.column_name)"
                       @mouseenter="!freezePickMode && onGridCellMouseEnter($event, 'page', idx, col.column_name)"
                     >
@@ -13696,6 +13879,17 @@ function escapeHtml(str) {
                       />
                       <div v-else class="td-clip">{{ newRow[col.column_name] || '' }}</div>
                     </td>
+                  </tr>
+                  <tr
+                    v-if="shouldUseSeamlessTable && seamlessViewport.bottomSpacerHeight > 0"
+                    class="seamless-spacer-row"
+                    aria-hidden="true"
+                  >
+                    <td
+                      class="seamless-table-spacer"
+                      :colspan="tableGridColumnSpan"
+                      :style="getSeamlessSpacerStyle(seamlessViewport.bottomSpacerHeight)"
+                    ></td>
                   </tr>
                   <!-- 快速追加新行的幽灵行（仅在编辑模式出现） -->
                   <tr v-if="editMode" class="edit-ghost-row" @click="addRowAndFocus">

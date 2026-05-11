@@ -25,3 +25,11 @@
 - 前端：`checkForAppUpdate` 检查 → `downloadAndInstall` 下载 → `relaunch()` 重启
 - 更新失败时提供「手动下载」按钮跳转 Gitee Release 页
 - 发布指南：`update/发布指南.md`，示例文件：`update/latest.json`
+
+## 离线演示数据（Demo 模式）
+- 连接设置中 host 填 `demo` 即进入离线演示模式
+- 5 张演示表，每张 500 行、11-12 个字段
+- 表名：`demo_feature_test`、`demo_customer_profiles`、`demo_orders`、`demo_support_tickets`、`demo_audit_logs`
+- 数据通过 Rust 后端 `src-tauri/src/lib.rs` 中的确定性生成函数产生（基于索引哈希，无需 rand 依赖）
+- 演示数据支持：搜索、分页、单击编辑、插入、删除（仅当前会话内存保存）
+- 前端 `DEMO_TABLE_OPTIONS` 与后端 `mock_schema_cache` 需保持同步

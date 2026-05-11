@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   clearCollapsedColumnState,
   computeAutoCollapsedWidth,
+  computeAutoOpenColumnWidth,
   measureColumnHeaderTextWidth,
   shouldShowColumnCollapseBadge,
   toggleColumnCollapsedState,
@@ -28,6 +29,52 @@ test("measureColumnHeaderTextWidth uses the actual text measurement instead of a
   });
 
   assert.equal(width, 58);
+});
+
+test("computeAutoOpenColumnWidth adds comfortable padding around header text", () => {
+  const width = computeAutoOpenColumnWidth({
+    headerTextWidth: 58,
+    horizontalPadding: 28,
+    resizeHandleAllowance: 8,
+    minimumWidth: 80,
+    maximumWidth: 180,
+  });
+
+  assert.equal(width, 94);
+});
+
+test("computeAutoOpenColumnWidth keeps short headers readable with an 80px minimum", () => {
+  const width = computeAutoOpenColumnWidth({
+    headerTextWidth: 12,
+    horizontalPadding: 28,
+    resizeHandleAllowance: 8,
+    minimumWidth: 80,
+    maximumWidth: 180,
+  });
+
+  assert.equal(width, 80);
+});
+
+test("computeAutoOpenColumnWidth caps very long headers so more columns stay visible", () => {
+  const width = computeAutoOpenColumnWidth({
+    headerTextWidth: 260,
+    horizontalPadding: 28,
+    resizeHandleAllowance: 8,
+    minimumWidth: 80,
+    maximumWidth: 180,
+  });
+
+  assert.equal(width, 180);
+});
+
+test("App.vue seeds table column widths from header names", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
+
+  assert.match(appVue, /computeAutoOpenColumnWidth/);
+  assert.match(appVue, /function seedAutoColumnWidths/);
+  assert.match(appVue, /TABLE_AUTO_COLUMN_HORIZONTAL_PADDING/);
+  assert.match(appVue, /seedAutoColumnWidths\(tableView\.columns\)/);
 });
 
 test("toggleColumnCollapsedState stores the previous width the first time a column is collapsed", () => {

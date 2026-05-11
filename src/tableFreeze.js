@@ -2,11 +2,22 @@ export function normalizeFreezeBoundary(currentBoundary, nextBoundary) {
   return currentBoundary === nextBoundary ? null : nextBoundary;
 }
 
+function resolveColumnWidth(columnName, columnWidths = {}, measuredColumnWidths = {}, fallbackWidth = 120) {
+  const explicit = Number(columnWidths?.[columnName]);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const measured = Number(measuredColumnWidths?.[columnName]);
+  if (Number.isFinite(measured) && measured > 0) return measured;
+  const fallback = Number(fallbackWidth);
+  return Number.isFinite(fallback) && fallback > 0 ? fallback : 120;
+}
+
 export function buildFrozenColumnMeta({
   columns,
   columnWidths,
+  measuredColumnWidths = {},
   frozenColumnName,
   leadingWidth = 0,
+  fallbackWidth = 120,
 }) {
   const frozenIndex = columns.indexOf(frozenColumnName);
   let left = leadingWidth;
@@ -18,7 +29,7 @@ export function buildFrozenColumnMeta({
         left,
         edge: index === frozenIndex,
       };
-      left += Number(columnWidths[columnName]) || 0;
+      left += resolveColumnWidth(columnName, columnWidths, measuredColumnWidths, fallbackWidth);
       return meta;
     }
 

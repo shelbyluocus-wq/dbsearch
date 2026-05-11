@@ -5816,69 +5816,18 @@ fn demo_feature_test_table_meta() -> TableMeta {
         table_name: DEMO_FEATURE_TEST_TABLE.into(),
         table_comment: "离线功能测试演示表：覆盖搜索、备注、分页、单击编辑、插入、删除和 JSON 长文本查看".into(),
         columns: vec![
-            ColumnMeta {
-                column_name: "id".into(),
-                column_type: "int(11)".into(),
-                column_comment: "主键ID，用于稳定保存和删除演示行".into(),
-                is_primary_key: true,
-                is_nullable: false,
-            },
-            ColumnMeta {
-                column_name: "feature_name".into(),
-                column_type: "varchar(80)".into(),
-                column_comment: "功能名称，可直接单击编辑".into(),
-                is_primary_key: false,
-                is_nullable: false,
-            },
-            ColumnMeta {
-                column_name: "owner".into(),
-                column_type: "varchar(40)".into(),
-                column_comment: "负责人或测试角色".into(),
-                is_primary_key: false,
-                is_nullable: false,
-            },
-            ColumnMeta {
-                column_name: "priority".into(),
-                column_type: "int(11)".into(),
-                column_comment: "优先级数字，验证数字列编辑".into(),
-                is_primary_key: false,
-                is_nullable: false,
-            },
-            ColumnMeta {
-                column_name: "enabled".into(),
-                column_type: "tinyint(1)".into(),
-                column_comment: "是否启用，1 表示启用，0 表示停用".into(),
-                is_primary_key: false,
-                is_nullable: false,
-            },
-            ColumnMeta {
-                column_name: "due_date".into(),
-                column_type: "date".into(),
-                column_comment: "计划验证日期，覆盖日期格式展示".into(),
-                is_primary_key: false,
-                is_nullable: false,
-            },
-            ColumnMeta {
-                column_name: "updated_at".into(),
-                column_type: "datetime".into(),
-                column_comment: "最后更新时间，覆盖时间列展示".into(),
-                is_primary_key: false,
-                is_nullable: false,
-            },
-            ColumnMeta {
-                column_name: "remark".into(),
-                column_type: "text".into(),
-                column_comment: "详细备注，包含较长文本用于测试列宽和搜索".into(),
-                is_primary_key: false,
-                is_nullable: false,
-            },
-            ColumnMeta {
-                column_name: "payload_json".into(),
-                column_type: "json".into(),
-                column_comment: "JSON 配置片段，用于测试大文本查看器和高亮".into(),
-                is_primary_key: false,
-                is_nullable: false,
-            },
+            ColumnMeta { column_name: "id".into(), column_type: "int(11)".into(), column_comment: "主键ID，用于稳定保存和删除演示行".into(), is_primary_key: true, is_nullable: false },
+            ColumnMeta { column_name: "feature_name".into(), column_type: "varchar(80)".into(), column_comment: "功能名称，可直接单击编辑".into(), is_primary_key: false, is_nullable: false },
+            ColumnMeta { column_name: "owner".into(), column_type: "varchar(40)".into(), column_comment: "负责人或测试角色".into(), is_primary_key: false, is_nullable: false },
+            ColumnMeta { column_name: "priority".into(), column_type: "int(11)".into(), column_comment: "优先级数字，验证数字列编辑".into(), is_primary_key: false, is_nullable: false },
+            ColumnMeta { column_name: "enabled".into(), column_type: "tinyint(1)".into(), column_comment: "是否启用，1 表示启用，0 表示停用".into(), is_primary_key: false, is_nullable: false },
+            ColumnMeta { column_name: "due_date".into(), column_type: "date".into(), column_comment: "计划验证日期，覆盖日期格式展示".into(), is_primary_key: false, is_nullable: false },
+            ColumnMeta { column_name: "updated_at".into(), column_type: "datetime".into(), column_comment: "最后更新时间，覆盖时间列展示".into(), is_primary_key: false, is_nullable: false },
+            ColumnMeta { column_name: "remark".into(), column_type: "text".into(), column_comment: "详细备注，包含较长文本用于测试列宽和搜索".into(), is_primary_key: false, is_nullable: false },
+            ColumnMeta { column_name: "payload_json".into(), column_type: "json".into(), column_comment: "JSON 配置片段，用于测试大文本查看器和高亮".into(), is_primary_key: false, is_nullable: false },
+            ColumnMeta { column_name: "category".into(), column_type: "varchar(40)".into(), column_comment: "功能分类，如 UI、性能、安全".into(), is_primary_key: false, is_nullable: false },
+            ColumnMeta { column_name: "progress".into(), column_type: "int(11)".into(), column_comment: "完成进度百分比 0-100".into(), is_primary_key: false, is_nullable: false },
+            ColumnMeta { column_name: "version".into(), column_type: "varchar(20)".into(), column_comment: "目标版本号".into(), is_primary_key: false, is_nullable: false },
         ],
     }
 }
@@ -5895,6 +5844,11 @@ fn demo_customer_profiles_table_meta() -> TableMeta {
             demo_column("balance", "decimal(10,2)", "账户余额", false, false),
             demo_column("tags", "varchar(200)", "客户标签，逗号分隔", false, true),
             demo_column("created_at", "datetime", "开户注册时间", false, false),
+            demo_column("phone", "varchar(20)", "联系电话", false, true),
+            demo_column("email", "varchar(80)", "电子邮箱", false, true),
+            demo_column("gender", "varchar(10)", "性别", false, true),
+            demo_column("birth_date", "date", "出生日期", false, true),
+            demo_column("status", "varchar(20)", "账户状态：active、inactive、suspended", false, false),
         ],
     }
 }
@@ -5911,6 +5865,11 @@ fn demo_orders_table_meta() -> TableMeta {
             demo_column("amount", "decimal(10,2)", "订单金额", false, false),
             demo_column("channel", "varchar(30)", "下单渠道", false, false),
             demo_column("shipping_city", "varchar(40)", "收货城市", false, true),
+            demo_column("product_name", "varchar(120)", "商品名称", false, false),
+            demo_column("quantity", "int(11)", "购买数量", false, false),
+            demo_column("discount", "decimal(5,2)", "折扣金额", false, true),
+            demo_column("paid_at", "datetime", "支付时间", false, true),
+            demo_column("notes", "text", "订单备注", false, true),
         ],
     }
 }
@@ -5927,6 +5886,11 @@ fn demo_support_tickets_table_meta() -> TableMeta {
             demo_column("assignee", "varchar(40)", "处理人", false, true),
             demo_column("summary", "text", "工单摘要", false, false),
             demo_column("resolved", "tinyint(1)", "是否已解决", false, false),
+            demo_column("created_at", "datetime", "工单创建时间", false, false),
+            demo_column("updated_at", "datetime", "最后更新时间", false, true),
+            demo_column("source", "varchar(30)", "来源渠道：web、email、phone、chat", false, false),
+            demo_column("sla", "varchar(20)", "SLA 等级", false, false),
+            demo_column("attachment_count", "int(11)", "附件数量", false, false),
         ],
     }
 }
@@ -5942,117 +5906,308 @@ fn demo_audit_logs_table_meta() -> TableMeta {
             demo_column("ip_address", "varchar(45)", "来源 IP", false, true),
             demo_column("detail_json", "json", "操作明细 JSON", false, true),
             demo_column("created_at", "datetime", "发生时间", false, false),
+            demo_column("module", "varchar(40)", "功能模块", false, false),
+            demo_column("level", "varchar(20)", "日志级别：info、warn、error", false, false),
+            demo_column("user_agent", "varchar(200)", "用户代理字符串", false, true),
+            demo_column("duration_ms", "int(11)", "操作耗时毫秒", false, true),
+            demo_column("status_code", "int(11)", "HTTP 状态码或业务状态码", false, true),
         ],
     }
 }
 
+// ── 大规模演示数据生成（确定性，无需 rand）──
+
+fn pick_by_index<'a>(idx: usize, pool: &[&'a str]) -> &'a str {
+    pool[idx % pool.len()]
+}
+
+fn hash_u64(seed: u64) -> u64 {
+    let mut x = seed.wrapping_mul(0x9e3779b97f4a7c15);
+    x ^= x >> 30;
+    x = x.wrapping_mul(0xbf58476d1ce4e5b9);
+    x ^= x >> 27;
+    x = x.wrapping_mul(0x94d049bb133111eb);
+    x ^= x >> 31;
+    x
+}
+
+fn generate_feature_test_rows(count: usize) -> Vec<HashMap<String, String>> {
+    let owners = ["产品测试", "前端联调", "搜索验证", "回归测试", "安全验证", "Schema 检查", "性能组", "DevOps", "数据组", "设计组"];
+    let categories = ["UI", "性能", "安全", "数据", "集成", "工具", "文档", "测试", "运维", "架构"];
+    let versions = ["v1.0", "v1.1", "v1.2", "v2.0", "v2.1", "v3.0", "v3.1", "v4.0"];
+    let remarks = [
+        "用于验证进入编辑模式后单击单元格立即聚焦，Enter 保存并移动到下一行。",
+        "双击在非编辑模式打开详情；编辑模式使用 Ctrl+Enter 打开完整内容。",
+        "搜索关键词 JSON、备注、负责人或日期，都应该能在离线演示表中命中。",
+        "用于测试添加行后保存到内存，刷新当前页仍能看到新增内容。",
+        "用于验证勾选行、删除选中、保存后从当前会话移除。",
+        "打开 Schema 区域时，每个字段都应有备注，不再出现空内容测试尴尬。",
+        "大规模数据分页测试，验证翻页、排序、搜索在几百行数据下的表现。",
+        "高并发场景模拟，测试系统在多用户同时操作时的稳定性与一致性。",
+        "边界条件验证，测试空值、超长文本、特殊字符在表格中的渲染效果。",
+        "国际化测试，验证中英文混合内容、日期格式、货币符号的正确显示。",
+    ];
+    let payload_tpls = [
+        r#"{"module":"table-edit","shortcut":"Ctrl+Enter","status":"ready"}"#,
+        r#"{"viewer":"cell","language":"json","note":"支持长文本预览"}"#,
+        r#"{"search":["JSON","备注","日期"],"scope":"offline-demo"}"#,
+        r#"{"operation":"insert","persistence":"memory-only","restart":"reset"}"#,
+        r#"{"operation":"delete","guard":"primary-key","demo":true}"#,
+        r#"{"schema":"complete","columns":12,"comments":"all-present"}"#,
+        r#"{"module":"pagination","rows":500,"pageSize":50,"test":"large-dataset"}"#,
+        r#"{"module":"concurrency","users":100,"ops":"read-write-mix"}"#,
+        r#"{"module":"boundary","nulls":true,"maxLength":65535,"specialChars":"\\t\\n"}"#,
+        r#"{"module":"i18n","locales":["zh-CN","en-US"],"currency":"CNY"}"#,
+    ];
+    (1..=count)
+        .map(|i| {
+            let h = hash_u64(i as u64);
+            let mut m = HashMap::new();
+            m.insert("id".into(), i.to_string());
+            m.insert("feature_name".into(), format!("功能项-{}", i));
+            m.insert("owner".into(), pick_by_index(i, &owners).to_string());
+            m.insert("priority".into(), ((h % 5 + 1) as i32).to_string());
+            m.insert("enabled".into(), if h % 7 == 0 { "0".into() } else { "1".into() });
+            let day = (h % 28 + 1) as i32;
+            let month = (h % 12 + 1) as i32;
+            m.insert("due_date".into(), format!("2026-{:02}-{:02}", month, day));
+            let hh = (h % 24) as i32;
+            let mm = (h % 60) as i32;
+            m.insert("updated_at".into(), format!("2026-{:02}-{:02} {:02}:{:02}:00", month, day, hh, mm));
+            m.insert("remark".into(), pick_by_index(i, &remarks).to_string());
+            m.insert("payload_json".into(), payload_tpls[i % payload_tpls.len()].to_string());
+            m.insert("category".into(), pick_by_index(i, &categories).to_string());
+            m.insert("progress".into(), ((h % 101) as i32).to_string());
+            m.insert("version".into(), pick_by_index(i, &versions).to_string());
+            m
+        })
+        .collect()
+}
+
+fn generate_customer_rows(count: usize) -> Vec<HashMap<String, String>> {
+    let surnames = ["林", "周", "王", "李", "张", "刘", "陈", "杨", "赵", "黄", "吴", "徐", "孙", "马", "朱"];
+    let names = ["晚晴", "明", "一诺", "思远", "子涵", "雨桐", "浩然", "欣怡", "梓轩", "梦琪", "博文", "雅婷", "俊杰", "晓萱", "睿渊"];
+    let cities = ["上海", "杭州", "深圳", "北京", "广州", "成都", "武汉", "西安", "南京", "苏州", "重庆", "天津", "郑州", "长沙", "青岛"];
+    let tiers = ["gold", "silver", "trial", "platinum", "bronze"];
+    let tags_pool = ["高价值", "企业微信", "复购", "退款关注", "移动端", "英文资料", "潜在客户", "VIP", "发票", "合同", "新品试用", "活动敏感", "老客召回", "沉默用户", "高活跃"];
+    let genders = ["男", "女", "未知"];
+    let statuses = ["active", "inactive", "suspended"];
+    let domains = ["qq.com", "163.com", "gmail.com", "outlook.com", "company.com", "foxmail.com"];
+    (1..=count)
+        .map(|i| {
+            let h = hash_u64(i as u64);
+            let surname = pick_by_index(i, &surnames);
+            let name = pick_by_index(i * 3 + 7, &names);
+            let city = pick_by_index(i, &cities);
+            let tier = pick_by_index(i, &tiers);
+            let balance = format!("{:.2}", (h % 100000) as f64 / 100.0);
+            let tag1 = pick_by_index(i, &tags_pool);
+            let tag2 = pick_by_index(i + 3, &tags_pool);
+            let tag3 = pick_by_index(i + 7, &tags_pool);
+            let tags = if h % 3 == 0 { format!("{},{},{}", tag1, tag2, tag3) } else if h % 3 == 1 { format!("{},{}", tag1, tag2) } else { tag1.to_string() };
+            let day = (h % 28 + 1) as i32;
+            let month = (h % 12 + 1) as i32;
+            let hh = (h % 24) as i32;
+            let mm = (h % 60) as i32;
+            let created_at = format!("2026-{:02}-{:02} {:02}:{:02}:00", month, day, hh, mm);
+            let phone = format!("1{:02}{:08}", (h % 90 + 10) as i32, (h % 100000000) as i32);
+            let email = format!("customer{}@{}", i, pick_by_index(i, &domains));
+            let gender = pick_by_index(i, &genders);
+            let birth_year = 1970 + (h % 40) as i32;
+            let birth_month = (h % 12 + 1) as i32;
+            let birth_day = (h % 28 + 1) as i32;
+            let birth_date = format!("{}-{:02}-{:02}", birth_year, birth_month, birth_day);
+            let status = pick_by_index(i, &statuses);
+            let mut m = HashMap::new();
+            m.insert("customer_id".into(), (1000 + i).to_string());
+            m.insert("customer_name".into(), format!("{}{}", surname, name));
+            m.insert("city".into(), city.to_string());
+            m.insert("tier".into(), tier.to_string());
+            m.insert("balance".into(), balance);
+            m.insert("tags".into(), tags);
+            m.insert("created_at".into(), created_at);
+            m.insert("phone".into(), phone);
+            m.insert("email".into(), email);
+            m.insert("gender".into(), gender.to_string());
+            m.insert("birth_date".into(), birth_date);
+            m.insert("status".into(), status.to_string());
+            m
+        })
+        .collect()
+}
+
+fn generate_order_rows(count: usize) -> Vec<HashMap<String, String>> {
+    let channels = ["web", "miniapp", "sales", "app", "partner", "offline", "livestream", "sms"];
+    let cities = ["上海", "杭州", "深圳", "北京", "广州", "成都", "武汉", "西安", "南京", "苏州"];
+    let products = ["无线降噪耳机", "智能手表 Pro", "便携蓝牙音箱", "机械键盘 RGB", "4K 显示器", "人体工学椅", "Type-C 扩展坞", "氮化镓充电器", "智能台灯", "空气净化器"];
+    let statuses = ["paid", "pending", "refunded", "shipped", "cancelled", "completed"];
+    (1..=count)
+        .map(|i| {
+            let h = hash_u64(i as u64);
+            let customer_id = 1001 + (h % 500) as i32;
+            let status = pick_by_index(i, &statuses);
+            let amount = format!("{:.2}", (h % 50000 + 1000) as f64 / 100.0);
+            let channel = pick_by_index(i, &channels);
+            let city = pick_by_index(i, &cities);
+            let product = pick_by_index(i, &products);
+            let quantity = ((h % 5 + 1) as i32).to_string();
+            let discount = if h % 3 == 0 { format!("{:.2}", (h % 2000) as f64 / 100.0) } else { "0.00".into() };
+            let day = (h % 28 + 1) as i32;
+            let month = (h % 12 + 1) as i32;
+            let hh = (h % 24) as i32;
+            let mm = (h % 60) as i32;
+            let paid_at = if status == "paid" || status == "completed" || status == "shipped" {
+                format!("2026-{:02}-{:02} {:02}:{:02}:00", month, day, hh, mm)
+            } else {
+                "".into()
+            };
+            let notes = if h % 5 == 0 { format!("客户要求发票抬头为公司名称，订单编号：ORD-{:06}", i) } else { "".into() };
+            let mut m = HashMap::new();
+            m.insert("order_id".into(), (90000 + i).to_string());
+            m.insert("customer_id".into(), customer_id.to_string());
+            m.insert("order_no".into(), format!("ORD-2026{:05}", i));
+            m.insert("status".into(), status.to_string());
+            m.insert("amount".into(), amount);
+            m.insert("channel".into(), channel.to_string());
+            m.insert("shipping_city".into(), city.to_string());
+            m.insert("product_name".into(), product.to_string());
+            m.insert("quantity".into(), quantity);
+            m.insert("discount".into(), discount);
+            m.insert("paid_at".into(), paid_at);
+            m.insert("notes".into(), notes);
+            m
+        })
+        .collect()
+}
+
+fn generate_ticket_rows(count: usize) -> Vec<HashMap<String, String>> {
+    let categories = ["退款", "bug", "发票", "咨询", "投诉", "建议", "账户", "支付", "物流", "其他"];
+    let priorities = ["high", "medium", "low", "urgent", "critical"];
+    let assignees = ["客服-小夏", "前端-阿杰", "财务-宁宁", "运维-老周", "产品-小林", "测试-阿伟", "后端-大刘", "数据-小赵", "设计-阿美", "运营-小孙"];
+    let sources = ["web", "email", "phone", "chat", "app", "wechat"];
+    let slas = ["P0-1h", "P1-4h", "P2-24h", "P3-72h", "P4-1w"];
+    let summaries = [
+        "客户反馈订单重复扣款，需要退款核对。",
+        "客户在搜索表名时发现高亮位置偶发不准确。",
+        "VIP 客户申请补开发票和合同抬头变更。",
+        "新用户咨询会员权益及升级路径。",
+        "客户投诉物流延迟超过承诺时效。",
+        "用户建议增加批量导出功能支持 CSV 格式。",
+        "客户反映无法收到短信验证码。",
+        "支付页面偶发卡死，需排查前端性能。",
+        "客户要求修改已提交订单的收货地址。",
+        "用户反馈 App 闪退问题，提供崩溃日志。",
+    ];
+    (1..=count)
+        .map(|i| {
+            let h = hash_u64(i as u64);
+            let customer_id = 1001 + (h % 500) as i32;
+            let category = pick_by_index(i, &categories);
+            let priority = pick_by_index(i, &priorities);
+            let assignee = pick_by_index(i, &assignees);
+            let summary = pick_by_index(i, &summaries);
+            let resolved = if h % 3 == 0 { "1".into() } else { "0".into() };
+            let day = (h % 28 + 1) as i32;
+            let month = (h % 12 + 1) as i32;
+            let hh = (h % 24) as i32;
+            let mm = (h % 60) as i32;
+            let created_at = format!("2026-{:02}-{:02} {:02}:{:02}:00", month, day, hh, mm);
+            let updated_day = (day + (h % 5) as i32 - 1) % 28 + 1;
+            let updated_at = format!("2026-{:02}-{:02} {:02}:{:02}:00", month, updated_day, hh, mm);
+            let source = pick_by_index(i, &sources);
+            let sla = pick_by_index(i, &slas);
+            let attachment_count = ((h % 5) as i32).to_string();
+            let mut m = HashMap::new();
+            m.insert("ticket_id".into(), (7000 + i).to_string());
+            m.insert("customer_id".into(), customer_id.to_string());
+            m.insert("category".into(), category.to_string());
+            m.insert("priority".into(), priority.to_string());
+            m.insert("assignee".into(), assignee.to_string());
+            m.insert("summary".into(), summary.to_string());
+            m.insert("resolved".into(), resolved);
+            m.insert("created_at".into(), created_at);
+            m.insert("updated_at".into(), updated_at);
+            m.insert("source".into(), source.to_string());
+            m.insert("sla".into(), sla.to_string());
+            m.insert("attachment_count".into(), attachment_count);
+            m
+        })
+        .collect()
+}
+
+fn generate_audit_rows(count: usize) -> Vec<HashMap<String, String>> {
+    let actors = ["admin", "operator.li", "system", "user.001", "user.042", "api.gateway", "batch.job", "audit.bot", "dev.team", "ops.oncall"];
+    let actions = ["login", "export", "sync_failed", "create", "update", "delete", "query", "download", "upload", "approve", "reject", "logout"];
+    let modules = ["auth", "order", "user", "product", "report", "system", "api", "config", "notification", "billing"];
+    let levels = ["info", "warn", "error", "debug"];
+    let user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",
+        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0)",
+        "Mozilla/5.0 (Linux; Android 14)",
+        "PostmanRuntime/7.36.0",
+        "curl/8.4.0",
+        "python-requests/2.31.0",
+        "Go-http-client/1.1",
+    ];
+    (1..=count)
+        .map(|i| {
+            let h = hash_u64(i as u64);
+            let actor = pick_by_index(i, &actors);
+            let action = pick_by_index(i, &actions);
+            let ip = format!("10.0.{}. {}", (h % 256) as i32, (h % 256) as i32);
+            let detail = format!(r#"{{"id":{},"module":"demo_{}","rows":{},"format":"xlsx"}}"#, i, pick_by_index(i, &modules), (h % 500 + 1) as i32);
+            let day = (h % 28 + 1) as i32;
+            let month = (h % 12 + 1) as i32;
+            let hh = (h % 24) as i32;
+            let mm = (h % 60) as i32;
+            let ss = (h % 60) as i32;
+            let created_at = format!("2026-{:02}-{:02} {:02}:{:02}:{:02}", month, day, hh, mm, ss);
+            let module = pick_by_index(i, &modules);
+            let level = pick_by_index(i, &levels);
+            let user_agent = pick_by_index(i, &user_agents);
+            let duration_ms = ((h % 5000 + 10) as i32).to_string();
+            let status_code = match action {
+                "login" => "200",
+                "export" => "200",
+                "sync_failed" => "500",
+                "create" => "201",
+                "update" => "200",
+                "delete" => "204",
+                "query" => "200",
+                "download" => "200",
+                "upload" => "201",
+                "approve" => "200",
+                "reject" => "403",
+                "logout" => "200",
+                _ => "200",
+            };
+            let mut m = HashMap::new();
+            m.insert("log_id".into(), (50000 + i).to_string());
+            m.insert("actor".into(), actor.to_string());
+            m.insert("action".into(), action.to_string());
+            m.insert("ip_address".into(), ip);
+            m.insert("detail_json".into(), detail);
+            m.insert("created_at".into(), created_at);
+            m.insert("module".into(), module.to_string());
+            m.insert("level".into(), level.to_string());
+            m.insert("user_agent".into(), user_agent.to_string());
+            m.insert("duration_ms".into(), duration_ms);
+            m.insert("status_code".into(), status_code.into());
+            m
+        })
+        .collect()
+}
+
+const DEMO_ROW_COUNT: usize = 500;
+
 fn default_demo_rows() -> HashMap<String, Vec<HashMap<String, String>>> {
     let mut out = HashMap::new();
-    out.insert(
-        DEMO_FEATURE_TEST_TABLE.into(),
-        vec![
-            map_row(&[
-                ("id", "1"),
-                ("feature_name", "单击编辑体验"),
-                ("owner", "产品测试"),
-                ("priority", "1"),
-                ("enabled", "1"),
-                ("due_date", "2026-05-01"),
-                ("updated_at", "2026-04-29 09:15:00"),
-                ("remark", "用于验证进入编辑模式后单击单元格立即聚焦，Enter 保存并移动到下一行。"),
-                ("payload_json", r#"{"module":"table-edit","shortcut":"Ctrl+Enter","status":"ready"}"#),
-            ]),
-            map_row(&[
-                ("id", "2"),
-                ("feature_name", "大文本查看器"),
-                ("owner", "前端联调"),
-                ("priority", "2"),
-                ("enabled", "1"),
-                ("due_date", "2026-05-03"),
-                ("updated_at", "2026-04-29 10:30:00"),
-                ("remark", "双击在非编辑模式打开详情；编辑模式使用 Ctrl+Enter 打开完整内容。"),
-                ("payload_json", r#"{"viewer":"cell","language":"json","note":"支持长文本预览"}"#),
-            ]),
-            map_row(&[
-                ("id", "3"),
-                ("feature_name", "数据值搜索"),
-                ("owner", "搜索验证"),
-                ("priority", "2"),
-                ("enabled", "1"),
-                ("due_date", "2026-05-06"),
-                ("updated_at", "2026-04-29 11:45:00"),
-                ("remark", "搜索关键词 JSON、备注、负责人或日期，都应该能在离线演示表中命中。"),
-                ("payload_json", r#"{"search":["JSON","备注","日期"],"scope":"offline-demo"}"#),
-            ]),
-            map_row(&[
-                ("id", "4"),
-                ("feature_name", "新增行保存"),
-                ("owner", "回归测试"),
-                ("priority", "3"),
-                ("enabled", "1"),
-                ("due_date", "2026-05-10"),
-                ("updated_at", "2026-04-29 13:00:00"),
-                ("remark", "用于测试添加行后保存到内存，刷新当前页仍能看到新增内容。"),
-                ("payload_json", r#"{"operation":"insert","persistence":"memory-only","restart":"reset"}"#),
-            ]),
-            map_row(&[
-                ("id", "5"),
-                ("feature_name", "删除行演练"),
-                ("owner", "安全验证"),
-                ("priority", "4"),
-                ("enabled", "0"),
-                ("due_date", "2026-05-12"),
-                ("updated_at", "2026-04-29 14:20:00"),
-                ("remark", "用于验证勾选行、删除选中、保存后从当前会话移除。"),
-                ("payload_json", r#"{"operation":"delete","guard":"primary-key","demo":true}"#),
-            ]),
-            map_row(&[
-                ("id", "6"),
-                ("feature_name", "列备注完整性"),
-                ("owner", "Schema 检查"),
-                ("priority", "5"),
-                ("enabled", "1"),
-                ("due_date", "2026-05-15"),
-                ("updated_at", "2026-04-29 15:40:00"),
-                ("remark", "打开 Schema 区域时，每个字段都应有备注，不再出现空内容测试尴尬。"),
-                ("payload_json", r#"{"schema":"complete","columns":9,"comments":"all-present"}"#),
-            ]),
-        ],
-    );
-    out.insert(
-        "demo_customer_profiles".into(),
-        vec![
-            map_row(&[("customer_id", "1001"), ("customer_name", "林晚晴"), ("city", "上海"), ("tier", "gold"), ("balance", "1288.50"), ("tags", "高价值,企业微信,复购"), ("created_at", "2026-01-12 09:20:00")]),
-            map_row(&[("customer_id", "1002"), ("customer_name", "周明"), ("city", "杭州"), ("tier", "silver"), ("balance", "236.00"), ("tags", "退款关注,移动端"), ("created_at", "2026-02-03 14:05:00")]),
-            map_row(&[("customer_id", "1003"), ("customer_name", "Ava Chen"), ("city", "深圳"), ("tier", "trial"), ("balance", "0.00"), ("tags", "英文资料,潜在客户"), ("created_at", "2026-03-18 11:45:00")]),
-            map_row(&[("customer_id", "1004"), ("customer_name", "王一诺"), ("city", "北京"), ("tier", "gold"), ("balance", "5020.90"), ("tags", "VIP,发票,合同"), ("created_at", "2026-04-22 16:30:00")]),
-        ],
-    );
-    out.insert(
-        "demo_orders".into(),
-        vec![
-            map_row(&[("order_id", "90001"), ("customer_id", "1001"), ("order_no", "ORD-202605-0001"), ("status", "paid"), ("amount", "399.00"), ("channel", "web"), ("shipping_city", "上海")]),
-            map_row(&[("order_id", "90002"), ("customer_id", "1002"), ("order_no", "ORD-202605-0002"), ("status", "refunded"), ("amount", "128.00"), ("channel", "miniapp"), ("shipping_city", "杭州")]),
-            map_row(&[("order_id", "90003"), ("customer_id", "1004"), ("order_no", "ORD-202605-0003"), ("status", "pending"), ("amount", "2599.00"), ("channel", "sales"), ("shipping_city", "北京")]),
-            map_row(&[("order_id", "90004"), ("customer_id", "1003"), ("order_no", "ORD-202605-0004"), ("status", "paid"), ("amount", "59.90"), ("channel", "web"), ("shipping_city", "深圳")]),
-        ],
-    );
-    out.insert(
-        "demo_support_tickets".into(),
-        vec![
-            map_row(&[("ticket_id", "7001"), ("customer_id", "1002"), ("category", "退款"), ("priority", "high"), ("assignee", "客服-小夏"), ("summary", "客户反馈订单 ORD-202605-0002 重复扣款，需要退款核对。"), ("resolved", "1")]),
-            map_row(&[("ticket_id", "7002"), ("customer_id", "1001"), ("category", "bug"), ("priority", "medium"), ("assignee", "前端-阿杰"), ("summary", "客户在搜索表名时发现高亮位置偶发不准确。"), ("resolved", "0")]),
-            map_row(&[("ticket_id", "7003"), ("customer_id", "1004"), ("category", "发票"), ("priority", "low"), ("assignee", "财务-宁宁"), ("summary", "VIP 客户申请补开发票和合同抬头变更。"), ("resolved", "0")]),
-        ],
-    );
-    out.insert(
-        "demo_audit_logs".into(),
-        vec![
-            map_row(&[("log_id", "50001"), ("actor", "admin"), ("action", "login"), ("ip_address", "10.0.0.8"), ("detail_json", r#"{"result":"success","device":"desktop"}"#), ("created_at", "2026-05-09 09:00:00")]),
-            map_row(&[("log_id", "50002"), ("actor", "operator.li"), ("action", "export"), ("ip_address", "10.0.0.12"), ("detail_json", r#"{"table":"demo_orders","rows":4,"format":"xlsx"}"#), ("created_at", "2026-05-09 09:25:00")]),
-            map_row(&[("log_id", "50003"), ("actor", "system"), ("action", "sync_failed"), ("ip_address", "127.0.0.1"), ("detail_json", r#"{"reason":"mock timeout","retry":true}"#), ("created_at", "2026-05-09 10:10:00")]),
-        ],
-    );
+    out.insert(DEMO_FEATURE_TEST_TABLE.into(), generate_feature_test_rows(DEMO_ROW_COUNT));
+    out.insert("demo_customer_profiles".into(), generate_customer_rows(DEMO_ROW_COUNT));
+    out.insert("demo_orders".into(), generate_order_rows(DEMO_ROW_COUNT));
+    out.insert("demo_support_tickets".into(), generate_ticket_rows(DEMO_ROW_COUNT));
+    out.insert("demo_audit_logs".into(), generate_audit_rows(DEMO_ROW_COUNT));
     out
 }
 

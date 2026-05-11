@@ -341,6 +341,26 @@ test("resolveTableFullscreenButtonLabel follows stable fullscreen state", () => 
   );
 });
 
+test("styles.css makes table fullscreen an Excel-like data-first layout", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+
+  assert.match(styles, /\.table-modal\.fullscreen \.schema-box/);
+  assert.match(styles, /\.table-modal\.fullscreen \.data-box > \.section-head/);
+  assert.match(styles, /display:\s*none !important/);
+  assert.match(styles, /\.modal-title-row > \.table-title-action-btn:not\(\.table-title-find-btn\)/);
+  assert.match(styles, /\.table-modal\.fullscreen \.fullscreen-freeze-toolbar/);
+  assert.doesNotMatch(styles, /\.table-modal\.fullscreen \.table-find-bar,\n/);
+  assert.match(styles, /\.table-modal\.fullscreen \.table-find-bar\s*\{/);
+  assert.match(styles, /\.table-modal\.fullscreen \.data-head\s*\{[^}]*display:\s*none/s);
+  assert.match(styles, /\.table-modal\.fullscreen \.fullscreen-row-range/);
+  const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
+  assert.doesNotMatch(appVue, /class="table-title-action-btn fullscreen-hit-jump-btn"/);
+  assert.match(appVue, /class="fullscreen-freeze-toolbar freeze-toolbar"/);
+  assert.match(styles, /align-items:\s*center/);
+  assert.match(styles, /\.table-modal\.fullscreen \.grid-wrap\s*\{[^}]*margin-top:\s*0/s);
+});
+
 test("resolveTableDialogSurfaceMode makes table dialogs fill panel windows without an overlay backdrop", () => {
   assert.deepEqual(
     resolveTableDialogSurfaceMode({

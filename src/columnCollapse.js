@@ -31,6 +31,23 @@ export function computeAutoCollapsedWidth({
   return Math.max(toPositiveNumber(minimumWidth), width);
 }
 
+export function computeAutoOpenColumnWidth({
+  headerTextWidth,
+  horizontalPadding = 28,
+  resizeHandleAllowance = 8,
+  minimumWidth = 80,
+  maximumWidth = 180,
+} = {}) {
+  const min = toPositiveNumber(minimumWidth, 80);
+  const max = Math.max(min, toPositiveNumber(maximumWidth, 180));
+  const width = Math.round(
+    toPositiveNumber(headerTextWidth) +
+    toPositiveNumber(horizontalPadding) +
+    toPositiveNumber(resizeHandleAllowance),
+  );
+  return Math.min(max, Math.max(min, width));
+}
+
 export function toggleColumnCollapsedState({
   columnName,
   currentWidth,

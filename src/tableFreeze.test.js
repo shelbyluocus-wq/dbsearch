@@ -8,9 +8,14 @@ import {
 } from './tableFreeze.js';
 
 const APP_VUE_PATH = new URL('./App.vue', import.meta.url);
+const STYLES_PATH = new URL('./styles.css', import.meta.url);
 
 async function readAppVue() {
   return await import('node:fs/promises').then(({ readFile }) => readFile(APP_VUE_PATH, 'utf8'));
+}
+
+async function readStyles() {
+  return await import('node:fs/promises').then(({ readFile }) => readFile(STYLES_PATH, 'utf8'));
 }
 
 test('normalizeFreezeBoundary toggles same boundary to null', () => {
@@ -37,6 +42,24 @@ test('buildFrozenColumnMeta returns sticky offsets up to frozen column including
     id: { frozen: true, left: 36, edge: false },
     name: { frozen: true, left: 76, edge: true },
     email: { frozen: false, left: null, edge: false },
+  });
+});
+
+test('buildFrozenColumnMeta falls back to rendered widths so frozen columns do not overlap', () => {
+  const meta = buildFrozenColumnMeta({
+    columns: ['id', 'name', 'email', 'role'],
+    columnWidths: {},
+    measuredColumnWidths: { id: 48, name: 128, email: 220 },
+    frozenColumnName: 'email',
+    leadingWidth: 36,
+    fallbackWidth: 120,
+  });
+
+  assert.deepEqual(meta, {
+    id: { frozen: true, left: 36, edge: false },
+    name: { frozen: true, left: 84, edge: false },
+    email: { frozen: true, left: 212, edge: true },
+    role: { frozen: false, left: null, edge: false },
   });
 });
 
@@ -153,6 +176,20 @@ test('styles.css uses pick-mode preview styles instead of table-internal freeze 
   assert.match(styles, /\.freeze-preview-row/);
 });
 
+test('styles.css gives frozen panes a solid Excel-like surface while row numbers match data cells', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const styles = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
+  const tableRule = styles.match(/\.data-table\s*\{[^}]*\}/s)?.[0] || '';
+  const rowHandleRule = styles.match(/\.data-table \.row-freeze-handle-col\s*\{[^}]*\}/s)?.[0] || '';
+  const frozenRule = styles.match(/\.data-table th\.frozen-column,[\s\S]*?\.data-table \.edit-checkbox-col\s*\{[^}]*\}/)?.[0] || '';
+
+  assert.match(tableRule, /border-collapse:\s*separate/);
+  assert.match(tableRule, /border-spacing:\s*0/);
+  assert.doesNotMatch(rowHandleRule, /background:\s*inherit/);
+  assert.match(rowHandleRule, /background:\s*transparent/);
+  assert.match(frozenRule, /--table-freeze-cell-bg/);
+});
+
 test('App.vue uses a higher z-index helper for frozen header columns', async () => {
   const appVue = await readAppVue();
   const helperStart = appVue.indexOf('function getFrozenHeaderColumnStyle(columnName)');
@@ -242,4 +279,15 @@ test('App.vue keeps row-handle header sticky at the leading intersection', async
   assert.match(helperCode, /zIndex: 13/);
   assert.notEqual(headerHandleStart, -1, 'row-handle header cell should exist');
   assert.match(appVue.slice(headerHandleStart, headerHandleStart + 140), /:style="getFrozenHeaderHandleStyle\(\)"/);
+});
+
+test('styles.css keeps row-number cells visually aligned with normal table cells', async () => {
+  const styles = await readStyles();
+  const rowHandleRule = styles.match(/\.data-table \.row-freeze-handle-col\s*\{[^}]*\}/s)?.[0] || '';
+  const editRowHandleRule = styles.match(/\.data-table \.edit-row-handle-col\s*\{[^}]*\}/s)?.[0] || '';
+
+  assert.match(rowHandleRule, /background:\s*transparent/);
+  assert.match(rowHandleRule, /color:\s*inherit/);
+  assert.match(editRowHandleRule, /background:\s*transparent/);
+  assert.match(editRowHandleRule, /color:\s*inherit/);
 });

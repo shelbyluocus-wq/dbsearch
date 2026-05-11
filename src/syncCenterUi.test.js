@@ -158,7 +158,7 @@ test("quick paste new snippets start with an empty editable body", () => {
 });
 
 test("quick paste categories use shared rich snippet kind helpers", () => {
-  assert.match(appVueSource, /isQuickPasteTextLikeSnippet,\n} from "\.\/quickPasteCategories\.js";/);
+  assert.match(appVueSource, /isQuickPasteTextLikeSnippet,\r?\n} from "\.\/quickPasteCategories\.js";/);
   assert.match(appVueSource, /quickPaste\.activeCategory === "text" && isQuickPasteTextLikeSnippet\(snippet\)/);
   assert.match(appVueSource, /quickPaste\.activeCategory === "mixed" && isQuickPasteMixedSnippet\(snippet\)/);
   assert.match(quickPasteCategoriesSource, /export function getQuickPasteSnippetKind\(snippet\)/);
