@@ -78,8 +78,18 @@ export function buildSeamlessViewport({
     }
   }
 
-  const rows = buildSeamlessRows({ blocks, blockSize: size })
-    .filter((item) => item.globalIndex <= total && item.block >= renderFromBlock && item.block <= renderToBlock);
+  const rows = [];
+  for (let block = renderFromBlock; block <= renderToBlock; block += 1) {
+    const blockRows = blocks instanceof Map ? blocks.get(block) : null;
+    if (!Array.isArray(blockRows)) continue;
+    const blockStart = (block - 1) * size;
+    blockRows.forEach((row, localIndex) => {
+      const globalIndex = blockStart + localIndex + 1;
+      if (globalIndex <= total) {
+        rows.push({ row, globalIndex, block, localIndex });
+      }
+    });
+  }
   const firstGlobalIndex = rows[0]?.globalIndex ?? null;
   const lastGlobalIndex = rows.length > 0 ? rows[rows.length - 1].globalIndex : null;
   const unloadedWindowStartRows = totalBlocks > 0 ? Math.max(0, (renderFromBlock - 1) * size) : 0;

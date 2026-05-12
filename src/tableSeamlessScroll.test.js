@@ -151,6 +151,19 @@ test("shouldUseSeamlessTableView treats full read and edit tables as seamless be
   );
 });
 
+test("shouldUseSeamlessTableView keeps seamless mode for small known full-table views", () => {
+  assert.equal(
+    shouldUseSeamlessTableView({
+      tableOpen: true,
+      tableDetailView: "full",
+      editMode: false,
+      dataCollapsed: false,
+      totalRows: 2400,
+    }),
+    true,
+  );
+});
+
 test("shouldLoadNextSeamlessBlock triggers near the bottom", () => {
   assert.equal(
     shouldLoadNextSeamlessBlock({
@@ -193,11 +206,15 @@ test("App.vue renders seamless spacer rows and protects seamless cell values", a
   const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
 
   assert.match(appVue, /shouldUseSeamlessTableView/);
+  assert.match(appVue, /const SEAMLESS_TABLE_BLOCK_SIZE = 80;/);
   assert.doesNotMatch(appVue, /tableDetailView\.value === "full" &&\s*!\s*editMode\.value &&\s*!\s*dataCollapsed\.value &&\s*seamlessTable\.enabled/);
   assert.match(appVue, /seamlessViewport\.topSpacerHeight/);
   assert.match(appVue, /seamlessViewport\.bottomSpacerHeight/);
   assert.match(appVue, /getSeamlessSpacerStyle/);
   assert.match(appVue, /getDisplayedEditRowContext/);
+  assert.match(appVue, /requestAnimationFrame\(flushTableGridScroll/);
+  assert.doesNotMatch(appVue, /SEAMLESS_TABLE_MIN_ROWS/);
+  assert.doesNotMatch(appVue, /async function onTableGridScroll/);
   assert.doesNotMatch(appVue, /v-if="editMode" class="pager"/);
   assert.doesNotMatch(appVue, /@click="prevPage"/);
   assert.doesNotMatch(appVue, /@click="nextPage"/);

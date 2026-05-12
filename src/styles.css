@@ -3580,6 +3580,42 @@ mark {
   background: transparent;
 }
 
+.fast-table-grid {
+  --table-header-bg: color-mix(in srgb, var(--surface-card-strong) 92%, var(--bg-panel) 8%);
+  --table-row-header-bg: color-mix(in srgb, var(--bg-panel) 96%, transparent);
+  position: relative;
+  flex: 1;
+  min-height: 140px;
+  margin-top: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--bg-panel) 96%, transparent);
+}
+
+.fast-table-grid__viewport {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-height: 140px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.fast-table-grid__spacer {
+  position: relative;
+  pointer-events: none;
+}
+
+.fast-table-grid__canvas {
+  position: sticky;
+  left: 0;
+  top: 0;
+  display: block;
+  pointer-events: none;
+}
+
 .seamless-table-loading {
   position: sticky;
   bottom: 0;

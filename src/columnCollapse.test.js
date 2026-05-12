@@ -74,7 +74,7 @@ test("App.vue seeds table column widths from header names", async () => {
   assert.match(appVue, /computeAutoOpenColumnWidth/);
   assert.match(appVue, /function seedAutoColumnWidths/);
   assert.match(appVue, /TABLE_AUTO_COLUMN_HORIZONTAL_PADDING/);
-  assert.match(appVue, /seedAutoColumnWidths\(tableView\.columns\)/);
+  assert.match(appVue, /seedAutoColumnWidths\(tableView\.columns, \{ rendered: false \}\)/);
 });
 
 test("toggleColumnCollapsedState stores the previous width the first time a column is collapsed", () => {
