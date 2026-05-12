@@ -8371,6 +8371,10 @@ function clearFreeze() {
   nextTick(() => {
     syncFastTableGridViewport();
     scheduleFastTableGridDraw();
+    requestAnimationFrame(() => {
+      syncFastTableGridViewport();
+      scheduleFastTableGridDraw();
+    });
   });
 }
 
