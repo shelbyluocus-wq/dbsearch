@@ -259,7 +259,7 @@ test("styles.css includes fast table grid viewport styles", async () => {
   const fastGridCanvasRule = styles.match(/\.fast-table-grid__canvas\s*\{[\s\S]*?\n\}/)?.[0] || "";
 
   assert.match(styles, /\.fast-table-grid\s*\{/);
-  assert.match(fastGridRule, /--table-header-bg:\s*color-mix\(in srgb, var\(--surface-card-strong\)/);
+  assert.match(fastGridRule, /--table-header-bg:\s*var\(--surface-card-strong\)/);
   assert.match(fastGridRule, /--table-row-header-bg:\s*color-mix\(in srgb, var\(--bg-panel\)/);
   assert.match(fastGridRule, /background:\s*color-mix\(in srgb, var\(--bg-panel\)/);
   assert.match(styles, /\.fast-table-grid__viewport\s*\{/);

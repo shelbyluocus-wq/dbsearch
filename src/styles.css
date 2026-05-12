@@ -3676,7 +3676,7 @@ mark {
 }
 
 .fast-table-grid {
-  --table-header-bg: color-mix(in srgb, var(--surface-card-strong) 92%, var(--bg-panel) 8%);
+  --table-header-bg: var(--surface-card-strong);
   --table-row-header-bg: color-mix(in srgb, var(--bg-panel) 96%, transparent);
   position: relative;
   flex: 1;
@@ -3743,9 +3743,9 @@ mark {
 }
 
 .data-table {
-  --table-header-bg: rgba(226, 236, 248, 0.98);
+  --table-header-bg: rgba(226, 236, 248, 1);
   --table-freeze-cell-bg: color-mix(in srgb, var(--bg-panel) 99%, #eef6ff 1%);
-  --table-freeze-header-bg: color-mix(in srgb, var(--table-header-bg) 94%, #ffffff 6%);
+  --table-freeze-header-bg: color-mix(in srgb, var(--table-header-bg) 96%, #ffffff 4%);
   --table-freeze-row-header-bg: transparent;
   width: 100%;
   border-collapse: separate;
@@ -3799,14 +3799,16 @@ mark {
 .data-table th {
   position: sticky;
   top: 0;
-  background: var(--table-header-bg);
+  background: var(--surface-card-strong);
   color: #1e293b;
   font-size: 13px;
   font-weight: 700;
   letter-spacing: 0.2px;
-  position: sticky;
-  top: 0;
   z-index: 1;
+}
+
+[data-theme="midnight"] .data-table th {
+  background: #0c1628;
 }
 
 .th-content {
@@ -3938,6 +3940,11 @@ mark {
   background-clip: padding-box;
 }
 
+[data-theme="midnight"] .data-table td.frozen-column,
+[data-theme="midnight"] .data-table .edit-checkbox-col {
+  background: #0f1830;
+}
+
 .data-table .edit-row-handle-col {
   background: transparent;
   color: inherit;
@@ -3947,7 +3954,15 @@ mark {
 .data-table th.frozen-column,
 .data-table th.edit-row-handle-col,
 .data-table th.edit-checkbox-col {
-  background: var(--table-freeze-header-bg);
+  background: var(--surface-card-strong);
+  -webkit-background-clip: padding-box;
+  background-clip: padding-box;
+}
+
+[data-theme="midnight"] .data-table th.frozen-column,
+[data-theme="midnight"] .data-table th.edit-row-handle-col,
+[data-theme="midnight"] .data-table th.edit-checkbox-col {
+  background: #0c1628;
 }
 
 .data-table .edit-checkbox-col {
@@ -3964,6 +3979,10 @@ mark {
 .data-table tr.frozen-row td {
   background: var(--table-freeze-cell-bg);
   background-clip: padding-box;
+}
+
+[data-theme="midnight"] .data-table tr.frozen-row td {
+  background: #0f1830;
 }
 
 .data-table tr.frozen-row-edge td {
