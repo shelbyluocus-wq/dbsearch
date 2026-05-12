@@ -8258,11 +8258,11 @@ function getFrozenRowStyle(rowIndex) {
 }
 
 function getFrozenHeaderHandleStyle() {
-  return { position: "sticky", left: "0px", zIndex: 13 };
+  return { position: "sticky", left: "0px", zIndex: 13, width: `${scaleTableDimension(TABLE_ROW_HANDLE_WIDTH)}px`, minWidth: `${scaleTableDimension(TABLE_ROW_HANDLE_WIDTH)}px` };
 }
 
 function getFrozenEditActionStyle() {
-  return { position: "sticky", left: `${scaleTableDimension(TABLE_ROW_HANDLE_WIDTH)}px`, zIndex: 5 };
+  return { position: "sticky", left: `${scaleTableDimension(TABLE_ROW_HANDLE_WIDTH)}px`, zIndex: 5, width: `${scaleTableDimension(TABLE_EDIT_CHECKBOX_WIDTH)}px`, minWidth: `${scaleTableDimension(TABLE_EDIT_CHECKBOX_WIDTH)}px` };
 }
 
 function getFrozenHeaderActionStyle() {
@@ -8296,6 +8296,8 @@ function getFrozenRowHandleStyle(rowIndex) {
     position: "sticky",
     left: "0px",
     zIndex: frozenRowMeta.value[rowIndex]?.frozen ? 10 : 7,
+    width: `${scaleTableDimension(TABLE_ROW_HANDLE_WIDTH)}px`,
+    minWidth: `${scaleTableDimension(TABLE_ROW_HANDLE_WIDTH)}px`,
   };
 }
 
