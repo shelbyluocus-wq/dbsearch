@@ -3204,14 +3204,24 @@ mark {
 }
 
 .table-content-scale {
-  --content-scale: 1;
+  --table-scale: 1;
+  --table-padding: calc(12px * var(--table-scale));
+  --table-gap: calc(8px * var(--table-scale));
+  --table-font-size: calc(12px * var(--table-scale));
+  --table-cell-px: calc(8px * var(--table-scale));
+  --table-cell-py: calc(6px * var(--table-scale));
+  --table-header-height: calc(34px * var(--table-scale));
+  --table-row-height: calc(31px * var(--table-scale));
+  --table-row-handle-width: calc(36px * var(--table-scale));
+  --table-control-height: calc(28px * var(--table-scale));
+  --table-control-radius: calc(8px * var(--table-scale));
+  --table-control-px: calc(10px * var(--table-scale));
+  --table-small-control-height: calc(26px * var(--table-scale));
   position: absolute;
   left: 0;
   top: 0;
-  width: calc(100% / var(--content-scale));
-  height: calc(100% / var(--content-scale));
-  transform-origin: top left;
-  transform: scale(var(--content-scale));
+  width: 100%;
+  height: 100%;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -3274,6 +3284,11 @@ mark {
   padding: 12px;
 }
 
+.table-content-scale .schema-box,
+.table-content-scale .data-box {
+  padding: var(--table-padding);
+}
+
 .section-head {
   display: flex;
   align-items: center;
@@ -3285,6 +3300,21 @@ mark {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+}
+
+.table-content-scale .section-head {
+  gap: var(--table-gap);
+  font-size: var(--table-font-size);
+}
+
+.table-content-scale .section-head h4,
+.table-content-scale .schema-box h4,
+.table-content-scale .data-box h4 {
+  font-size: calc(14px * var(--table-scale));
+}
+
+.table-content-scale .section-head-actions {
+  gap: var(--table-gap);
 }
 
 .section-toggle-btn,
@@ -3305,8 +3335,22 @@ mark {
   color: var(--text-main);
 }
 
+.table-content-scale .section-toggle-btn,
+.table-content-scale .section-action-btn,
+.table-content-scale .small-btn,
+.table-content-scale .data-actions > .small-btn {
+  height: var(--table-small-control-height);
+  padding: 0 var(--table-control-px);
+  border-radius: var(--table-control-radius);
+  font-size: var(--table-font-size);
+}
+
 .section-body {
   margin-top: 8px;
+}
+
+.table-content-scale .section-body {
+  margin-top: var(--table-gap);
 }
 
 .section-body > .schema-table {
@@ -3437,6 +3481,11 @@ mark {
   font-size: 12px;
 }
 
+.table-content-scale .schema-table {
+  margin-top: var(--table-gap);
+  font-size: var(--table-font-size);
+}
+
 .schema-table--resizable {
   table-layout: fixed;
 }
@@ -3446,6 +3495,11 @@ mark {
   text-align: left;
   padding: 6px 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.table-content-scale .schema-table th,
+.table-content-scale .schema-table td {
+  padding: var(--table-cell-py) var(--table-cell-px);
 }
 
 .schema-table th {
@@ -3469,11 +3523,12 @@ mark {
 .schema-col-resize-handle {
   position: absolute;
   top: 0;
-  right: 0;
+  right: -4px;
   width: 8px;
   height: 100%;
   cursor: col-resize;
   user-select: none;
+  z-index: 2;
 }
 
 .schema-col-resize-handle:hover {
@@ -3499,12 +3554,25 @@ mark {
   border: 1px solid rgba(2, 132, 199, 0.16);
 }
 
+.table-content-scale .table-comment {
+  margin-top: var(--table-gap);
+  padding: var(--table-cell-py) var(--table-control-px);
+  border-radius: var(--table-control-radius);
+  font-size: var(--table-font-size);
+}
+
 .data-head {
   margin-top: 8px;
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 10px;
+}
+
+.table-content-scale .data-head {
+  margin-top: var(--table-gap);
+  gap: calc(10px * var(--table-scale));
+  font-size: var(--table-font-size);
 }
 
 .data-head.actions-only {
@@ -3517,10 +3585,20 @@ mark {
   gap: 8px;
 }
 
+.table-content-scale .data-actions {
+  gap: var(--table-gap);
+  font-size: var(--table-font-size);
+}
+
 .pager {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+
+.table-content-scale .pager {
+  gap: var(--table-gap);
+  font-size: var(--table-font-size);
 }
 
 .pager button {
@@ -3529,6 +3607,13 @@ mark {
   border-radius: 8px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   color: var(--text-sub);
+}
+
+.table-content-scale .pager button {
+  height: var(--table-control-height);
+  padding: 0 var(--table-control-px);
+  border-radius: var(--table-control-radius);
+  font-size: var(--table-font-size);
 }
 
 .pager button:disabled {
@@ -3541,6 +3626,10 @@ mark {
   font-size: 12px;
 }
 
+.table-content-scale .seamless-pager-status {
+  font-size: var(--table-font-size);
+}
+
 .grid-wrap {
   margin-top: 8px;
   border: 1px solid rgba(255, 255, 255, 0.08);
@@ -3551,6 +3640,12 @@ mark {
   max-height: none;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.table-content-scale .grid-wrap {
+  margin-top: var(--table-gap);
+  border-radius: calc(10px * var(--table-scale));
+  min-height: calc(140px * var(--table-scale));
 }
 
 .grid-wrap::-webkit-scrollbar {
@@ -3593,6 +3688,12 @@ mark {
   background: color-mix(in srgb, var(--bg-panel) 96%, transparent);
 }
 
+.table-content-scale .fast-table-grid {
+  min-height: calc(140px * var(--table-scale));
+  margin-top: var(--table-gap);
+  border-radius: calc(10px * var(--table-scale));
+}
+
 .fast-table-grid__viewport {
   position: relative;
   width: 100%;
@@ -3601,6 +3702,10 @@ mark {
   overflow: auto;
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.table-content-scale .fast-table-grid__viewport {
+  min-height: calc(140px * var(--table-scale));
 }
 
 .fast-table-grid__spacer {
@@ -3648,6 +3753,14 @@ mark {
   font-size: 12px;
 }
 
+.table-content-scale .data-table {
+  font-size: var(--table-font-size);
+}
+
+.table-content-scale .data-table th {
+  font-size: calc(13px * var(--table-scale));
+}
+
 .data-table th,
 .data-table td {
   box-sizing: border-box;
@@ -3656,6 +3769,11 @@ mark {
   padding: 6px 8px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   border-right: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.table-content-scale .data-table th,
+.table-content-scale .data-table td {
+  padding: var(--table-cell-py) var(--table-cell-px);
 }
 
 .data-table td {
@@ -3739,6 +3857,14 @@ mark {
   transform: translateY(-1px);
 }
 
+.table-content-scale .column-collapse-badge {
+  width: calc(16px * var(--table-scale));
+  height: calc(16px * var(--table-scale));
+  border-radius: calc(4px * var(--table-scale));
+  font-size: calc(10px * var(--table-scale));
+  margin-left: calc(2px * var(--table-scale));
+}
+
 .column-collapse-badge.active {
   background: var(--accent-tint);
   color: var(--accent-text);
@@ -3753,6 +3879,12 @@ mark {
   margin-left: 8px;
 }
 
+.table-content-scale .freeze-toolbar {
+  gap: calc(6px * var(--table-scale));
+  margin-left: var(--table-gap);
+  font-size: var(--table-font-size);
+}
+
 .freeze-toolbar > .active {
   border-color: var(--accent-line);
   background: var(--accent-tint);
@@ -3763,6 +3895,10 @@ mark {
   color: var(--text-sub);
   font-size: 12px;
   white-space: nowrap;
+}
+
+.table-content-scale .freeze-status {
+  font-size: var(--table-font-size);
 }
 
 /* Freeze pick mode */
@@ -3863,11 +3999,12 @@ mark {
 .col-resize-handle {
   position: absolute;
   top: 0;
-  right: 0;
+  right: -4px;
   width: 8px;
   height: 100%;
   cursor: col-resize;
   user-select: none;
+  z-index: 2;
 }
 
 .col-resize-handle:hover {

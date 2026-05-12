@@ -8,6 +8,8 @@ import {
   getVisibleFastGridColumns,
   hitTestFastGrid,
   hitTestFastGridColumnResize,
+  resolveFastGridCellScrollTarget,
+  resolveFastGridColumnResizeCursor,
   truncateFastGridText,
 } from "./fastTableGrid.js";
 
@@ -100,6 +102,55 @@ test("hitTestFastGridColumnResize detects header resize handles", () => {
   );
 });
 
+test("resolveFastGridColumnResizeCursor returns col-resize on header edges", () => {
+  const columns = [{ column_name: "id" }, { column_name: "name" }];
+
+  assert.equal(
+    resolveFastGridColumnResizeCursor({
+      x: 130,
+      y: 18,
+      scrollLeft: 0,
+      columns,
+      rowNumberWidth: 52,
+      headerHeight: 34,
+      getColumnWidth: (name) => (name === "id" ? 80 : 120),
+      handleWidth: 6,
+    }),
+    "col-resize",
+  );
+});
+
+test("resolveFastGridColumnResizeCursor returns default outside header edges", () => {
+  const columns = [{ column_name: "id" }, { column_name: "name" }];
+
+  assert.equal(
+    resolveFastGridColumnResizeCursor({
+      x: 90,
+      y: 18,
+      scrollLeft: 0,
+      columns,
+      rowNumberWidth: 52,
+      headerHeight: 34,
+      getColumnWidth: (name) => (name === "id" ? 80 : 120),
+      handleWidth: 6,
+    }),
+    "default",
+  );
+  assert.equal(
+    resolveFastGridColumnResizeCursor({
+      x: 130,
+      y: 40,
+      scrollLeft: 0,
+      columns,
+      rowNumberWidth: 52,
+      headerHeight: 34,
+      getColumnWidth: (name) => (name === "id" ? 80 : 120),
+      handleWidth: 6,
+    }),
+    "default",
+  );
+});
+
 test("buildFastGridDrawModel includes only visible cells", () => {
   const columns = [{ column_name: "id" }, { column_name: "name" }];
   const rows = [
@@ -140,6 +191,27 @@ test("buildFastGridDrawModel marks focused and hit cells", () => {
 
   assert.equal(model.cells[0].focused, true);
   assert.equal(model.cells[0].hit, true);
+});
+
+test("resolveFastGridCellScrollTarget maps a table-find match to viewport scroll and focus", () => {
+  const columns = [{ column_name: "id" }, { column_name: "name" }, { column_name: "email" }];
+
+  assert.deepEqual(
+    resolveFastGridCellScrollTarget({
+      rowIndex: 10,
+      columnName: "email",
+      rowHeight: 31,
+      rowNumberWidth: 52,
+      columns,
+      getColumnWidth: (name) => ({ id: 80, name: 120, email: 180 })[name],
+    }),
+    {
+      rowIndex: 10,
+      columnName: "email",
+      scrollTop: 310,
+      scrollLeft: 200,
+    },
+  );
 });
 
 test("truncateFastGridText clips long CJK text instead of letting canvas horizontally compress it", () => {
@@ -220,6 +292,98 @@ test("App.vue drawFastTableGrid uses visible ranges and draw model", async () =>
   assert.match(appVue, /truncateFastGridText/);
   assert.doesNotMatch(appVue, /context\.fillText\([^\n]+, [^\n]+, [^\n]+, Math\.max/);
   assert.doesNotMatch(appVue, /fillStyle = "#ffffff"|fillStyle = "#0f172a"|fillStyle = "#f1f5f9"/);
+});
+
+test("App.vue lets table zoom change real layout metrics instead of CSS zooming pixels", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  const tableScaleStyleStart = appVue.indexOf("const tableContentScaleStyle = computed");
+  const tableScaleStyleEnd = appVue.indexOf("const hitOnlySchemaColumns", tableScaleStyleStart);
+  const tableScaleStyleBody = appVue.slice(tableScaleStyleStart, tableScaleStyleEnd);
+  const tableContentScaleRule = styles.match(/\.table-content-scale\s*\{[\s\S]*?\n\}/)?.[0] || "";
+
+  assert.notEqual(tableScaleStyleStart, -1);
+  assert.notEqual(tableScaleStyleEnd, -1);
+  assert.match(tableScaleStyleBody, /"--table-scale": String\(tableVisualScale\.value\)/);
+  assert.doesNotMatch(tableContentScaleRule, /\bzoom\s*:/);
+});
+
+test("App.vue draws the fast grid at scaled layout size without double-applying table zoom", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
+  const drawStart = appVue.indexOf("function drawFastTableGrid()");
+  const drawEnd = appVue.indexOf("function readFastTableGridCssValue");
+  const drawBody = appVue.slice(drawStart, drawEnd);
+  const scrollSizeStart = appVue.indexOf("const fastTableGridScrollSize = computed");
+  const scrollSizeEnd = appVue.indexOf("const fastTableGridSpacerStyle", scrollSizeStart);
+  const scrollSizeBody = appVue.slice(scrollSizeStart, scrollSizeEnd);
+  const hitStart = appVue.indexOf("function resolveFastTableGridHit");
+  const hitEnd = appVue.indexOf("function onFastTableGridPointerDown", hitStart);
+  const hitBody = appVue.slice(hitStart, hitEnd);
+  const pointerStart = appVue.indexOf("function onFastTableGridPointerDown");
+  const pointerEnd = appVue.indexOf("function onFastTableGridClick", pointerStart);
+  const pointerBody = appVue.slice(pointerStart, pointerEnd);
+
+  assert.notEqual(drawStart, -1);
+  assert.notEqual(drawEnd, -1);
+  assert.match(appVue, /const scaledTableHeaderHeight = computed\(\(\) => Math\.round\(TABLE_HEADER_HEIGHT \* tableVisualScale\.value\)\)/);
+  assert.match(appVue, /const scaledTableRowHeight = computed\(\(\) => Math\.round\(TABLE_ROW_HEIGHT \* tableVisualScale\.value\)\)/);
+  assert.match(appVue, /const scaledTableRowHandleWidth = computed\(\(\) => Math\.round\(TABLE_ROW_HANDLE_WIDTH \* tableVisualScale\.value\)\)/);
+  assert.match(drawBody, /const ratio = window\.devicePixelRatio \|\| 1/);
+  assert.doesNotMatch(drawBody, /devicePixelRatio \|\| 1\) \* visualScale/);
+  assert.match(scrollSizeBody, /rowHeight: scaledTableRowHeight\.value/);
+  assert.match(scrollSizeBody, /headerHeight: scaledTableHeaderHeight\.value/);
+  assert.match(scrollSizeBody, /rowNumberWidth: scaledTableRowHandleWidth\.value/);
+  assert.match(scrollSizeBody, /fallbackColumnWidth: Math\.round\(TABLE_COLUMN_WIDTH_FALLBACK \* tableVisualScale\.value\)/);
+  assert.match(scrollSizeBody, /getColumnWidth: getScaledTableColumnWidth/);
+  assert.doesNotMatch(scrollSizeBody, /getColumnWidth,\s*\n\s*fallbackColumnWidth: Math\.round\(TABLE_COLUMN_WIDTH_FALLBACK \* tableVisualScale\.value\)/);
+  assert.match(drawBody, /rowHeight: scaledTableRowHeight\.value/);
+  assert.match(drawBody, /headerHeight: scaledTableHeaderHeight\.value/);
+  assert.match(drawBody, /rowNumberWidth: scaledTableRowHandleWidth\.value/);
+  assert.match(drawBody, /fallbackColumnWidth: Math\.round\(TABLE_COLUMN_WIDTH_FALLBACK \* tableVisualScale\.value\)/);
+  assert.match(drawBody, /getColumnWidth: getScaledTableColumnWidth/);
+  assert.doesNotMatch(drawBody, /getColumnWidth,\s*\n\s*fallbackColumnWidth: Math\.round\(TABLE_COLUMN_WIDTH_FALLBACK \* tableVisualScale\.value\)/);
+  assert.match(hitBody, /rowHeight: scaledTableRowHeight\.value/);
+  assert.match(hitBody, /headerHeight: scaledTableHeaderHeight\.value/);
+  assert.match(hitBody, /rowNumberWidth: scaledTableRowHandleWidth\.value/);
+  assert.match(hitBody, /fallbackColumnWidth: Math\.round\(TABLE_COLUMN_WIDTH_FALLBACK \* tableVisualScale\.value\)/);
+  assert.match(hitBody, /getColumnWidth: getScaledTableColumnWidth/);
+  assert.doesNotMatch(hitBody, /getColumnWidth,\s*\n\s*fallbackColumnWidth: Math\.round\(TABLE_COLUMN_WIDTH_FALLBACK \* tableVisualScale\.value\)/);
+  assert.match(pointerBody, /rowNumberWidth: scaledTableRowHandleWidth\.value/);
+  assert.match(pointerBody, /headerHeight: scaledTableHeaderHeight\.value/);
+  assert.match(pointerBody, /fallbackColumnWidth: Math\.round\(TABLE_COLUMN_WIDTH_FALLBACK \* tableVisualScale\.value\)/);
+  assert.match(pointerBody, /getColumnWidth: getScaledTableColumnWidth/);
+  assert.doesNotMatch(pointerBody, /getColumnWidth,\s*\n\s*fallbackColumnWidth: Math\.round\(TABLE_COLUMN_WIDTH_FALLBACK \* tableVisualScale\.value\)/);
+});
+
+test("App.vue table-find and seamless fast grid paths use scaled layout metrics", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
+  const focusStart = appVue.indexOf("async function focusTableFindMatch");
+  const focusEnd = appVue.indexOf("async function runTableFind", focusStart);
+  const focusBody = appVue.slice(focusStart, focusEnd);
+  const seamlessViewportStart = appVue.indexOf("const seamlessViewport = computed");
+  const seamlessViewportEnd = appVue.indexOf("const seamlessTotalBlocks", seamlessViewportStart);
+  const seamlessViewportBody = appVue.slice(seamlessViewportStart, seamlessViewportEnd);
+  const enableStart = appVue.indexOf("async function enableSeamlessTableFromCurrentPage");
+  const enableEnd = appVue.indexOf("function syncFastTableGridViewport", enableStart);
+  const enableBody = appVue.slice(enableStart, enableEnd);
+
+  assert.notEqual(focusStart, -1);
+  assert.notEqual(focusEnd, -1);
+  assert.match(focusBody, /rowHeight: scaledTableRowHeight\.value/);
+  assert.match(focusBody, /rowNumberWidth: scaledTableRowHandleWidth\.value/);
+  assert.match(focusBody, /getColumnWidth: getScaledTableColumnWidth/);
+  assert.match(focusBody, /fallbackColumnWidth: Math\.round\(TABLE_COLUMN_WIDTH_FALLBACK \* tableVisualScale\.value\)/);
+  assert.doesNotMatch(focusBody, /rowHeight: TABLE_ROW_HEIGHT/);
+  assert.doesNotMatch(focusBody, /rowNumberWidth: TABLE_ROW_HANDLE_WIDTH/);
+  assert.doesNotMatch(focusBody, /getColumnWidth,\s*\n\s*fallbackColumnWidth: TABLE_COLUMN_WIDTH_FALLBACK/);
+
+  assert.match(seamlessViewportBody, /rowHeight: shouldUseFastTableGrid\.value \? scaledTableRowHeight\.value : TABLE_ROW_HEIGHT/);
+  assert.match(enableBody, /const anchorRowHeight = shouldUseFastTableGrid\.value \? scaledTableRowHeight\.value : TABLE_ROW_HEIGHT/);
+  assert.match(enableBody, /const anchorScrollTop = anchorRowIndex \* anchorRowHeight/);
+  assert.doesNotMatch(enableBody, /const anchorScrollTop = anchorRowIndex \* TABLE_ROW_HEIGHT/);
 });
 
 test("App.vue fast grid pointer handlers reuse existing cell viewer and row copy", async () => {
@@ -336,6 +500,23 @@ test("App.vue initializes seamless scrolling from the active fast grid viewport"
   assert.match(seamlessEnabler, /const wrap = shouldUseFastTableGrid\.value \? fastTableGridViewportRef\.value : tableGridWrapRef\.value/);
   assert.match(seamlessEnabler, /fastTableGridScroll\.top = anchorScrollTop/);
   assert.match(seamlessEnabler, /fastTableGridScroll\.height = wrap\.clientHeight/);
+});
+
+test("App.vue routes table-find matches through the fast grid viewport", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
+  const focusStart = appVue.indexOf("async function focusTableFindMatch");
+  const focusEnd = appVue.indexOf("async function runTableFind");
+  const focusBody = appVue.slice(focusStart, focusEnd);
+
+  assert.match(appVue, /resolveFastGridCellScrollTarget/);
+  assert.match(focusBody, /shouldUseFastTableGrid\.value/);
+  assert.match(focusBody, /await nextTick\(\);[\s\S]*const viewport = fastTableGridViewportRef\.value/);
+  assert.match(focusBody, /fastTableGridViewportRef\.value/);
+  assert.match(focusBody, /resolveFastGridCellScrollTarget\(/);
+  assert.match(focusBody, /fastTableGridFocus\.rowIndex = target\.rowIndex/);
+  assert.match(focusBody, /fastTableGridFocus\.columnName = target\.columnName/);
+  assert.match(focusBody, /scheduleFastTableGridDraw\(\)/);
 });
 
 test("App.vue resizes and redraws the fast grid after layout changes", async () => {

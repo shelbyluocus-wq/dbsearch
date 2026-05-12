@@ -244,7 +244,7 @@ test('App.vue keeps edit-mode leading action cells sticky between row handle and
   const insertRowActionStart = appVue.indexOf('<td class="edit-checkbox-col"');
 
   assert.notEqual(helperStart, -1, 'shared edit action sticky helper should exist');
-  assert.match(helperCode, /left: `\$\{TABLE_ROW_HANDLE_WIDTH\}px`/);
+  assert.match(helperCode, /left: `\$\{scaleTableDimension\(TABLE_ROW_HANDLE_WIDTH\)\}px`/);
   assert.match(helperCode, /zIndex: 5/);
   assert.notEqual(insertHelperStart, -1, 'insert row action sticky helper should exist');
   assert.match(insertHelperCode, /getFrozenEditActionStyle\(\)/);

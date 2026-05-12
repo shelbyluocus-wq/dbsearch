@@ -123,6 +123,8 @@ import {
   getVisibleFastGridRows,
   hitTestFastGrid,
   hitTestFastGridColumnResize,
+  resolveFastGridCellScrollTarget,
+  resolveFastGridColumnResizeCursor,
   truncateFastGridText,
 } from "./fastTableGrid.js";
 import {
@@ -2050,7 +2052,7 @@ const seamlessViewport = computed(() =>
     blocks: seamlessTable.blocks,
     blockSize: SEAMLESS_TABLE_BLOCK_SIZE,
     totalRows: Number(seamlessTable.totalRows) || tableView.totalRows,
-    rowHeight: TABLE_ROW_HEIGHT,
+    rowHeight: shouldUseFastTableGrid.value ? scaledTableRowHeight.value : TABLE_ROW_HEIGHT,
     scrollTop: seamlessTable.scrollTop,
     clientHeight: seamlessTable.clientHeight,
     cacheRadius: SEAMLESS_TABLE_CACHE_RADIUS,
@@ -2080,12 +2082,12 @@ const shouldUseFastTableGrid = computed(() =>
 );
 const fastTableGridScrollSize = computed(() => buildFastGridScrollSize({
   totalRows: tableView.totalRows,
-  rowHeight: TABLE_ROW_HEIGHT,
-  headerHeight: TABLE_HEADER_HEIGHT,
-  rowNumberWidth: TABLE_ROW_HANDLE_WIDTH,
+  rowHeight: scaledTableRowHeight.value,
+  headerHeight: scaledTableHeaderHeight.value,
+  rowNumberWidth: scaledTableRowHandleWidth.value,
   columns: tableView.columns,
-  getColumnWidth,
-  fallbackColumnWidth: TABLE_COLUMN_WIDTH_FALLBACK,
+  getColumnWidth: getScaledTableColumnWidth,
+  fallbackColumnWidth: Math.round(TABLE_COLUMN_WIDTH_FALLBACK * tableVisualScale.value),
 }));
 const fastTableGridSpacerStyle = computed(() => ({
   width: `${fastTableGridScrollSize.value.width}px`,
@@ -3846,9 +3848,13 @@ const panelChromeStyle = computed(() => {
   }
   return style;
 });
+const tableVisualScale = computed(() => normalizeUiScale(config.personal.ui_scale));
 const tableContentScaleStyle = computed(() => ({
-  "--content-scale": String(normalizeUiScale(config.personal.ui_scale)),
+  "--table-scale": String(tableVisualScale.value),
 }));
+const scaledTableHeaderHeight = computed(() => Math.round(TABLE_HEADER_HEIGHT * tableVisualScale.value));
+const scaledTableRowHeight = computed(() => Math.round(TABLE_ROW_HEIGHT * tableVisualScale.value));
+const scaledTableRowHandleWidth = computed(() => Math.round(TABLE_ROW_HANDLE_WIDTH * tableVisualScale.value));
 const hitOnlySchemaColumns = computed(() => tableView.columns.filter((col) => isSchemaColumnHit(col)));
 const hitOnlyPrimaryKeyColumns = computed(() =>
   tableView.columns
@@ -7842,14 +7848,47 @@ async function focusTableFindMatch(match) {
 
   if (match.type === "data") {
     if (shouldUseSeamlessTable.value) {
-      const wrap = tableGridWrapRef.value;
       const globalIndex = (Math.max(1, Number(match.page) || 1) - 1) * tableView.pageSize + (Number(match.localIndex) || 0);
-      seamlessTable.scrollTop = globalIndex * TABLE_ROW_HEIGHT;
-      if (wrap instanceof HTMLElement) {
-        seamlessTable.clientHeight = wrap.clientHeight;
-        wrap.scrollTop = seamlessTable.scrollTop;
+      if (shouldUseFastTableGrid.value) {
+        const target = resolveFastGridCellScrollTarget({
+          rowIndex: globalIndex,
+          columnName: match.columnName,
+          rowHeight: scaledTableRowHeight.value,
+          rowNumberWidth: scaledTableRowHandleWidth.value,
+          columns: tableView.columns,
+          getColumnWidth: getScaledTableColumnWidth,
+          fallbackColumnWidth: Math.round(TABLE_COLUMN_WIDTH_FALLBACK * tableVisualScale.value),
+          currentScrollLeft: fastTableGridScroll.left,
+        });
+        await nextTick();
+        const viewport = fastTableGridViewportRef.value;
+        seamlessTable.scrollTop = target.scrollTop;
+        fastTableGridFocus.rowIndex = target.rowIndex;
+        fastTableGridFocus.columnName = target.columnName;
+        if (viewport instanceof HTMLElement) {
+          viewport.scrollTop = target.scrollTop;
+          viewport.scrollLeft = target.scrollLeft;
+          seamlessTable.clientHeight = viewport.clientHeight;
+          fastTableGridScroll.left = viewport.scrollLeft;
+          fastTableGridScroll.top = viewport.scrollTop;
+          fastTableGridScroll.width = viewport.clientWidth;
+          fastTableGridScroll.height = viewport.clientHeight;
+        } else {
+          fastTableGridScroll.left = target.scrollLeft;
+          fastTableGridScroll.top = target.scrollTop;
+        }
+        seamlessTable.activeBlock = seamlessViewport.value.targetBlock;
+        await loadVisibleSeamlessBlocks();
+        scheduleFastTableGridDraw();
+      } else {
+        const wrap = tableGridWrapRef.value;
+        seamlessTable.scrollTop = globalIndex * TABLE_ROW_HEIGHT;
+        if (wrap instanceof HTMLElement) {
+          seamlessTable.clientHeight = wrap.clientHeight;
+          wrap.scrollTop = seamlessTable.scrollTop;
+        }
+        await loadVisibleSeamlessBlocks();
       }
-      await loadVisibleSeamlessBlocks();
     } else if (tableView.page !== match.page) {
       tableView.page = match.page;
       await loadTablePage({ resetFocus: false, clearHitCache: false });
@@ -8173,8 +8212,18 @@ function getColumnWidth(columnName) {
   return Number(columnWidthMap[columnName] || 0);
 }
 
+function getScaledTableColumnWidth(columnName) {
+  return scaleTableDimension(getColumnWidth(columnName));
+}
+
+function scaleTableDimension(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || numeric <= 0) return 0;
+  return Math.round(numeric * tableVisualScale.value);
+}
+
 function getColumnStyle(columnName) {
-  const width = getColumnWidth(columnName);
+  const width = scaleTableDimension(getColumnWidth(columnName));
   if (width <= 0) return null;
   return {
     width: `${width}px`,
@@ -8190,7 +8239,7 @@ function getFrozenColumnStyle(columnName) {
   return {
     ...base,
     position: "sticky",
-    left: `${meta.left}px`,
+    left: `${scaleTableDimension(meta.left)}px`,
     zIndex: 5,
   };
 }
@@ -8199,13 +8248,13 @@ function getFrozenHeaderColumnStyle(columnName) {
   const base = getColumnStyle(columnName) || {};
   const meta = frozenColumnMeta.value[columnName];
   if (!meta?.frozen) return base;
-  return { ...base, position: "sticky", left: `${meta.left}px`, zIndex: 11 };
+  return { ...base, position: "sticky", left: `${scaleTableDimension(meta.left)}px`, zIndex: 11 };
 }
 
 function getFrozenRowStyle(rowIndex) {
   const meta = frozenRowMeta.value[rowIndex];
   if (!meta?.frozen) return null;
-  return { position: "sticky", top: `${meta.top}px`, zIndex: 6 };
+  return { position: "sticky", top: `${scaleTableDimension(meta.top)}px`, zIndex: 6 };
 }
 
 function getFrozenHeaderHandleStyle() {
@@ -8213,7 +8262,7 @@ function getFrozenHeaderHandleStyle() {
 }
 
 function getFrozenEditActionStyle() {
-  return { position: "sticky", left: `${TABLE_ROW_HANDLE_WIDTH}px`, zIndex: 5 };
+  return { position: "sticky", left: `${scaleTableDimension(TABLE_ROW_HANDLE_WIDTH)}px`, zIndex: 5 };
 }
 
 function getFrozenHeaderActionStyle() {
@@ -8317,6 +8366,10 @@ function clearFreeze() {
   frozenColumnName.value = null;
   frozenRowIndex.value = null;
   cancelFreezePickMode();
+  nextTick(() => {
+    syncFastTableGridViewport();
+    scheduleFastTableGridDraw();
+  });
 }
 
 function selectFreezeColumn(columnName) {
@@ -8359,7 +8412,7 @@ function resetTableFreeze() {
 }
 
 function getSchemaColumnStyle(columnName) {
-  const width = Number(schemaColumnWidthMap[columnName] || 0);
+  const width = scaleTableDimension(schemaColumnWidthMap[columnName] || 0);
   if (width <= 0) return null;
   return {
     width: `${width}px`,
@@ -8676,7 +8729,8 @@ async function enableSeamlessTableFromCurrentPage() {
   seamlessTable.enabled = true;
   seamlessTable.totalRows = tableView.totalRows;
   const anchorRowIndex = Math.max(0, (tableView.page - 1) * tableView.pageSize);
-  const anchorScrollTop = anchorRowIndex * TABLE_ROW_HEIGHT;
+  const anchorRowHeight = shouldUseFastTableGrid.value ? scaledTableRowHeight.value : TABLE_ROW_HEIGHT;
+  const anchorScrollTop = anchorRowIndex * anchorRowHeight;
   const wrap = shouldUseFastTableGrid.value ? fastTableGridViewportRef.value : tableGridWrapRef.value;
   if (wrap instanceof HTMLElement) {
     seamlessTable.scrollTop = anchorScrollTop;
@@ -8770,7 +8824,7 @@ function drawFastTableGrid() {
 
   const rowRange = getVisibleFastGridRows({
     totalRows: tableView.totalRows,
-    rowHeight: TABLE_ROW_HEIGHT,
+    rowHeight: scaledTableRowHeight.value,
     scrollTop: fastTableGridScroll.top,
     clientHeight: height,
     overscan: 3,
@@ -8779,9 +8833,9 @@ function drawFastTableGrid() {
     columns: tableView.columns,
     scrollLeft: fastTableGridScroll.left,
     clientWidth: width,
-    rowNumberWidth: TABLE_ROW_HANDLE_WIDTH,
-    getColumnWidth,
-    fallbackColumnWidth: TABLE_COLUMN_WIDTH_FALLBACK,
+    rowNumberWidth: scaledTableRowHandleWidth.value,
+    getColumnWidth: getScaledTableColumnWidth,
+    fallbackColumnWidth: Math.round(TABLE_COLUMN_WIDTH_FALLBACK * tableVisualScale.value),
     overscan: 1,
   });
 
@@ -8790,8 +8844,8 @@ function drawFastTableGrid() {
     rows,
     rowStartIndex: rowRange.start,
     visibleColumns,
-    rowHeight: TABLE_ROW_HEIGHT,
-    headerHeight: TABLE_HEADER_HEIGHT,
+    rowHeight: scaledTableRowHeight.value,
+    headerHeight: scaledTableHeaderHeight.value,
     scrollTop: fastTableGridScroll.top,
     scrollLeft: fastTableGridScroll.left,
     focusedCell: fastTableGridFocus.rowIndex >= 0 ? fastTableGridFocus : null,
@@ -8812,7 +8866,7 @@ function getFastTableGridTheme(canvas) {
   const styles = getComputedStyle(canvas);
   const fontFamily = readFastTableGridCssValue(styles, "--app-font", '"Microsoft YaHei", "Noto Sans SC", sans-serif');
   return {
-    font: `12px ${fontFamily}`,
+    font: `${Math.round(12 * tableVisualScale.value)}px ${fontFamily}`,
     headerBackground: readFastTableGridCssValue(styles, "--table-header-bg", readFastTableGridCssValue(styles, "--surface-card-strong", "rgba(226, 236, 248, 0.98)")),
     rowHeaderBackground: readFastTableGridCssValue(styles, "--table-row-header-bg", readFastTableGridCssValue(styles, "--bg-panel", "rgba(255, 255, 255, 0.97)")),
     cellBackground: readFastTableGridCssValue(styles, "--bg-panel", "rgba(255, 255, 255, 0.97)"),
@@ -8825,36 +8879,50 @@ function getFastTableGridTheme(canvas) {
 }
 
 function drawFastTableGridHeaders(context, visibleColumns, width, theme) {
+  const scale = tableVisualScale.value;
+  const headerHeight = scaledTableHeaderHeight.value;
+  const rowHandleWidth = scaledTableRowHandleWidth.value;
+  const textInset = Math.round(8 * scale);
+  const textBaseline = Math.round(22 * scale);
   context.fillStyle = theme.headerBackground;
-  context.fillRect(0, 0, width, TABLE_HEADER_HEIGHT);
+  context.fillRect(0, 0, width, headerHeight);
   context.strokeStyle = theme.border;
-  context.strokeRect(0, 0, TABLE_ROW_HANDLE_WIDTH, TABLE_HEADER_HEIGHT);
+  context.strokeRect(0, 0, rowHandleWidth, headerHeight);
   context.fillStyle = theme.headerText;
   context.font = theme.font;
   visibleColumns.forEach(({ column, x, width: columnWidth }) => {
     const drawX = x - fastTableGridScroll.left;
-    const text = truncateFastGridText(column.column_name || "", Math.max(10, columnWidth - 16), context);
-    context.strokeRect(drawX, 0, columnWidth, TABLE_HEADER_HEIGHT);
-    context.fillText(text, drawX + 8, 22);
+    const text = truncateFastGridText(column.column_name || "", Math.max(10, columnWidth - textInset * 2), context);
+    context.strokeRect(drawX, 0, columnWidth, headerHeight);
+    context.fillText(text, drawX + textInset, textBaseline);
   });
 }
 
 function drawFastTableGridRowHeaders(context, rowRange, height, theme) {
+  const scale = tableVisualScale.value;
+  const headerHeight = scaledTableHeaderHeight.value;
+  const rowHeight = scaledTableRowHeight.value;
+  const rowHandleWidth = scaledTableRowHandleWidth.value;
+  const textInset = Math.round(8 * scale);
+  const textBaselineOffset = Math.round(20 * scale);
   context.font = theme.font;
   for (let rowIndex = rowRange.start; rowIndex <= rowRange.end; rowIndex += 1) {
-    const y = TABLE_HEADER_HEIGHT + rowIndex * TABLE_ROW_HEIGHT - fastTableGridScroll.top;
-    if (y + TABLE_ROW_HEIGHT < TABLE_HEADER_HEIGHT || y > height) continue;
+    const y = headerHeight + rowIndex * rowHeight - fastTableGridScroll.top;
+    if (y + rowHeight < headerHeight || y > height) continue;
     context.fillStyle = theme.rowHeaderBackground;
-    context.fillRect(0, y, TABLE_ROW_HANDLE_WIDTH, TABLE_ROW_HEIGHT);
+    context.fillRect(0, y, rowHandleWidth, rowHeight);
     context.strokeStyle = theme.border;
-    context.strokeRect(0, y, TABLE_ROW_HANDLE_WIDTH, TABLE_ROW_HEIGHT);
+    context.strokeRect(0, y, rowHandleWidth, rowHeight);
     context.fillStyle = theme.headerText;
     const text = String(rowIndex + 1);
-    context.fillText(text, 8, y + 20);
+    context.fillText(text, textInset, y + textBaselineOffset);
   }
 }
 
 function drawFastTableGridRows(context, cells, theme) {
+  const scale = tableVisualScale.value;
+  const textInset = Math.round(8 * scale);
+  const textBaselineOffset = Math.round(20 * scale);
   context.font = theme.font;
   cells.forEach((cell) => {
     context.fillStyle = cell.focused ? theme.focusBackground : cell.hit ? theme.hitBackground : theme.cellBackground;
@@ -8862,8 +8930,8 @@ function drawFastTableGridRows(context, cells, theme) {
     context.strokeStyle = theme.border;
     context.strokeRect(cell.x, cell.y, cell.width, cell.height);
     context.fillStyle = theme.cellText;
-    const text = truncateFastGridText(cell.text, Math.max(10, cell.width - 16), context);
-    context.fillText(text, cell.x + 8, cell.y + 20);
+    const text = truncateFastGridText(cell.text, Math.max(10, cell.width - textInset * 2), context);
+    context.fillText(text, cell.x + textInset, cell.y + textBaselineOffset);
   });
 }
 
@@ -8891,14 +8959,39 @@ function resolveFastTableGridHit(event) {
     y: event.clientY - rect.top,
     scrollLeft: fastTableGridScroll.left,
     scrollTop: fastTableGridScroll.top,
-    rowHeight: TABLE_ROW_HEIGHT,
-    headerHeight: TABLE_HEADER_HEIGHT,
-    rowNumberWidth: TABLE_ROW_HANDLE_WIDTH,
+    rowHeight: scaledTableRowHeight.value,
+    headerHeight: scaledTableHeaderHeight.value,
+    rowNumberWidth: scaledTableRowHandleWidth.value,
     totalRows: tableView.totalRows,
     columns: tableView.columns,
-    getColumnWidth,
-    fallbackColumnWidth: TABLE_COLUMN_WIDTH_FALLBACK,
+    getColumnWidth: getScaledTableColumnWidth,
+    fallbackColumnWidth: Math.round(TABLE_COLUMN_WIDTH_FALLBACK * tableVisualScale.value),
   });
+}
+
+function setFastTableGridCursor(cursor) {
+  const viewport = fastTableGridViewportRef.value;
+  if (viewport instanceof HTMLElement) viewport.style.cursor = cursor;
+}
+
+function onFastTableGridPointerMove(event) {
+  const viewport = fastTableGridViewportRef.value;
+  if (!(viewport instanceof HTMLElement)) return;
+  const rect = viewport.getBoundingClientRect();
+  setFastTableGridCursor(resolveFastGridColumnResizeCursor({
+    x: event.clientX - rect.left,
+    y: event.clientY - rect.top,
+    scrollLeft: fastTableGridScroll.left,
+    headerHeight: scaledTableHeaderHeight.value,
+    rowNumberWidth: scaledTableRowHandleWidth.value,
+    columns: tableView.columns,
+    getColumnWidth: getScaledTableColumnWidth,
+    fallbackColumnWidth: Math.round(TABLE_COLUMN_WIDTH_FALLBACK * tableVisualScale.value),
+  }));
+}
+
+function onFastTableGridPointerLeave() {
+  setFastTableGridCursor("default");
 }
 
 function startFastTableGridColumnResize(event, hit) {
@@ -8915,11 +9008,11 @@ function onFastTableGridPointerDown(event) {
     x: event.clientX - rect.left,
     y: event.clientY - rect.top,
     scrollLeft: fastTableGridScroll.left,
-    headerHeight: TABLE_HEADER_HEIGHT,
-    rowNumberWidth: TABLE_ROW_HANDLE_WIDTH,
+    headerHeight: scaledTableHeaderHeight.value,
+    rowNumberWidth: scaledTableRowHandleWidth.value,
     columns: tableView.columns,
-    getColumnWidth,
-    fallbackColumnWidth: TABLE_COLUMN_WIDTH_FALLBACK,
+    getColumnWidth: getScaledTableColumnWidth,
+    fallbackColumnWidth: Math.round(TABLE_COLUMN_WIDTH_FALLBACK * tableVisualScale.value),
   });
   if (hit) startFastTableGridColumnResize(event, hit);
 }
@@ -14071,6 +14164,8 @@ function escapeHtml(str) {
                 ref="fastTableGridViewportRef"
                 class="fast-table-grid__viewport"
                 @scroll="onFastTableGridScroll"
+                @pointermove="onFastTableGridPointerMove"
+                @pointerleave="onFastTableGridPointerLeave"
                 @pointerdown="onFastTableGridPointerDown"
                 @click="onFastTableGridClick"
                 @dblclick="onFastTableGridDoubleClick"

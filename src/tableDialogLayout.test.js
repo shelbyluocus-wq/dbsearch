@@ -97,3 +97,16 @@ test("shouldApplyAdaptiveTablePageSize applies stable page size changes only whe
     false,
   );
 });
+
+test("styles.css scales table content via CSS variables so enlarged text stays crisp", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  const rule = styles.match(/^\.table-content-scale\s*\{[\s\S]*?\n\}/m)?.[0] || "";
+
+  assert.match(rule, /width:\s*100%/);
+  assert.match(rule, /height:\s*100%/);
+  assert.match(rule, /--table-scale:\s*1/);
+  assert.match(rule, /--table-row-height:\s*calc\(31px \* var\(--table-scale\)\)/);
+  assert.doesNotMatch(rule, /\bzoom\s*:/);
+  assert.doesNotMatch(rule, /transform:\s*scale\(var\(--content-scale\)\)/);
+});
