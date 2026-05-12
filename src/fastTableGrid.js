@@ -34,6 +34,41 @@ export function buildFastGridScrollSize({
   };
 }
 
+export function resolveFastGridCellScrollTarget({
+  rowIndex = 0,
+  columnName = "",
+  rowHeight = 31,
+  rowNumberWidth = 52,
+  columns = [],
+  getColumnWidth,
+  fallbackColumnWidth = 120,
+  currentScrollLeft = 0,
+} = {}) {
+  const safeRowIndex = Math.max(0, Math.floor(Number(rowIndex) || 0));
+  const safeColumnName = String(columnName ?? "");
+  const rowPx = toPositiveInteger(rowHeight, 31);
+  const rowHandleWidth = toPositiveInteger(rowNumberWidth, 52);
+  const list = Array.isArray(columns) ? columns : [];
+  let cursor = rowHandleWidth;
+  let scrollLeft = Math.max(0, Number(currentScrollLeft) || 0);
+
+  for (const column of list) {
+    const width = resolveColumnWidth(column, getColumnWidth, fallbackColumnWidth);
+    if (String(column?.column_name ?? "") === safeColumnName) {
+      scrollLeft = Math.max(0, cursor - rowHandleWidth);
+      break;
+    }
+    cursor += width;
+  }
+
+  return {
+    rowIndex: safeRowIndex,
+    columnName: safeColumnName,
+    scrollTop: safeRowIndex * rowPx,
+    scrollLeft,
+  };
+}
+
 export function getVisibleFastGridRows({
   totalRows = 0,
   rowHeight = 31,
@@ -149,6 +184,10 @@ export function hitTestFastGridColumnResize({
     cursor = edgeX;
   }
   return null;
+}
+
+export function resolveFastGridColumnResizeCursor(options = {}) {
+  return hitTestFastGridColumnResize(options) ? "col-resize" : "default";
 }
 
 export function truncateFastGridText(value, maxWidth, context) {

@@ -4,162 +4,150 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-**DB Scout (鹰捷)** — A Tauri 2 + Vue 3 desktop tool for MySQL database searching, featuring a pixel-art pet widget that expands into a search panel. Chinese-language UI throughout.
+**DB Scout (鹰捷)** is a Tauri 2 + Vue 3 Windows desktop tool for MySQL database searching. The UI is Chinese-language and centers on a pixel-art pet widget that opens database search, table browsing/editing, sync, migration, update, and settings workspaces.
 
 ## Commands
 
 ```bash
-# Full dev environment (Vite frontend + Cargo backend)
+# Install dependencies
+npm install
+
+# Full dev environment (Tauri starts Vite through beforeDevCommand)
 npm run tauri dev
 
-# Frontend only (Vite on port 1430)
+# Frontend only (Vite on port 1430; predev also syncs version and clears the port)
 npm run dev
 
-# Frontend build
+# Frontend production build
 npm run build
 
-# Production build (NSIS installer)
+# Preview built frontend
+npm run preview
+
+# Production Tauri build / NSIS installer
 npm run tauri build
 
-# Run frontend unit tests (Node.js built-in test runner)
-node --test src/panelChrome.test.js
-node --test src/weatherSkin.test.js
-node --test src/syncWorkspace.test.js
+# Signed local Windows build for updater artifacts
+npm run build:signed
 
-# Run all frontend tests
-node --test src/*.test.js
+# Prepare a release version across package/Cargo/Tauri files
+npm run release:prepare -- 5.5.9
+
+# Sync version fields without releasing
+npm run sync:version
 ```
 
-`npm run tauri dev` auto-triggers `npm run dev`. The `predev` script kills any process on port 1430 before starting.
+### Tests and checks
+
+```bash
+# Run all frontend unit tests (Node.js built-in test runner)
+node --test src/*.test.js
+
+# Run a single frontend test file
+node --test src/tableGridFocus.test.js
+
+# Run script/release helper tests
+node --test scripts/*.test.mjs
+
+# Rust tests / compile checks for the Tauri backend
+cd src-tauri && cargo test
+cd src-tauri && cargo check
+
+# Optional OCR feature check if touching OCR-gated code
+cd src-tauri && cargo check --features ocr
+```
+
+The README says basic validation is `npm run build` plus `cargo test`. `npm run tauri dev` invokes Tauri's `beforeDevCommand`, which runs `npm run dev`; the `predev` script runs `scripts/sync-version.mjs` and kills any process already listening on port 1430.
 
 ## Windows MSVC Build Environment
 
-Cargo config at `src-tauri/.cargo/config.toml` sets MSVC linker paths. If you hit `LNK1181: cannot open kernel32.lib`, set these in your shell:
-
-```bash
-export LIB="E:\\Program Files (x86)\\ms\\VC\\Tools\\MSVC\\14.44.35207\\lib\\x64;C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.22621.0\\um\\x64;C:\\Program Files (x86)\\Windows Kits\\10\\Lib\\10.0.22621.0\\ucrt\\x64"
-export INCLUDE="E:\\Program Files (x86)\\ms\\VC\\Tools\\MSVC\\14.44.35207\\include;C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\ucrt;C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\shared;C:\\Program Files (x86)\\Windows Kits\\10\\Include\\10.0.22621.0\\um"
-```
+Cargo config at `src-tauri/.cargo/config.toml` sets MSVC linker paths. If Windows Rust builds fail with `LNK1181: cannot open kernel32.lib`, set `LIB` and `INCLUDE` to the installed Visual Studio Build Tools / Windows SDK paths. The README lists required components: Visual Studio Build Tools 2022, `Desktop development with C++`, `MSVC v143`, and Windows 10/11 SDK.
 
 ## Architecture
 
 ### Single-file-heavy design
 
-The codebase intentionally uses very large single files rather than many small modules:
-- `src/App.vue` (~380KB) — entire frontend UI, all seven window modes in one component
-- `src-tauri/src/lib.rs` (~152KB) — all Rust backend logic: Tauri commands, DB operations, search, window management
-- `src/styles.css` — all CSS with design system custom properties
+This codebase intentionally keeps the main UI and backend in large files, with pure frontend logic extracted only where it improves testability:
+
+- `src/App.vue` — the main Vue component for all window modes and most live UI state.
+- `src/styles.css` — global visual system, pixel pet styling, panel styles, and weather/theme variables.
+- `src-tauri/src/lib.rs` — primary Tauri backend: commands, MySQL search/data operations, config, updater/window/hotkey/pet/system/weather logic.
+- `src-tauri/src/sync_workspace.rs` — sync profile execution.
+- `src-tauri/src/db_migration.rs` — DB migration logic.
 
 ### Multi-window structure
 
-Seven Tauri windows (one static in config, six created dynamically), all rendered by the same `App.vue` which branches on `getCurrentWindow().label`:
+Tauri has one configured startup window (`main`) and creates the other windows dynamically. All windows render the same `App.vue`, which branches by `getCurrentWindow().label` using flags such as `isPetWindow`, `isPanelWindow`, `isMenuWindow`, `isSyncWorkspaceWindow`, `isWelcomeWindow`, `isUpdateAnnouncementWindow`, and `isDbMigrationWorkspaceWindow`.
 
 | Window label | Purpose |
 |---|---|
-| `main` | Floating pixel pet widget (always-on-top, transparent, borderless) |
+| `main` | Floating transparent pixel pet widget |
 | `welcome` | Startup welcome screen |
 | `update_announcement` | Update announcement popup |
-| `panel` | Main search/results panel (780×860) |
-| `pet_menu` | Pet right-click context menu (212×184) |
-| `sync_workspace` | Sync workspace panel (760×640) |
+| `panel` | Main search/results/table panel |
+| `pet_menu` | Pet right-click context menu |
+| `sync_workspace` | Sync workspace panel |
 | `db_migration_workspace` | DB migration workspace panel |
 
-`App.vue` uses `isPetWindow`, `isPanelWindow`, `isMenuWindow`, `isSyncWorkspaceWindow`, `isWelcomeWindow`, `isUpdateAnnouncementWindow`, `isDbMigrationWorkspaceWindow` flags to conditionally render the appropriate UI.
+### Frontend/backend communication
 
-### Frontend → Backend communication
+Frontend code calls Tauri commands with `invoke()` from `@tauri-apps/api/core`; backend handlers are `#[tauri::command]` functions registered in `tauri::generate_handler![...]` in `src-tauri/src/lib.rs`. Search and sync progress are pushed back to the frontend with Tauri events and `listen()`.
 
-All DB/system operations go through Tauri IPC: frontend calls `invoke()` from `@tauri-apps/api/core`, backend handlers are `#[tauri::command]` async functions in `lib.rs`. Search progress and sync progress are pushed back via Tauri events (`listen()`).
+Main backend command groups include:
 
-Key command groups in `lib.rs` (58 commands total):
-- **DB**: `connect_db`, `disconnect_db`, `get_connection_status`, `refresh_schema`
-- **Search**: `search` (cancelable with progress events), `cancel_search`
-- **Data**: `get_table_data`, `save_table_changes`, `list_tables`
-- **Export**: `export_tables_xlsx`, `export_tables_xlsx_batch`
-- **Config**: `get_config`, `save_config`
-- **Update**: `get_update_settings`, `prepare_startup_update_check`, `check_for_updates_now`, `remember_pending_update_announcement`, `acknowledge_update_announcement`
-- **Windows**: `show_panel_window`, `hide_panel_window`, `toggle_panel_window`, `close_welcome_window`, `consume_panel_open_settings`, `set_panel_always_on_top`, `show_pet_menu`, `hide_pet_menu`, `hide_pet_window`, `toggle_pet_lock`, `save_pet_position`, `resize_pet_window`, `update_pet_hitbox`, `open_directory_in_explorer`, `open_gitee_release_page`
-- **Sync workspace**: `show_sync_workspace_window`, `hide_sync_workspace_window`, `toggle_sync_workspace_window`, `run_sync_profile` (in `sync_workspace.rs`)
-- **DB Migration**: `show_db_migration_window`, `hide_db_migration_window`, `toggle_db_migration_window`, `get_db_migration_workspace_state`, `save_db_migration_workspace_state`, `connect_db_migration_server`, `run_db_migration`
-- **Hotkeys**: `register_hotkey`, `register_quick_date_hotkey`, `register_sync_window_hotkey`, `register_db_migration_window_hotkey`
-- **Pet skins**: `detect_sprite_dimensions`, `import_skin_sprites`, `save_skin_manifest`, `list_custom_skins`, `delete_custom_skin`, `get_skin_base_path`
-- **System**: `set_autostart`
-- **Weather**: `get_weather`
+- DB connection/schema/search/table data/export commands.
+- Config persistence and UI preference commands.
+- Window show/hide/toggle and pet positioning/hitbox commands.
+- Global hotkey registration commands.
+- Sync workspace and DB migration commands.
+- Updater, autostart, weather, custom skin, and system integration commands.
+
+When adding a new Tauri command:
+
+1. Define the async command function with `#[tauri::command]`.
+2. Register it in `tauri::generate_handler![...]` in `src-tauri/src/lib.rs`.
+3. Call it from the frontend with `invoke('command_name', { args })`.
+4. If the command needs permissions, update `src-tauri/capabilities/default.json`.
 
 ### Rust state management
 
-`AppState` wraps `Arc<tokio::sync::Mutex<RuntimeState>>` in Tauri managed state. `RuntimeState` holds:
-- `pool`: `Option<MySqlPool>` (sqlx connection pool)
-- `schema_cache`: cached table/column metadata
-- `config`: `AppConfig` (persisted to `config.json` in app data dir)
-- `registered_hotkey` / `registered_quick_date_hotkey` / `registered_sync_window_hotkey` / `registered_db_migration_window_hotkey`: currently registered global shortcuts
-- `sync_running`: prevents concurrent sync operations
+`AppState` wraps shared runtime state in `Arc<tokio::sync::Mutex<RuntimeState>>`. `RuntimeState` holds the MySQL pool, schema cache, persisted `AppConfig`, registered global shortcuts, and sync-running guard. Search cancellation uses a separate `AtomicU64` cancel sequence outside the mutex.
 
-Additional Rust files beyond `lib.rs`:
-- `src-tauri/src/sync_workspace.rs` — sync profile execution
-- `src-tauri/src/db_migration.rs` — DB migration logic
+`AppConfig` is persisted as JSON in the Tauri app data directory and is split into `shared` database/search settings and `personal` UI/hotkey/pet/sync preferences.
 
-Cancel tokens for search use a separate `AtomicU64` (`cancel_seq`) outside the mutex.
+### Frontend state and extracted modules
 
-### Frontend state
+`App.vue` uses Vue 3 Composition API (`ref`/`reactive`) with no Pinia/Vuex. Extracted `src/*.js` modules contain pure logic covered by `node:test`; keep UI side effects in `App.vue` and prefer putting reusable deterministic logic in these modules when it is testable.
 
-Vue 3 Composition API (`<script setup>`) with reactive `ref`/`reactive`. No external state management (no Pinia/Vuex). All state lives in `App.vue` component scope.
+Important extracted areas include:
 
-### Extracted frontend modules
+- Panel chrome, settings modal, startup welcome, update manager, app identity/version.
+- Weather/skin presentation and `WeatherEngine` canvas particles.
+- Sync workspace/center state helpers.
+- DB migration workspace helpers.
+- Pet menu and quick paste helpers.
+- Table dialog layout, data cache, seamless scroll, freeze columns, tab order/drag, column collapse, cell viewer.
+- Edit-mode helpers for navigation, row selection, rectangular ranges, text panel, changes, cell click editing, batch import, find/search, fast table grid behavior.
 
-Pure logic extracted from `App.vue` for testability:
-- `src/panelChrome.js` — panel tab merging (`buildPanelTabs`), table folder chips, background opacity normalization
-- `src/weatherSkin.js` — weather category mapping, skin state resolution, weather presentation (colors/classes per theme+weather)
-- `src/weatherEngine.js` — Canvas 2D particle engine for rain/snow/sun/cloud effects (class `WeatherEngine`)
-- `src/syncWorkspace.js` — sync profile normalization, hotkey normalization, timeline event reduction
-- `src/syncCenter.js` — sync center UI state, profile management helpers
-- `src/appIdentity.js` — app identification/version utilities
-- `src/appVersion.js` — version parsing and comparison
-- `src/cellViewer.js` — cell detail viewer state and formatting
-- `src/columnCollapse.js` — column collapse/expand logic for table views
-- `src/dbMigrationWorkspace.js` — DB migration workspace state management
-- `src/petMenu.js` — pet right-click menu items and actions
-- `src/startupWelcome.js` — startup welcome screen state
-- `src/tableDialogLayout.js` — table dialog layout computation
-- `src/tableEditNavigation.js` — edit-mode Tab/Enter cell navigation (`resolveEditNavigation`)
-- `src/tableEditSelection.js` — edit-mode row selection, batch cell changes, TSV copy
-- `src/tableGridFocus.js` — Navicat-style grid focus navigation (`resolveFocusMove`, `clampFocus`, `classifyFocusKey`) across page + insert rows
-- `src/tableCellRange.js` — rectangular selection helpers (`normalizeRange`, `expandRange`, `fillRangeValue`, `buildFillDownChanges`, `buildRangeTsv`, `parseClipboardTsv`, `applyTsvToRange`)
-- `src/tableTextPanel.js` — decision helpers for the 📝 F4 bottom text panel (`buildFocusKey`, `resolveTextPanelLoad`, `clampTextPanelHeight`)
-- `src/tableFind.js` — in-table find/search state management
-- `src/tableTabDrag.js` — table tab drag-and-drop logic
-- `src/tableTabsOrder.js` — table tab ordering persistence
-- `src/updateManager.js` — update check, download, install state
+### Edit mode grid model
 
-Tests (Node built-in `node:test`) exist for most modules (see `src/*.test.js`). 236 tests total as of the 2026-05-10 Navicat-style edit-mode upgrade.
+Edit mode in `App.vue` has a Navicat-style cell focus and rectangular range layer on top of row selection:
 
-### Edit mode (编辑模式) grid model
+- `gridFocus`: focused page/insert cell.
+- `gridRange`: rectangular selection with anchor/head in one row kind.
+- `editingCell`: current in-place editor.
+- `editChanges`: pending updates/inserts/deletes.
+- `editSelectedRows`: row-level selection stored as a `Ref<Set>` with whole-set replacement so checkbox bindings rerender.
+- `textPanel*`: F4 bottom text panel state.
 
-Edit mode now has a Navicat-style grid focus + rectangular selection on top of the existing row-selection model. All live state lives in `App.vue`:
-- `gridFocus: { rowKind: "page"|"insert", rowIndex, columnName }` — currently focused cell; `null` when no focus
-- `gridRange: { anchor, head }` — rectangular selection pinned to a single rowKind
-- `editingCell` — current in-place edit (unchanged)
-- `editChanges = { updates: Map, inserts: [], deletes: Set }` — unsaved changes (unchanged)
-- `editSelectedRows: Ref<Set<string>>` — row-level selection (moved from `reactive(Set)` to `ref(Set)` with whole-set replacement so checkbox `:checked` bindings always re-render; see bug report at `docs/plans/2026-05-10-edit-mode-bugs.md`)
-- `textPanelOpen/Height/Draft/Dirty/FocusKey/Original` — 📝 F4 text panel state
+`handleGridFocusKeydown(event)` is the main edit-mode keyboard dispatcher and runs early from the global window keydown handler after modal/dialog bailouts.
 
-`handleGridFocusKeydown(event)` (in `App.vue`) is the master keyboard dispatcher for edit mode. It consumes Arrow/Home/End/PageUp/PageDown, Enter/F2, Esc, printable chars, Ctrl+C/V/D, Delete/Backspace, Ctrl+Enter (add row), Ctrl+Delete / Ctrl+- (delete row/range), and F4 (toggle text panel). Called early from `onWindowKeydown` after modal-dialog bails.
+## Release and updater notes
 
-### Config persistence
+The app uses Tauri updater with Gitee as the configured endpoint in `src-tauri/tauri.conf.json`. `npm run build:signed` reads the local updater private key from `C:\Users\Administrator\.tauri\dbsearch.key` and may read `dbsearch.key.password` beside it. Do not commit local signing keys or passwords.
 
-`AppConfig` has two sections: `shared` (DB credentials, search settings, DB templates) and `personal` (UI preferences, hotkeys, pet settings, sync profiles). Serialized as JSON to `config.json` in the Tauri app data directory. Loaded at startup via `get_config`.
-
-## Adding a new Tauri command
-
-1. Define an `async fn` with `#[tauri::command]` in `src-tauri/src/lib.rs`
-2. Register it in `.invoke_handler(tauri::generate_handler![...])` (around line 4027)
-3. Call from frontend with `invoke('command_name', { args })`
-4. If the command needs window permissions, add to `src-tauri/capabilities/default.json`
+`npm run release:prepare -- <version>` synchronizes version data across `package.json`, `package-lock.json`, `src-tauri/Cargo.toml`, `src-tauri/Cargo.lock` when applicable, and Tauri title/product fields. Release tags should match the code version, e.g. code `5.5.9` uses tag `v5.5.9`.
 
 ## Design system
 
-CSS custom properties in `styles.css`:
-- `--accent: #0284c7` (primary blue, overridden by theme selection via `UI_THEME_ACCENTS` in `weatherSkin.js`)
-- `--bg-panel: rgba(255,255,255,0.98)` with `backdrop-filter: blur(20px)` for frosted glass
-- Fonts: `"Noto Sans SC"`, `"Microsoft YaHei"` (Chinese UI)
-- `--px: 5px` base spacing unit
-- Weather system adds dynamic surface tones, sky classes, and glass mix variables
+The visual system is defined through CSS custom properties in `src/styles.css`, with `--accent` overridden by theme selection via `UI_THEME_ACCENTS` in `src/weatherSkin.js`. The UI uses Chinese fonts such as `Noto Sans SC` and `Microsoft YaHei`, frosted glass panels, `--px` as a base spacing unit, and weather-driven surface/sky variables.
