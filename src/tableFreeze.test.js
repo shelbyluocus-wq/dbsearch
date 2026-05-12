@@ -187,7 +187,7 @@ test('styles.css gives frozen panes a solid Excel-like surface while row numbers
   assert.match(tableRule, /border-spacing:\s*0/);
   assert.doesNotMatch(rowHandleRule, /background:\s*inherit/);
   assert.match(rowHandleRule, /background:\s*transparent/);
-  assert.match(frozenRule, /--table-freeze-cell-bg/);
+  assert.match(frozenRule, /background:\s*#eef3fa/);
 });
 
 test('App.vue uses a higher z-index helper for frozen header columns', async () => {

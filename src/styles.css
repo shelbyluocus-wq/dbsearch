@@ -3799,7 +3799,7 @@ mark {
 .data-table th {
   position: sticky;
   top: 0;
-  background: var(--surface-card-strong);
+  background: #f0f5fc;
   color: #1e293b;
   font-size: 13px;
   font-weight: 700;
@@ -3936,7 +3936,7 @@ mark {
 .data-table th.frozen-column,
 .data-table td.frozen-column,
 .data-table .edit-checkbox-col {
-  background: var(--table-freeze-cell-bg);
+  background: #eef3fa;
   background-clip: padding-box;
 }
 
@@ -3954,7 +3954,7 @@ mark {
 .data-table th.frozen-column,
 .data-table th.edit-row-handle-col,
 .data-table th.edit-checkbox-col {
-  background: var(--surface-card-strong);
+  background: #f0f5fc;
   -webkit-background-clip: padding-box;
   background-clip: padding-box;
 }
@@ -3977,7 +3977,7 @@ mark {
 }
 
 .data-table tr.frozen-row td {
-  background: var(--table-freeze-cell-bg);
+  background: #eef3fa;
   background-clip: padding-box;
 }
 
