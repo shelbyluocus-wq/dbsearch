@@ -227,7 +227,7 @@ test("styles.css exposes modern native scrollbars for the table grid", async () 
   const gridStyles = styles.match(/^\.grid-wrap\s*\{[^}]*\}/m)?.[0] || "";
 
   assert.match(gridStyles, /overflow: auto/);
-  assert.match(gridStyles, /scrollbar-width: thin/);
+  assert.match(gridStyles, /scrollbar-width: auto/);
   assert.match(styles, /\.grid-wrap::-webkit-scrollbar/);
   assert.doesNotMatch(gridStyles, /scrollbar-width: none/);
   assert.doesNotMatch(styles, /\.grid-wrap::-webkit-scrollbar\s*\{\s*display:\s*none/);

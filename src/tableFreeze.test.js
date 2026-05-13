@@ -185,9 +185,11 @@ test('styles.css gives frozen panes a solid Excel-like surface while row numbers
 
   assert.match(tableRule, /border-collapse:\s*separate/);
   assert.match(tableRule, /border-spacing:\s*0/);
+  assert.match(tableRule, /--table-freeze-cell-bg:\s*#eef3fa/);
+  assert.match(tableRule, /--table-freeze-header-bg:\s*#f0f5fc/);
   assert.doesNotMatch(rowHandleRule, /background:\s*inherit/);
-  assert.match(rowHandleRule, /background:\s*transparent/);
-  assert.match(frozenRule, /background:\s*#eef3fa/);
+  assert.match(rowHandleRule, /background:\s*var\(--table-body-bg\)/);
+  assert.match(frozenRule, /background:\s*var\(--table-freeze-cell-bg\)/);
 });
 
 test('App.vue uses a higher z-index helper for frozen header columns', async () => {
@@ -239,9 +241,9 @@ test('App.vue keeps edit-mode leading action cells sticky between row handle and
   const headerHelperStart = appVue.indexOf('function getFrozenHeaderActionStyle()');
   const headerHelperEnd = appVue.indexOf('function getFrozenCellStyle', headerHelperStart);
   const headerHelperCode = appVue.slice(headerHelperStart, headerHelperEnd);
-  const headerCheckboxStart = appVue.indexOf('<th v-if="editMode" class="edit-checkbox-col"');
-  const existingRowCheckboxStart = appVue.indexOf('<td v-if="editMode" class="edit-checkbox-col"');
-  const insertRowActionStart = appVue.indexOf('<td class="edit-checkbox-col"');
+  const headerCheckboxMatch = appVue.match(/<th[\s\S]{0,120}v-if="editMode"[\s\S]{0,120}class="edit-checkbox-col"[\s\S]{0,220}:style="getFrozenHeaderActionStyle\(\)"/);
+  const existingRowCheckboxMatch = appVue.match(/<td[\s\S]{0,120}v-if="editMode"[\s\S]{0,120}class="edit-checkbox-col"[\s\S]{0,220}:style="getFrozenRowActionStyle\(idx\)"/);
+  const insertRowActionMatch = appVue.match(/<td[\s\S]{0,120}class="edit-checkbox-col"[\s\S]{0,220}:style="getFrozenInsertActionStyle\(\)"/);
 
   assert.notEqual(helperStart, -1, 'shared edit action sticky helper should exist');
   assert.match(helperCode, /left: `\$\{scaleTableDimension\(TABLE_ROW_HANDLE_WIDTH\)\}px`/);
@@ -258,12 +260,9 @@ test('App.vue keeps edit-mode leading action cells sticky between row handle and
   assert.notEqual(rowActionHelperStart, -1, 'existing row action sticky helper should exist');
   assert.match(rowActionHelperCode, /getFrozenRowStyle\(rowIndex\)/);
   assert.match(rowActionHelperCode, /getFrozenEditActionStyle\(\)/);
-  assert.notEqual(headerCheckboxStart, -1, 'header checkbox cell should exist');
-  assert.notEqual(existingRowCheckboxStart, -1, 'existing row checkbox cell should exist');
-  assert.notEqual(insertRowActionStart, -1, 'insert row action cell should exist');
-  assert.match(appVue.slice(headerCheckboxStart, headerCheckboxStart + 140), /:style="getFrozenHeaderActionStyle\(\)"/);
-  assert.match(appVue.slice(existingRowCheckboxStart, existingRowCheckboxStart + 140), /:style="getFrozenRowActionStyle\(idx\)"/);
-  assert.match(appVue.slice(insertRowActionStart, insertRowActionStart + 140), /:style="getFrozenInsertActionStyle\(\)"/);
+  assert.ok(headerCheckboxMatch, 'header checkbox cell should exist');
+  assert.ok(existingRowCheckboxMatch, 'existing row checkbox cell should exist');
+  assert.ok(insertRowActionMatch, 'insert row action cell should exist');
 });
 
 test('App.vue keeps row-handle header sticky at the leading intersection', async () => {
@@ -271,23 +270,56 @@ test('App.vue keeps row-handle header sticky at the leading intersection', async
   const helperStart = appVue.indexOf('function getFrozenHeaderHandleStyle()');
   const helperEnd = appVue.indexOf('function getFrozenHeaderActionStyle', helperStart);
   const helperCode = appVue.slice(helperStart, helperEnd);
-  const headerHandleStart = appVue.indexOf('<th class="edit-row-handle-col row-freeze-handle-col"');
+  const headerHandleMatch = appVue.match(/<th[\s\S]{0,160}class="edit-row-handle-col row-freeze-handle-col"[\s\S]{0,220}:style="getFrozenHeaderHandleStyle\(\)"/);
 
   assert.notEqual(helperStart, -1, 'row-handle header sticky helper should exist');
   assert.match(helperCode, /position: "sticky"/);
   assert.match(helperCode, /left: "0px"/);
   assert.match(helperCode, /zIndex: 13/);
-  assert.notEqual(headerHandleStart, -1, 'row-handle header cell should exist');
-  assert.match(appVue.slice(headerHandleStart, headerHandleStart + 140), /:style="getFrozenHeaderHandleStyle\(\)"/);
+  assert.ok(headerHandleMatch, 'row-handle header cell should exist');
 });
 
 test('styles.css keeps row-number cells visually aligned with normal table cells', async () => {
   const styles = await readStyles();
   const rowHandleRule = styles.match(/\.data-table \.row-freeze-handle-col\s*\{[^}]*\}/s)?.[0] || '';
-  const editRowHandleRule = styles.match(/\.data-table \.edit-row-handle-col\s*\{[^}]*\}/s)?.[0] || '';
+  const allEditRowHandleRules = [...styles.matchAll(/\.data-table \.edit-row-handle-col\s*\{[^}]*\}/gs)].map(m => m[0]);
+  const editRowHandleRule = allEditRowHandleRules.find(r => r.includes("background:")) || allEditRowHandleRules.at(-1) || '';
 
-  assert.match(rowHandleRule, /background:\s*transparent/);
+  assert.match(rowHandleRule, /background:\s*var\(--table-body-bg\)/);
   assert.match(rowHandleRule, /color:\s*inherit/);
-  assert.match(editRowHandleRule, /background:\s*transparent/);
+  assert.match(editRowHandleRule, /background:\s*var\(--table-body-bg\)/);
   assert.match(editRowHandleRule, /color:\s*inherit/);
+});
+
+test('App.vue marks row-number and edit action columns as leading frozen surfaces', async () => {
+  const appVue = await readAppVue();
+
+  assert.match(appVue, /'frozen-leading-col': frozenColumnName/);
+});
+
+test('styles.css gives table cells a solid fill and joins leading frozen columns', async () => {
+  const styles = await readStyles();
+  const tableRule = styles.match(/\.data-table\s*\{[^}]*\}/s)?.[0] || '';
+  const rowHandleRule = styles.match(/\.data-table \.row-freeze-handle-col\s*\{[^}]*\}/s)?.[0] || '';
+  const leadingRule = styles.match(/\.data-table \.row-freeze-handle-col\.frozen-leading-col,[\s\S]*?\.data-table \.edit-checkbox-col\.frozen-leading-col\s*\{[^}]*\}/)?.[0] || '';
+  const midnightTableRule = styles.match(/\[data-theme="midnight"\] \.data-table\s*\{[^}]*\}/s)?.[0] || '';
+
+  assert.match(tableRule, /--table-body-bg:/);
+  assert.match(styles, /(?:^|\n)\.data-table td\s*\{[^}]*background:\s*var\(--table-body-bg\)/s);
+  assert.match(rowHandleRule, /background:\s*var\(--table-body-bg\)/);
+  assert.match(leadingRule, /background:\s*var\(--table-freeze-cell-bg\)/);
+  assert.match(midnightTableRule, /--table-freeze-cell-bg:\s*#0f1830/);
+  assert.match(midnightTableRule, /--table-freeze-header-bg:\s*#0c1628/);
+});
+
+test('styles.css hides frozen row seams while preserving the freeze boundary', async () => {
+  const styles = await readStyles();
+  const frozenRowRule = styles.match(/\.data-table tr\.frozen-row td,[\s\S]*?\.data-table td\.frozen-row\s*\{[^}]*\}/)?.[0] || '';
+  const frozenRowEdgeRule = styles.match(/\.data-table tr\.frozen-row-edge td,[\s\S]*?\.data-table td\.frozen-row-edge\s*\{[^}]*\}/)?.[0] || '';
+
+  assert.match(frozenRowRule, /background:\s*var\(--table-freeze-cell-bg\)/);
+  assert.match(frozenRowRule, /background-clip:\s*border-box/);
+  assert.match(frozenRowRule, /border-bottom-color:\s*var\(--table-freeze-cell-bg\)/);
+  assert.match(frozenRowEdgeRule, /border-bottom-color:\s*var\(--table-freeze-cell-bg\)/);
+  assert.match(frozenRowEdgeRule, /inset 0 -1px 0 color-mix/);
 });

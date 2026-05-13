@@ -2596,10 +2596,13 @@ mark {
   min-height: 36px;
   padding: 0 4px 6px;
   gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
   flex-shrink: 0;
 }
 
 .table-modal.fullscreen .modal-title-row {
+  flex: 1 1 440px;
   gap: 6px;
   min-width: 0;
 }
@@ -2612,13 +2615,10 @@ mark {
   font-size: 14px;
 }
 
-.table-modal.fullscreen .modal-copy-btn,
-.table-modal.fullscreen .modal-title-row > .table-title-action-btn:not(.table-title-find-btn),
-.table-modal.fullscreen .table-header-actions > .small-btn:not(.table-fullscreen-btn),
-.table-modal.fullscreen .table-header-actions > .edit-toggle-btn,
+.table-modal.fullscreen .modal-title-row > .table-title-action-btn:not(.table-title-find-btn):not(.table-title-schema-btn):not(.table-title-export-btn),
 .table-modal.fullscreen .table-tabs,
 .table-modal.fullscreen .edit-no-pk-warning,
-.table-modal.fullscreen .schema-box,
+.table-modal.fullscreen:not(.fullscreen-schema-open) .schema-box,
 .table-modal.fullscreen .data-box > .section-head,
 .table-modal.fullscreen .data-head .freeze-toolbar,
 .table-modal.fullscreen .data-head .edit-shortcut-hint,
@@ -2654,6 +2654,62 @@ mark {
 
 .table-modal.fullscreen .data-head {
   display: none;
+}
+
+.table-modal.fullscreen .table-header-actions {
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.table-modal.fullscreen .modal-copy-btn,
+.table-modal.fullscreen .table-title-action-btn,
+.table-modal.fullscreen .table-header-actions .small-btn,
+.table-modal.fullscreen .table-header-actions .edit-toggle-btn,
+.table-modal.fullscreen .table-header-actions .icon-btn {
+  height: 26px;
+}
+
+.table-modal.fullscreen .modal-copy-btn,
+.table-modal.fullscreen .table-header-actions .icon-btn {
+  width: 28px;
+  min-width: 28px;
+}
+
+.table-modal.fullscreen .table-title-action-btn,
+.table-modal.fullscreen .table-header-actions .small-btn,
+.table-modal.fullscreen .table-header-actions .edit-toggle-btn {
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.table-modal.fullscreen .table-title-schema-btn.active {
+  background: var(--accent-tint);
+  border-color: var(--accent-ring);
+  color: var(--text-main);
+}
+
+.table-modal.fullscreen.fullscreen-schema-open .schema-box {
+  position: absolute;
+  top: 0;
+  left: 8px;
+  right: 8px;
+  z-index: 18;
+  max-height: min(360px, 42vh);
+  padding: 10px;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border-glass) 72%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-panel) 98%, transparent);
+  box-shadow: 0 18px 42px color-mix(in srgb, var(--text-main) 18%, transparent);
+}
+
+.table-modal.fullscreen.fullscreen-schema-open .schema-box > .section-body {
+  max-height: min(300px, 34vh);
+  overflow: auto;
 }
 
 .table-modal.fullscreen .table-find-bar {
@@ -2712,11 +2768,6 @@ mark {
   border-radius: 0;
   background: color-mix(in srgb, var(--bg-panel) 96%, transparent);
   contain: paint;
-}
-
-.table-modal.fullscreen .data-table th,
-.table-modal.fullscreen .data-table td {
-  background-clip: padding-box;
 }
 
 .modal-title-row {
@@ -3038,8 +3089,8 @@ mark {
 }
 
 .table-command-list::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
 }
 
 .table-command-list::-webkit-scrollbar-track {
@@ -3638,7 +3689,7 @@ mark {
   flex: 1;
   min-height: 140px;
   max-height: none;
-  scrollbar-width: thin;
+  scrollbar-width: auto;
   scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
@@ -3649,8 +3700,8 @@ mark {
 }
 
 .grid-wrap::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
 }
 
 .grid-wrap::-webkit-scrollbar-track {
@@ -3661,14 +3712,11 @@ mark {
 .grid-wrap::-webkit-scrollbar-thumb {
   min-height: 36px;
   background: var(--scrollbar-thumb);
-  border: 3px solid transparent;
   border-radius: 999px;
-  background-clip: padding-box;
 }
 
 .grid-wrap::-webkit-scrollbar-thumb:hover {
   background: var(--scrollbar-thumb-hover);
-  background-clip: padding-box;
 }
 
 .grid-wrap::-webkit-scrollbar-corner {
@@ -3677,7 +3725,8 @@ mark {
 
 .fast-table-grid {
   --table-header-bg: var(--surface-card-strong);
-  --table-row-header-bg: color-mix(in srgb, var(--bg-panel) 96%, transparent);
+  --table-body-bg: color-mix(in srgb, var(--bg-panel) 98%, #eef6ff 2%);
+  --table-row-header-bg: var(--table-body-bg);
   position: relative;
   flex: 1;
   min-height: 140px;
@@ -3685,7 +3734,7 @@ mark {
   border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 10px;
   overflow: hidden;
-  background: color-mix(in srgb, var(--bg-panel) 96%, transparent);
+  background: var(--table-body-bg);
 }
 
 .table-content-scale .fast-table-grid {
@@ -3700,7 +3749,7 @@ mark {
   height: 100%;
   min-height: 140px;
   overflow: auto;
-  scrollbar-width: thin;
+  scrollbar-width: auto;
   scrollbar-color: var(--scrollbar-thumb) transparent;
 }
 
@@ -3744,9 +3793,10 @@ mark {
 
 .data-table {
   --table-header-bg: rgba(226, 236, 248, 1);
-  --table-freeze-cell-bg: color-mix(in srgb, var(--bg-panel) 99%, #eef6ff 1%);
-  --table-freeze-header-bg: color-mix(in srgb, var(--table-header-bg) 96%, #ffffff 4%);
-  --table-freeze-row-header-bg: transparent;
+  --table-body-bg: color-mix(in srgb, var(--bg-panel) 96%, #eef6ff 4%);
+  --table-freeze-cell-bg: #eef3fa;
+  --table-freeze-header-bg: #f0f5fc;
+  --table-freeze-row-header-bg: var(--table-body-bg);
   width: 100%;
   border-collapse: separate;
   border-spacing: 0;
@@ -3779,6 +3829,7 @@ mark {
 .data-table td {
   overflow: hidden;
   position: relative;
+  background: var(--table-body-bg);
 }
 
 .table-modal.edit-mode-active .data-table td:not(.edit-checkbox-col):not(.edit-row-handle-col) {
@@ -3809,6 +3860,11 @@ mark {
 
 [data-theme="midnight"] .data-table th {
   background: #0c1628;
+}
+
+[data-theme="midnight"] .data-table {
+  --table-freeze-cell-bg: #0f1830;
+  --table-freeze-header-bg: #0c1628;
 }
 
 .th-content {
@@ -3936,56 +3992,71 @@ mark {
 .data-table th.frozen-column,
 .data-table td.frozen-column,
 .data-table .edit-checkbox-col {
-  background: #eef3fa;
-  background-clip: padding-box;
+  background: var(--table-freeze-cell-bg);
+  background-clip: border-box;
 }
 
 [data-theme="midnight"] .data-table td.frozen-column,
 [data-theme="midnight"] .data-table .edit-checkbox-col {
-  background: #0f1830;
+  background: var(--table-freeze-cell-bg);
 }
 
 .data-table .edit-row-handle-col {
-  background: transparent;
+  background: var(--table-body-bg);
   color: inherit;
-  background-clip: padding-box;
 }
 
 .data-table th.frozen-column,
 .data-table th.edit-row-handle-col,
 .data-table th.edit-checkbox-col {
-  background: #f0f5fc;
-  -webkit-background-clip: padding-box;
-  background-clip: padding-box;
+  background: var(--table-freeze-header-bg);
+  background-clip: border-box;
 }
 
 [data-theme="midnight"] .data-table th.frozen-column,
 [data-theme="midnight"] .data-table th.edit-row-handle-col,
 [data-theme="midnight"] .data-table th.edit-checkbox-col {
-  background: #0c1628;
+  background: var(--table-freeze-header-bg);
 }
 
 .data-table .edit-checkbox-col {
   background: var(--table-freeze-row-header-bg);
 }
 
+.data-table .row-freeze-handle-col.frozen-leading-col,
+.data-table .edit-checkbox-col.frozen-leading-col {
+  background: var(--table-freeze-cell-bg);
+  background-clip: border-box;
+}
+
 .data-table th.frozen-column-edge,
 .data-table td.frozen-column-edge {
   box-shadow:
+    0 1px 0 0 var(--table-freeze-cell-bg),
     inset -1px 0 0 color-mix(in srgb, var(--text-main) 20%, transparent),
     8px 0 14px -13px color-mix(in srgb, var(--text-main) 44%, transparent);
 }
 
-.data-table tr.frozen-row td {
-  background: #eef3fa;
-  background-clip: padding-box;
+.data-table td.frozen-column:not(.frozen-column-edge),
+.data-table td.frozen-leading-col,
+.data-table th.frozen-column:not(.frozen-column-edge) {
+  box-shadow: 0 1px 0 0 var(--table-freeze-cell-bg);
+}
+
+.data-table tr.frozen-row td,
+.data-table td.frozen-row {
+  background: var(--table-freeze-cell-bg);
+  background-clip: border-box;
+  border-bottom-color: var(--table-freeze-cell-bg);
 }
 
 [data-theme="midnight"] .data-table tr.frozen-row td {
-  background: #0f1830;
+  background: var(--table-freeze-cell-bg);
 }
 
-.data-table tr.frozen-row-edge td {
+.data-table tr.frozen-row-edge td,
+.data-table td.frozen-row-edge {
+  border-bottom-color: var(--table-freeze-cell-bg);
   box-shadow:
     inset 0 -1px 0 color-mix(in srgb, var(--text-main) 18%, transparent),
     0 8px 14px -14px color-mix(in srgb, var(--text-main) 42%, transparent);
@@ -4005,14 +4076,19 @@ mark {
 }
 
 .data-table .row-freeze-handle-col {
-  background: transparent;
+  background: var(--table-body-bg);
   color: inherit;
-  background-clip: padding-box;
 }
 
 .data-table th.row-freeze-handle-col,
 .data-table th.edit-checkbox-col {
   background: var(--table-freeze-header-bg);
+}
+
+.data-table th.row-freeze-handle-col.frozen-leading-col,
+.data-table th.edit-checkbox-col.frozen-leading-col {
+  background: var(--table-freeze-header-bg);
+  background-clip: border-box;
 }
 
 .col-resize-handle {
@@ -4695,8 +4771,8 @@ mark {
 .list-zoom::-webkit-scrollbar,
 .table-content::-webkit-scrollbar,
 .settings-modal::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 14px;
+  height: 14px;
 }
 
 .result-sidebar::-webkit-scrollbar-track,
@@ -5565,17 +5641,17 @@ mark {
 
 /* Checkbox column */
 .edit-checkbox-col {
-  width: 32px !important;
-  min-width: 32px !important;
-  max-width: 32px !important;
+  width: var(--table-edit-checkbox-width, 32px) !important;
+  min-width: var(--table-edit-checkbox-width, 32px) !important;
+  max-width: var(--table-edit-checkbox-width, 32px) !important;
   text-align: center;
   padding: 2px 4px !important;
 }
 
 .edit-row-handle-col {
-  width: 36px !important;
-  min-width: 36px !important;
-  max-width: 36px !important;
+  width: var(--table-row-handle-width, 36px) !important;
+  min-width: var(--table-row-handle-width, 36px) !important;
+  max-width: var(--table-row-handle-width, 36px) !important;
   text-align: center;
   padding: 0 !important;
   cursor: pointer;
@@ -8468,7 +8544,7 @@ mark {
   scrollbar-width: thin;
   scrollbar-color: var(--scrollbar-thumb) var(--scrollbar-track);
 }
-.settings-body-v2::-webkit-scrollbar { width: 8px; }
+.settings-body-v2::-webkit-scrollbar { width: 14px; }
 .settings-body-v2::-webkit-scrollbar-track { background: var(--scrollbar-track); border-radius: 999px; }
 .settings-body-v2::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border: 2px solid var(--scrollbar-track); border-radius: 999px; }
 .settings-body-v2::-webkit-scrollbar-thumb:hover { background: var(--scrollbar-thumb-hover); }
@@ -14946,7 +15022,7 @@ mark {
 
 .sync-center-root .sync-center-file-body .sw-content::-webkit-scrollbar,
 .sync-center-root .dmw-root--embedded .dmw-content::-webkit-scrollbar {
-  width: 8px;
+  width: 14px;
 }
 
 .sync-center-root .sync-center-file-body .sw-content::-webkit-scrollbar-thumb,

@@ -3851,6 +3851,8 @@ const panelChromeStyle = computed(() => {
 const tableVisualScale = computed(() => normalizeUiScale(config.personal.ui_scale));
 const tableContentScaleStyle = computed(() => ({
   "--table-scale": String(tableVisualScale.value),
+  "--table-row-handle-width": `${scaledTableRowHandleWidth.value}px`,
+  "--table-edit-checkbox-width": `${Math.round(TABLE_EDIT_CHECKBOX_WIDTH * tableVisualScale.value)}px`,
 }));
 const scaledTableHeaderHeight = computed(() => Math.round(TABLE_HEADER_HEIGHT * tableVisualScale.value));
 const scaledTableRowHeight = computed(() => Math.round(TABLE_ROW_HEIGHT * tableVisualScale.value));
@@ -8875,7 +8877,7 @@ function getFastTableGridTheme(canvas) {
     font: `${Math.round(12 * tableVisualScale.value)}px ${fontFamily}`,
     headerBackground: readFastTableGridCssValue(styles, "--table-header-bg", readFastTableGridCssValue(styles, "--surface-card-strong", "rgba(226, 236, 248, 0.98)")),
     rowHeaderBackground: readFastTableGridCssValue(styles, "--table-row-header-bg", readFastTableGridCssValue(styles, "--bg-panel", "rgba(255, 255, 255, 0.97)")),
-    cellBackground: readFastTableGridCssValue(styles, "--bg-panel", "rgba(255, 255, 255, 0.97)"),
+    cellBackground: readFastTableGridCssValue(styles, "--table-body-bg", readFastTableGridCssValue(styles, "--bg-panel", "rgba(255, 255, 255, 0.97)")),
     focusBackground: readFastTableGridCssValue(styles, "--accent-soft", "rgba(2, 132, 199, 0.08)"),
     hitBackground: readFastTableGridCssValue(styles, "--accent-tint", "rgba(2, 132, 199, 0.12)"),
     border: readFastTableGridCssValue(styles, "--surface-card-border", "rgba(15, 23, 42, 0.08)"),
@@ -13980,6 +13982,7 @@ function escapeHtml(str) {
       'modal-card', 'wide', 'table-modal', 'table-modal--instant',
       tableDialogClasses,
       { 'table-modal--host-fill': tableDialogSurfaceMode.fillHostWindow },
+      { 'fullscreen-schema-open': tableFullscreen && tableDetailView === 'full' && !schemaCollapsed },
       editGlowPhase !== 'none' ? `edit-glow-${editGlowPhase}` : '',
       { 'edit-mode-active': editMode },
       { 'reduced-transparency': reducedTransparencyEnabled },
@@ -13997,6 +14000,14 @@ function escapeHtml(str) {
           <button v-if="tableFullscreen" class="table-title-action-btn table-title-find-btn" @click.stop="openTableFind">
             搜索
           </button>
+          <button
+            v-if="tableFullscreen && tableDetailView === 'full'"
+            class="table-title-action-btn table-title-schema-btn"
+            :class="{ active: !schemaCollapsed }"
+            @click.stop="toggleSchemaCollapsed"
+          >
+            {{ schemaCollapsed ? 'Schema' : '收起Schema' }}
+          </button>
           <span v-if="tableFullscreen" class="fullscreen-row-range">{{ seamlessVisibleRangeText }}</span>
           <div v-if="tableFullscreen" class="fullscreen-freeze-toolbar freeze-toolbar" :class="{ 'freeze-pick-mode': freezePickMode }">
             <button class="small-btn" :class="{ active: freezePickMode }" @click.stop="toggleFreezePickMode" :disabled="freezePickMode && !hasFreezePreview">
@@ -14006,7 +14017,7 @@ function escapeHtml(str) {
             <button v-if="!freezePickMode && (frozenColumnName || frozenRowIndex !== null)" class="small-btn danger" @click.stop="clearFreeze">取消冻结</button>
             <span class="freeze-status">{{ freezePickMode ? freezePreviewText : freezeAppliedText }}</span>
           </div>
-          <button class="table-title-action-btn" :disabled="exportLoading" @click.stop="exportCurrentTable">
+          <button class="table-title-action-btn table-title-export-btn" :disabled="exportLoading" @click.stop="exportCurrentTable">
             {{ exportLoading ? '导出中...' : '导出Excel' }}
           </button>
         </div>
@@ -14186,8 +14197,18 @@ function escapeHtml(str) {
               <table class="data-table">
                 <thead>
                   <tr>
-                    <th class="edit-row-handle-col row-freeze-handle-col" :style="getFrozenHeaderHandleStyle()" title="冻结行控制"></th>
-                    <th v-if="editMode" class="edit-checkbox-col" :style="getFrozenHeaderActionStyle()">
+                    <th
+                      class="edit-row-handle-col row-freeze-handle-col"
+                      :class="{ 'frozen-leading-col': frozenColumnName }"
+                      :style="getFrozenHeaderHandleStyle()"
+                      title="冻结行控制"
+                    ></th>
+                    <th
+                      v-if="editMode"
+                      class="edit-checkbox-col"
+                      :class="{ 'frozen-leading-col': frozenColumnName }"
+                      :style="getFrozenHeaderActionStyle()"
+                    >
                       <input type="checkbox" title="选择当前可见范围" @click.stop.prevent="toggleSelectAll"
                         :checked="editAllPageRowsSelected" />
                     </th>
@@ -14251,6 +14272,7 @@ function escapeHtml(str) {
                     <td
                       class="edit-row-handle-col row-freeze-handle-col"
                       :class="{
+                        'frozen-leading-col': frozenColumnName,
                         'freeze-preview-row': isFreezePreviewRow(idx),
                         'frozen-row': frozenRowMeta[idx]?.frozen,
                         'frozen-row-edge': frozenRowMeta[idx]?.edge,
@@ -14262,7 +14284,12 @@ function escapeHtml(str) {
                     >
                       <span class="row-number">{{ getDisplayedRowNumber(idx, row) }}</span>
                     </td>
-                    <td v-if="editMode" class="edit-checkbox-col" :style="getFrozenRowActionStyle(idx)">
+                    <td
+                      v-if="editMode"
+                      class="edit-checkbox-col"
+                      :class="{ 'frozen-leading-col': frozenColumnName }"
+                      :style="getFrozenRowActionStyle(idx)"
+                    >
                                       <input type="checkbox"
                         :checked="isRowSelected(row, idx)"
                         :disabled="isRowDeleted(row, idx)"
@@ -14314,10 +14341,21 @@ function escapeHtml(str) {
                   </tr>
                   <!-- 新增行 -->
                   <tr v-for="(newRow, nIdx) in editChanges.inserts" :key="'new-'+nIdx" class="edit-new-row">
-                    <td class="edit-row-handle-col row-freeze-handle-col" :style="getFrozenInsertRowHandleStyle()" @mousedown.stop.prevent="onRowHandleMouseDown(nIdx, 'insert')" @mouseenter="onRowHandleMouseEnter(nIdx, 'insert')" title="选中整行">
+                    <td
+                      class="edit-row-handle-col row-freeze-handle-col"
+                      :class="{ 'frozen-leading-col': frozenColumnName }"
+                      :style="getFrozenInsertRowHandleStyle()"
+                      @mousedown.stop.prevent="onRowHandleMouseDown(nIdx, 'insert')"
+                      @mouseenter="onRowHandleMouseEnter(nIdx, 'insert')"
+                      title="选中整行"
+                    >
                       <span class="edit-row-handle">⠿</span>
                     </td>
-                    <td class="edit-checkbox-col" :style="getFrozenInsertActionStyle()">
+                    <td
+                      class="edit-checkbox-col"
+                      :class="{ 'frozen-leading-col': frozenColumnName }"
+                      :style="getFrozenInsertActionStyle()"
+                    >
                       <button class="edit-remove-insert-btn" @click="removeNewRow(nIdx)" title="移除">✕</button>
                     </td>
                     <td v-for="col in tableView.columns" :key="col.column_name"
@@ -14362,8 +14400,16 @@ function escapeHtml(str) {
                   </tr>
                   <!-- 快速追加新行的幽灵行（仅在编辑模式出现） -->
                   <tr v-if="editMode" class="edit-ghost-row" @click="addRowAndFocus">
-                    <td class="edit-row-handle-col row-freeze-handle-col" :style="getFrozenInsertRowHandleStyle()"></td>
-                    <td class="edit-checkbox-col" :style="getFrozenInsertActionStyle()">＋</td>
+                    <td
+                      class="edit-row-handle-col row-freeze-handle-col"
+                      :class="{ 'frozen-leading-col': frozenColumnName }"
+                      :style="getFrozenInsertRowHandleStyle()"
+                    ></td>
+                    <td
+                      class="edit-checkbox-col"
+                      :class="{ 'frozen-leading-col': frozenColumnName }"
+                      :style="getFrozenInsertActionStyle()"
+                    >＋</td>
                     <td :colspan="tableView.columns.length" class="edit-ghost-hint">
                       点击这里或按 Ctrl+Enter 追加新行
                     </td>

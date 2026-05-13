@@ -260,8 +260,9 @@ test("styles.css includes fast table grid viewport styles", async () => {
 
   assert.match(styles, /\.fast-table-grid\s*\{/);
   assert.match(fastGridRule, /--table-header-bg:\s*var\(--surface-card-strong\)/);
-  assert.match(fastGridRule, /--table-row-header-bg:\s*color-mix\(in srgb, var\(--bg-panel\)/);
-  assert.match(fastGridRule, /background:\s*color-mix\(in srgb, var\(--bg-panel\)/);
+  assert.match(fastGridRule, /--table-body-bg:/);
+  assert.match(fastGridRule, /--table-row-header-bg:\s*var\(--table-body-bg\)/);
+  assert.match(fastGridRule, /background:\s*var\(--table-body-bg\)/);
   assert.match(styles, /\.fast-table-grid__viewport\s*\{/);
   assert.match(styles, /\.fast-table-grid__canvas\s*\{/);
   assert.match(styles, /\.fast-table-grid__spacer\s*\{/);
@@ -289,6 +290,7 @@ test("App.vue drawFastTableGrid uses visible ranges and draw model", async () =>
   assert.match(appVue, /getComputedStyle\(canvas\)/);
   assert.match(appVue, /headerBackground: readFastTableGridCssValue\(styles, "--table-header-bg", readFastTableGridCssValue\(styles, "--surface-card-strong"/);
   assert.match(appVue, /rowHeaderBackground: readFastTableGridCssValue\(styles, "--table-row-header-bg", readFastTableGridCssValue\(styles, "--bg-panel"/);
+  assert.match(appVue, /cellBackground: readFastTableGridCssValue\(styles, "--table-body-bg", readFastTableGridCssValue\(styles, "--bg-panel"/);
   assert.match(appVue, /truncateFastGridText/);
   assert.doesNotMatch(appVue, /context\.fillText\([^\n]+, [^\n]+, [^\n]+, Math\.max/);
   assert.doesNotMatch(appVue, /fillStyle = "#ffffff"|fillStyle = "#0f172a"|fillStyle = "#f1f5f9"/);
