@@ -3809,6 +3809,8 @@ mark {
 
 .table-content-scale .data-table th {
   font-size: calc(13px * var(--table-scale));
+  height: var(--table-header-height);
+  line-height: calc(21px * var(--table-scale));
 }
 
 .data-table th,
@@ -3827,9 +3829,16 @@ mark {
 }
 
 .data-table td {
+  height: 31px;
+  line-height: 18px;
   overflow: hidden;
   position: relative;
   background: var(--table-body-bg);
+}
+
+.table-content-scale .data-table td {
+  height: var(--table-row-height);
+  line-height: calc(18px * var(--table-scale));
 }
 
 .table-modal.edit-mode-active .data-table td:not(.edit-checkbox-col):not(.edit-row-handle-col) {
@@ -3850,6 +3859,8 @@ mark {
 .data-table th {
   position: sticky;
   top: 0;
+  height: 34px;
+  line-height: 21px;
   background: #f0f5fc;
   color: #1e293b;
   font-size: 13px;

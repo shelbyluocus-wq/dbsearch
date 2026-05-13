@@ -323,3 +323,29 @@ test('styles.css hides frozen row seams while preserving the freeze boundary', a
   assert.match(frozenRowEdgeRule, /border-bottom-color:\s*var\(--table-freeze-cell-bg\)/);
   assert.match(frozenRowEdgeRule, /inset 0 -1px 0 color-mix/);
 });
+
+test('styles.css locks DOM row heights to the freeze offset metrics', async () => {
+  const styles = await readStyles();
+  const tableVariables = [...styles.matchAll(/\.table-content-scale\s*\{[^}]*\}/gs)]
+    .map((match) => match[0])
+    .find((rule) => rule.includes('--table-header-height')) || '';
+  const bodyCellRule = [...styles.matchAll(/\.data-table td\s*\{[^}]*\}/gs)]
+    .map((match) => match[0])
+    .find((rule) => rule.includes('background: var(--table-body-bg)')) || '';
+  const headerCellRule = [...styles.matchAll(/\.data-table th\s*\{[^}]*\}/gs)]
+    .map((match) => match[0])
+    .find((rule) => rule.includes('position: sticky')) || '';
+  const scaledBodyRule = [...styles.matchAll(/\.table-content-scale \.data-table td\s*\{[^}]*\}/gs)]
+    .map((match) => match[0])
+    .find((rule) => rule.includes('--table-row-height')) || '';
+  const scaledHeaderRule = [...styles.matchAll(/\.table-content-scale \.data-table th\s*\{[^}]*\}/gs)]
+    .map((match) => match[0])
+    .find((rule) => rule.includes('--table-header-height')) || '';
+
+  assert.match(tableVariables, /--table-header-height:\s*calc\(34px \* var\(--table-scale\)\)/);
+  assert.match(tableVariables, /--table-row-height:\s*calc\(31px \* var\(--table-scale\)\)/);
+  assert.match(headerCellRule, /height:\s*34px/);
+  assert.match(bodyCellRule, /height:\s*31px/);
+  assert.match(scaledHeaderRule, /height:\s*var\(--table-header-height\)/);
+  assert.match(scaledBodyRule, /height:\s*var\(--table-row-height\)/);
+});
