@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 
 import {
   createSplitWorkspace,
@@ -10,6 +12,8 @@ import {
   resolveEffectiveSplitMode,
   getTableTabDisplayName,
 } from "./tableSplitWorkspace.js";
+
+const APP_VUE = fs.readFileSync(path.resolve("src/App.vue"), "utf8");
 
 test("createSplitWorkspace starts with one primary pane", () => {
   const workspace = createSplitWorkspace({
@@ -118,4 +122,19 @@ test("getTableTabDisplayName adds an ordinal only for duplicate table instances"
   assert.equal(getTableTabDisplayName(tabs, tabs[0]), "orders");
   assert.equal(getTableTabDisplayName(tabs, tabs[1]), "users");
   assert.equal(getTableTabDisplayName(tabs, tabs[2]), "orders #2");
+});
+
+test("getTableTabDisplayName follows current tab order for duplicate ordinals", () => {
+  const tabs = [
+    { id: "tab-3", tableName: "orders", instanceId: "orders-2" },
+    { id: "tab-1", tableName: "orders", instanceId: "orders-1" },
+  ];
+
+  assert.equal(getTableTabDisplayName(tabs, tabs[0]), "orders");
+  assert.equal(getTableTabDisplayName(tabs, tabs[1]), "orders #2");
+});
+
+test("App.vue uses duplicate-aware labels for table tabs", () => {
+  assert.match(APP_VUE, /from "\.\/tableSplitWorkspace\.js"/);
+  assert.match(APP_VUE, /getTableTabDisplayName\(tableTabs,\s*tab\)/);
 });

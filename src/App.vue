@@ -187,6 +187,9 @@ import {
   buildFrozenColumnMeta,
   buildFrozenRowMeta,
 } from "./tableFreeze.js";
+import {
+  getTableTabDisplayName,
+} from "./tableSplitWorkspace.js";
 
 const APP_VERSION = APP_PACKAGE_VERSION;
 const VERSION_DISPLAY_LABEL = resolveSettingsVersionLabel(APP_VERSION);
@@ -1905,6 +1908,7 @@ let currentSearchToken = 0;
 let hitCollectToken = 0;
 let tableFindIndexPromise = null;
 let tableTabIdSeed = 0;
+let tableInstanceIdSeed = 0;
 let tableTabRestoring = false;
 let unlistenProgress = null;
 let unlistenPanelOpenSettings = null;
@@ -4553,9 +4557,17 @@ function nextTableTabId() {
   return `table-tab-${tableTabIdSeed}`;
 }
 
+function nextTableInstanceId(tableName = "table") {
+  tableInstanceIdSeed += 1;
+  const normalized = String(tableName || "table").trim().replace(/[^a-zA-Z0-9_]+/g, "_") || "table";
+  return `${normalized}-${tableInstanceIdSeed}`;
+}
+
 function createLiveTableSnapshot({ id, tableName } = {}) {
+  const current = tableTabs.value.find((item) => item.id === id) || null;
   return {
     id: id || nextTableTabId(),
+    instanceId: current?.instanceId || nextTableInstanceId(tableName || tableView.tableName),
     tableName: tableName || tableView.tableName,
     tableComment: tableView.tableComment,
     columns: cloneColumns(tableView.columns),
@@ -4597,6 +4609,7 @@ function createNewTableSnapshot(tableName, rowIndex = null, columnName = null, h
   const normalizedHit = normalizeHitContext(hitContext);
   return {
     id: nextTableTabId(),
+    instanceId: nextTableInstanceId(tableName),
     tableName,
     tableComment: "",
     columns: [],
@@ -14269,7 +14282,7 @@ function escapeHtml(str) {
           @click="handleTableTabClick(tab.id)"
           @pointerdown="onTableTabPointerDown($event, tab.id)"
         >
-          <span class="table-tab-label">{{ tab.tableName }}</span>
+          <span class="table-tab-label">{{ getTableTabDisplayName(tableTabs, tab) }}</span>
           <span
             class="table-tab-close"
             title="关闭标签"
