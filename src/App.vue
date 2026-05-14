@@ -107,7 +107,10 @@ import {
   resolveTabStripDropIndex,
 } from "./tableTabDrag.js";
 import {
+  clampFloatingSchemaWindow,
   resolveAdaptiveTablePageSize,
+  resolveFloatingSchemaDrag,
+  resolveFloatingSchemaResize,
   shouldApplyAdaptiveTablePageSize,
 } from "./tableDialogLayout.js";
 import {
@@ -1332,6 +1335,14 @@ const tableFullscreenTransitioning = ref(false);
 const tableFullscreenTransitionPrevious = ref(TABLE_DIALOG_DEFAULTS.fullscreen);
 const schemaCollapsed = ref(true);
 const dataCollapsed = ref(false);
+const FLOATING_SCHEMA_DEFAULTS = Object.freeze({ left: 16, top: 48, width: 520, height: 320 });
+const FLOATING_SCHEMA_MIN_WIDTH = 320;
+const FLOATING_SCHEMA_MIN_HEIGHT = 180;
+const FLOATING_SCHEMA_MARGIN = 8;
+const schemaTypeHidden = ref(false);
+const fullscreenSchemaWindow = reactive({ ...FLOATING_SCHEMA_DEFAULTS });
+let fullscreenSchemaDragState = null;
+let fullscreenSchemaResizeState = null;
 
 // ── 编辑模式 ──
 const editMode = ref(false)
@@ -3854,6 +3865,14 @@ const tableContentScaleStyle = computed(() => ({
   "--table-row-handle-width": `${scaledTableRowHandleWidth.value}px`,
   "--table-edit-checkbox-width": `${Math.round(TABLE_EDIT_CHECKBOX_WIDTH * tableVisualScale.value)}px`,
 }));
+const fullscreenSchemaFloatingOpen = computed(() => tableFullscreen.value && tableDetailView.value === "full" && !schemaCollapsed.value);
+const fullscreenSchemaTypeHidden = computed(() => fullscreenSchemaFloatingOpen.value && schemaTypeHidden.value);
+const fullscreenSchemaWindowStyle = computed(() => ({
+  left: `${fullscreenSchemaWindow.left}px`,
+  top: `${fullscreenSchemaWindow.top}px`,
+  width: `${fullscreenSchemaWindow.width}px`,
+  height: `${fullscreenSchemaWindow.height}px`,
+}));
 const scaledTableHeaderHeight = computed(() => Math.round(TABLE_HEADER_HEIGHT * tableVisualScale.value));
 const scaledTableRowHeight = computed(() => Math.round(TABLE_ROW_HEIGHT * tableVisualScale.value));
 const scaledTableRowHandleWidth = computed(() => Math.round(TABLE_ROW_HANDLE_WIDTH * tableVisualScale.value));
@@ -5946,6 +5965,17 @@ watch(
 );
 
 watch(
+  () => [tableFullscreen.value, schemaCollapsed.value, tableDetailView.value, tableVisualScale.value],
+  async () => {
+    if (!fullscreenSchemaFloatingOpen.value) {
+      stopFullscreenSchemaPointerInteraction();
+    }
+    await nextTick();
+    normalizeFullscreenSchemaWindow();
+  },
+);
+
+watch(
   () => [tableOpen.value, dataCollapsed.value, schemaCollapsed.value, tableFullscreen.value],
   ([open]) => {
     if (!open) {
@@ -6075,6 +6105,9 @@ function bindPanelListeners() {
   window.addEventListener("keydown", onWindowKeydown);
   window.addEventListener("wheel", onWindowWheel, { passive: false });
   window.addEventListener("resize", onWindowResize);
+  window.addEventListener("pointermove", onFullscreenSchemaPointerMove);
+  window.addEventListener("pointerup", stopFullscreenSchemaPointerInteraction);
+  window.addEventListener("pointercancel", stopFullscreenSchemaPointerInteraction);
   window.addEventListener("focus", onPanelFocus);
   document.addEventListener("visibilitychange", onPanelVisibilityChange);
   document.addEventListener("dragover", onDocDragover);
@@ -6086,6 +6119,9 @@ function detachPanelListeners() {
   window.removeEventListener("keydown", onWindowKeydown);
   window.removeEventListener("wheel", onWindowWheel);
   window.removeEventListener("resize", onWindowResize);
+  window.removeEventListener("pointermove", onFullscreenSchemaPointerMove);
+  window.removeEventListener("pointerup", stopFullscreenSchemaPointerInteraction);
+  window.removeEventListener("pointercancel", stopFullscreenSchemaPointerInteraction);
   window.removeEventListener("focus", onPanelFocus);
   document.removeEventListener("visibilitychange", onPanelVisibilityChange);
   document.removeEventListener("dragover", onDocDragover);
@@ -6131,6 +6167,7 @@ function onWindowResize() {
   scheduleTableTabsCompressionMeasure();
   schedulePanelTabsCompressionMeasure();
   scheduleColumnOverflowMeasure();
+  normalizeFullscreenSchemaWindow();
 }
 
 function formatTodayYmdByLocalTime() {
@@ -6797,9 +6834,22 @@ function focusPanelShell() {
   }
 }
 
+function shouldPreserveTableChromeMouseDefault(target) {
+  return target instanceof Element && Boolean(target.closest("button, input, textarea, select, label, a, .col-resize-handle, .schema-col-resize-handle, .schema-floating-resize-handle, .column-collapse-badge"));
+}
+
+function preventTableChromeTextSelection(event) {
+  if (event.button !== 0) return;
+  const target = event.target;
+  if (!(target instanceof Element)) return;
+  if (shouldPreserveTableChromeMouseDefault(target)) return;
+  if (!target.closest(".data-head, .data-table th, .row-freeze-handle-col, .edit-checkbox-col")) return;
+  event.preventDefault();
+}
+
 function modalHeaderPointerDown(event) {
   const target = event.target;
-  const interactiveTarget = target instanceof Element && target.closest("button, input, textarea, select, label, a");
+  const interactiveTarget = shouldPreserveTableChromeMouseDefault(target);
   if (shouldFocusPanelShellFromTitlebarPointerDown({
     button: event.button,
     interactiveTarget: Boolean(interactiveTarget),
@@ -8338,14 +8388,29 @@ function getSeamlessSpacerStyle(height) {
   return { height: `${spacerHeight}px` };
 }
 
+function scheduleFastTableGridRefresh() {
+  nextTick(() => {
+    syncFastTableGridViewport();
+    scheduleFastTableGridDraw();
+    requestAnimationFrame(() => {
+      syncFastTableGridViewport();
+      scheduleFastTableGridDraw();
+    });
+  });
+}
+
 function clearFreezePreview() {
   freezePreview.columnName = null;
   freezePreview.rowIndex = null;
 }
 
 function cancelFreezePickMode() {
+  const wasPickingFreeze = freezePickMode.value;
   freezePickMode.value = false;
   clearFreezePreview();
+  if (wasPickingFreeze && !frozenColumnName.value && frozenRowIndex.value === null) {
+    scheduleFastTableGridRefresh();
+  }
 }
 
 async function applyFreezePreview() {
@@ -8370,14 +8435,7 @@ function clearFreeze() {
   frozenColumnName.value = null;
   frozenRowIndex.value = null;
   cancelFreezePickMode();
-  nextTick(() => {
-    syncFastTableGridViewport();
-    scheduleFastTableGridDraw();
-    requestAnimationFrame(() => {
-      syncFastTableGridViewport();
-      scheduleFastTableGridDraw();
-    });
-  });
+  scheduleFastTableGridRefresh();
 }
 
 function selectFreezeColumn(columnName) {
@@ -8664,8 +8722,93 @@ async function openFromData(item) {
   });
 }
 
+function getFullscreenSchemaContainerRect() {
+  const element = tableModalRef.value;
+  if (!(element instanceof HTMLElement)) return { width: window.innerWidth, height: window.innerHeight };
+  const rect = element.getBoundingClientRect();
+  return { width: rect.width, height: rect.height };
+}
+
+function applyFullscreenSchemaWindow(nextWindow) {
+  Object.assign(fullscreenSchemaWindow, clampFloatingSchemaWindow({
+    window: nextWindow,
+    container: getFullscreenSchemaContainerRect(),
+    minWidth: FLOATING_SCHEMA_MIN_WIDTH,
+    minHeight: FLOATING_SCHEMA_MIN_HEIGHT,
+    margin: FLOATING_SCHEMA_MARGIN,
+  }));
+}
+
+function normalizeFullscreenSchemaWindow() {
+  applyFullscreenSchemaWindow(fullscreenSchemaWindow);
+}
+
+function toggleSchemaTypeHidden() {
+  schemaTypeHidden.value = !fullscreenSchemaTypeHidden.value;
+}
+
+function onFullscreenSchemaHeaderPointerDown(event) {
+  if (!tableFullscreen.value || schemaCollapsed.value) return;
+  if (event.button !== 0) return;
+  const target = event.target;
+  if (target instanceof Element && target.closest("button, input, textarea, select, label, a, .schema-col-resize-handle")) return;
+  event.preventDefault();
+  event.stopPropagation();
+  fullscreenSchemaDragState = {
+    startWindow: { ...fullscreenSchemaWindow },
+    startPointer: { x: event.clientX, y: event.clientY },
+    pointerId: event.pointerId,
+  };
+  event.currentTarget?.setPointerCapture?.(event.pointerId);
+}
+
+function onFullscreenSchemaResizePointerDown(event) {
+  if (!tableFullscreen.value || schemaCollapsed.value) return;
+  if (event.button !== 0) return;
+  event.preventDefault();
+  event.stopPropagation();
+  fullscreenSchemaResizeState = {
+    startWindow: { ...fullscreenSchemaWindow },
+    startPointer: { x: event.clientX, y: event.clientY },
+    pointerId: event.pointerId,
+  };
+  event.currentTarget?.setPointerCapture?.(event.pointerId);
+}
+
+function onFullscreenSchemaPointerMove(event) {
+  if (fullscreenSchemaDragState) {
+    Object.assign(fullscreenSchemaWindow, resolveFloatingSchemaDrag({
+      startWindow: fullscreenSchemaDragState.startWindow,
+      startPointer: fullscreenSchemaDragState.startPointer,
+      pointer: { x: event.clientX, y: event.clientY },
+      container: getFullscreenSchemaContainerRect(),
+      minWidth: FLOATING_SCHEMA_MIN_WIDTH,
+      minHeight: FLOATING_SCHEMA_MIN_HEIGHT,
+      margin: FLOATING_SCHEMA_MARGIN,
+    }));
+    return;
+  }
+  if (fullscreenSchemaResizeState) {
+    Object.assign(fullscreenSchemaWindow, resolveFloatingSchemaResize({
+      startWindow: fullscreenSchemaResizeState.startWindow,
+      startPointer: fullscreenSchemaResizeState.startPointer,
+      pointer: { x: event.clientX, y: event.clientY },
+      container: getFullscreenSchemaContainerRect(),
+      minWidth: FLOATING_SCHEMA_MIN_WIDTH,
+      minHeight: FLOATING_SCHEMA_MIN_HEIGHT,
+      margin: FLOATING_SCHEMA_MARGIN,
+    }));
+  }
+}
+
+function stopFullscreenSchemaPointerInteraction() {
+  fullscreenSchemaDragState = null;
+  fullscreenSchemaResizeState = null;
+}
+
 function toggleSchemaCollapsed() {
   schemaCollapsed.value = !schemaCollapsed.value;
+  nextTick(normalizeFullscreenSchemaWindow);
 }
 
 function toggleDataCollapsed() {
@@ -14088,11 +14231,17 @@ function escapeHtml(str) {
       <div class="table-content-viewport">
       <div class="table-content-scale" :style="tableContentScaleStyle">
       <template v-if="tableDetailView === 'full'">
-        <section class="schema-box">
-          <div class="section-head">
+        <section
+          :class="['schema-box', { 'schema-box--floating': fullscreenSchemaFloatingOpen, 'schema-box--type-hidden': fullscreenSchemaTypeHidden }]"
+          :style="fullscreenSchemaFloatingOpen ? fullscreenSchemaWindowStyle : null"
+        >
+          <div class="section-head schema-floating-head" @pointerdown="onFullscreenSchemaHeaderPointerDown">
             <h4>Schema 信息</h4>
             <div class="section-head-actions">
               <button class="section-action-btn" @click="openTableFind">搜索</button>
+              <button v-if="fullscreenSchemaFloatingOpen" class="section-action-btn" @click="toggleSchemaTypeHidden">
+                {{ fullscreenSchemaTypeHidden ? "显示类型" : "隐藏类型" }}
+              </button>
               <button class="section-toggle-btn" @click="toggleSchemaCollapsed">
                 {{ schemaCollapsed ? "展开" : "收起" }}
               </button>
@@ -14109,7 +14258,7 @@ function escapeHtml(str) {
             <table class="schema-table schema-table--resizable">
               <colgroup>
                 <col :style="getSchemaColumnStyle('column_name')" />
-                <col :style="getSchemaColumnStyle('column_type')" />
+                <col v-if="!fullscreenSchemaTypeHidden" :style="getSchemaColumnStyle('column_type')" />
                 <col />
               </colgroup>
               <thead>
@@ -14120,7 +14269,7 @@ function escapeHtml(str) {
                     </div>
                     <span class="schema-col-resize-handle" @pointerdown="startSchemaColumnResize($event, 'column_name')"></span>
                   </th>
-                  <th data-schema-column="column_type" data-schema-resizable="true">
+                  <th v-if="!fullscreenSchemaTypeHidden" data-schema-column="column_type" data-schema-resizable="true">
                     <div class="schema-th-content">
                       <span class="th-label">类型</span>
                     </div>
@@ -14140,12 +14289,17 @@ function escapeHtml(str) {
                   }"
                 >
                   <td v-html="renderDetailHighlighted(col.column_name)"></td>
-                  <td>{{ col.column_type }}</td>
+                  <td v-if="!fullscreenSchemaTypeHidden">{{ col.column_type }}</td>
                   <td v-html="renderDetailHighlighted(col.column_comment || '-')"></td>
                 </tr>
               </tbody>
             </table>
           </div>
+          <span
+            v-if="fullscreenSchemaFloatingOpen"
+            class="schema-floating-resize-handle"
+            @pointerdown="onFullscreenSchemaResizePointerDown"
+          ></span>
         </section>
 
         <section class="data-box">
@@ -14155,7 +14309,7 @@ function escapeHtml(str) {
               {{ dataCollapsed ? "展开" : "收起" }}
             </button>
           </div>
-          <div v-show="!dataCollapsed" class="section-body">
+          <div v-show="!dataCollapsed" class="section-body" @mousedown.capture="preventTableChromeTextSelection">
             <div class="data-head" :class="{ 'actions-only': !editMode }">
               <div class="data-actions">
                 <button class="small-btn" @click="jumpToNextHitRow">一键跳转命中(Q/E)</button>

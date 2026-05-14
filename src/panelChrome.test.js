@@ -346,7 +346,7 @@ test("styles.css makes table fullscreen an Excel-like data-first layout", async 
   const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
 
   assert.match(styles, /\.table-modal\.fullscreen:not\(\.fullscreen-schema-open\) \.schema-box/);
-  assert.match(styles, /\.table-modal\.fullscreen\.fullscreen-schema-open \.schema-box\s*\{/);
+  assert.match(styles, /\.table-modal\.fullscreen\.fullscreen-schema-open \.schema-box\.schema-box--floating\s*\{/);
   assert.match(styles, /\.table-modal\.fullscreen \.data-box > \.section-head/);
   assert.match(styles, /display:\s*none !important/);
   assert.match(styles, /\.modal-title-row > \.table-title-action-btn:not\(\.table-title-find-btn\):not\(\.table-title-schema-btn\):not\(\.table-title-export-btn\)/);
@@ -354,6 +354,11 @@ test("styles.css makes table fullscreen an Excel-like data-first layout", async 
   assert.doesNotMatch(styles, /\.table-modal\.fullscreen \.table-find-bar,\n/);
   assert.match(styles, /\.table-modal\.fullscreen \.table-find-bar\s*\{/);
   assert.match(styles, /\.table-modal\.fullscreen \.data-head\s*\{[^}]*display:\s*none/s);
+  assert.match(styles, /\.table-modal \.section-head h4\s*\{[^}]*user-select:\s*none[^}]*cursor:\s*default/s);
+  assert.match(styles, /\.table-modal \.modal-title-row\s*\{[^}]*user-select:\s*none/s);
+  assert.match(styles, /\.table-modal \.data-head\s*\{[^}]*user-select:\s*none/s);
+  assert.match(styles, /\.table-modal \.pager\s*\{[^}]*user-select:\s*none[^}]*cursor:\s*default/s);
+  assert.match(styles, /\.table-modal \.freeze-toolbar\s*\{[^}]*user-select:\s*none/s);
   assert.match(styles, /\.table-modal\.fullscreen \.fullscreen-row-range/);
   const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
   assert.doesNotMatch(appVue, /class="table-title-action-btn fullscreen-hit-jump-btn"/);
@@ -373,7 +378,34 @@ test("table fullscreen keeps compact action controls available", async () => {
   assert.doesNotMatch(styles, /\.table-modal\.fullscreen \.table-header-actions > \.edit-toggle-btn/);
   assert.doesNotMatch(styles, /\.table-modal\.fullscreen \.table-header-actions > \.small-btn:not\(\.table-fullscreen-btn\)/);
   assert.match(styles, /\.table-modal\.fullscreen:not\(\.fullscreen-schema-open\) \.schema-box/);
-  assert.match(styles, /\.table-modal\.fullscreen\.fullscreen-schema-open \.schema-box\s*\{/);
+  assert.match(styles, /\.table-modal\.fullscreen\.fullscreen-schema-open \.schema-box\.schema-box--floating\s*\{/);
+});
+
+test("styles.css prevents text selection on main panel chrome and menu rows", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+
+  assert.match(styles, /\.panel-footer\s*\{[^}]*user-select:\s*none/s);
+  assert.match(styles, /\.footer-db-selector,[\s\S]*?\.template-switch-btn\s*\{[^}]*user-select:\s*none[^}]*cursor:\s*default/s);
+  assert.match(styles, /\.result-group > header\s*\{[^}]*user-select:\s*none[^}]*cursor:\s*default/s);
+  assert.match(styles, /\.list-item\s*\{[^}]*user-select:\s*none/s);
+  assert.match(styles, /\.database-menu-popover\s*\{[^}]*user-select:\s*none/s);
+  assert.match(styles, /\.database-menu-item\s*\{[^}]*user-select:\s*none/s);
+});
+
+test("styles.css uses larger main scrollbars and tailored database menu scrollbars", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const styles = await readFile(new URL("./styles.css", import.meta.url), "utf8");
+  const mainScrollbarRule = styles.match(/\.result-sidebar,[\s\S]*?\.fast-table-grid__viewport\s*\{[^}]*\}/)?.[0] || "";
+  const mainWebkitRule = styles.match(/\.result-sidebar::-webkit-scrollbar,[\s\S]*?\.fast-table-grid__viewport::-webkit-scrollbar\s*\{[^}]*\}/)?.[0] || "";
+  const menuScrollbarRule = styles.match(/\.database-menu-list\s*\{[^}]*\}/)?.[0] || "";
+
+  assert.match(mainScrollbarRule, /scrollbar-width:\s*auto/);
+  assert.match(mainWebkitRule, /width:\s*18px/);
+  assert.match(mainWebkitRule, /height:\s*18px/);
+  assert.match(menuScrollbarRule, /scrollbar-width:\s*thin/);
+  assert.match(styles, /\.database-menu-list::-webkit-scrollbar\s*\{[^}]*width:\s*10px[^}]*height:\s*10px/s);
+  assert.match(styles, /\.database-menu-list::-webkit-scrollbar-thumb\s*\{[^}]*background:\s*rgba\(103, 232, 249, 0\.46\)/s);
 });
 
 test("resolveTableDialogSurfaceMode makes table dialogs fill panel windows without an overlay backdrop", () => {

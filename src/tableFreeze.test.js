@@ -165,6 +165,21 @@ test('App.vue selects freeze preview from header, row handle, and data cells', a
   assert.match(appVue, /selectFreezeCell\(idx, col\.column_name\)/);
 });
 
+test('App.vue prevents default text selection on non-editable table chrome', async () => {
+  const appVue = await readAppVue();
+  const helperStart = appVue.indexOf('function preventTableChromeTextSelection(event)');
+  const helperEnd = appVue.indexOf('function modalHeaderPointerDown', helperStart);
+  const helperCode = appVue.slice(helperStart, helperEnd);
+
+  assert.notEqual(helperStart, -1, 'table chrome mousedown guard should exist');
+  assert.match(helperCode, /event\.button !== 0/);
+  assert.match(helperCode, /shouldPreserveTableChromeMouseDefault\(target\)/);
+  assert.match(helperCode, /\.data-head, \.data-table th, \.row-freeze-handle-col, \.edit-checkbox-col/);
+  assert.match(helperCode, /event\.preventDefault\(\)/);
+  assert.match(appVue, /class="section-body" @mousedown\.capture="preventTableChromeTextSelection"/);
+  assert.match(appVue, /\.col-resize-handle/);
+});
+
 test('styles.css uses pick-mode preview styles instead of table-internal freeze buttons', async () => {
   const { readFile } = await import('node:fs/promises');
   const styles = await readFile(new URL('./styles.css', import.meta.url), 'utf8');
@@ -287,8 +302,12 @@ test('styles.css keeps row-number cells visually aligned with normal table cells
 
   assert.match(rowHandleRule, /background:\s*var\(--table-body-bg\)/);
   assert.match(rowHandleRule, /color:\s*inherit/);
+  assert.match(rowHandleRule, /user-select:\s*none/);
+  assert.match(rowHandleRule, /cursor:\s*default/);
   assert.match(editRowHandleRule, /background:\s*var\(--table-body-bg\)/);
   assert.match(editRowHandleRule, /color:\s*inherit/);
+  assert.match(editRowHandleRule, /user-select:\s*none/);
+  assert.match(editRowHandleRule, /cursor:\s*default/);
 });
 
 test('App.vue marks row-number and edit action columns as leading frozen surfaces', async () => {
@@ -345,6 +364,10 @@ test('styles.css locks DOM row heights to the freeze offset metrics', async () =
   assert.match(tableVariables, /--table-header-height:\s*calc\(34px \* var\(--table-scale\)\)/);
   assert.match(tableVariables, /--table-row-height:\s*calc\(31px \* var\(--table-scale\)\)/);
   assert.match(headerCellRule, /height:\s*34px/);
+  assert.match(headerCellRule, /background:\s*var\(--table-header-bg\)/);
+  assert.match(headerCellRule, /user-select:\s*none/);
+  assert.match(headerCellRule, /cursor:\s*default/);
+  assert.match(styles, /(?:^|\n)\.data-table \.th-content\s*\{[^}]*user-select:\s*none[^}]*cursor:\s*default/s);
   assert.match(bodyCellRule, /height:\s*31px/);
   assert.match(scaledHeaderRule, /height:\s*var\(--table-header-height\)/);
   assert.match(scaledBodyRule, /height:\s*var\(--table-row-height\)/);

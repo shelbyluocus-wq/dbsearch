@@ -259,7 +259,7 @@ test("styles.css includes fast table grid viewport styles", async () => {
   const fastGridCanvasRule = styles.match(/\.fast-table-grid__canvas\s*\{[\s\S]*?\n\}/)?.[0] || "";
 
   assert.match(styles, /\.fast-table-grid\s*\{/);
-  assert.match(fastGridRule, /--table-header-bg:\s*var\(--surface-card-strong\)/);
+  assert.match(fastGridRule, /--table-header-bg:\s*#e8f1fb/);
   assert.match(fastGridRule, /--table-body-bg:/);
   assert.match(fastGridRule, /--table-row-header-bg:\s*var\(--table-body-bg\)/);
   assert.match(fastGridRule, /background:\s*var\(--table-body-bg\)/);
@@ -450,6 +450,24 @@ test("App.vue keeps freeze states on the DOM table path while allowing fullscree
   assert.match(guard, /!frozenColumnName\.value/);
   assert.match(guard, /frozenRowIndex\.value === null/);
   assert.doesNotMatch(guard, /!tableFullscreen\.value/);
+});
+
+test("App.vue redraws the fast grid when canceling freeze pick mode", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
+  const helperStart = appVue.indexOf("function scheduleFastTableGridRefresh()");
+  const helperEnd = appVue.indexOf("function clearFreezePreview", helperStart);
+  const helperBody = appVue.slice(helperStart, helperEnd);
+  const cancelStart = appVue.indexOf("function cancelFreezePickMode()");
+  const cancelEnd = appVue.indexOf("async function applyFreezePreview", cancelStart);
+  const cancelBody = appVue.slice(cancelStart, cancelEnd);
+
+  assert.notEqual(helperStart, -1);
+  assert.notEqual(helperEnd, -1);
+  assert.match(helperBody, /nextTick\(\(\) => \{/);
+  assert.match(helperBody, /syncFastTableGridViewport\(\);[\s\S]*scheduleFastTableGridDraw\(\);/);
+  assert.match(helperBody, /requestAnimationFrame\(\(\) => \{/);
+  assert.match(cancelBody, /scheduleFastTableGridRefresh\(\)/);
 });
 
 test("App.vue draws fixed fast grid headers and the row-number gutter", async () => {
