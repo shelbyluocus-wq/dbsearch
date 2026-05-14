@@ -134,10 +134,11 @@ export function shouldLoadPreviousSeamlessBlock({
   return Number(scrollTop) <= Number(thresholdPx);
 }
 
-export function pruneSeamlessBlocks({ blocks = new Map(), centerBlock = 1, radius = 1 } = {}) {
+export function pruneSeamlessBlocks({ blocks = new Map(), centerBlock = 1, radius = 1, keep = [] } = {}) {
   const center = toPositiveInteger(centerBlock, 1);
   const keepRadius = Math.max(0, Math.floor(Number(radius) || 0));
+  const keepSet = new Set((Array.isArray(keep) ? keep : []).map(Number));
   return new Map(
-    [...blocks.entries()].filter(([block]) => Math.abs(Number(block) - center) <= keepRadius),
+    [...blocks.entries()].filter(([block]) => keepSet.has(Number(block)) || Math.abs(Number(block) - center) <= keepRadius),
   );
 }

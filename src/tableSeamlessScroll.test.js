@@ -201,6 +201,17 @@ test("pruneSeamlessBlocks keeps only nearby blocks", () => {
   assert.deepEqual([...pruned.keys()], [2, 3, 4]);
 });
 
+test("pruneSeamlessBlocks keeps blocks listed in keep even outside radius", () => {
+  const pruned = pruneSeamlessBlocks({
+    blocks: new Map([[1, [1]], [2, [2]], [3, [3]], [4, [4]], [5, [5]]]),
+    centerBlock: 5,
+    radius: 1,
+    keep: [1],
+  });
+
+  assert.deepEqual([...pruned.keys()], [1, 4, 5]);
+});
+
 test("App.vue renders seamless spacer rows and protects seamless cell values", async () => {
   const { readFile } = await import("node:fs/promises");
   const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");

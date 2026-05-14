@@ -34,6 +34,13 @@ test("getVisibleFastGridRows overscans the viewport and clamps to table bounds",
   );
 });
 
+test("getVisibleFastGridRows keeps virtualization independent from frozen rows", () => {
+  assert.deepEqual(
+    getVisibleFastGridRows({ totalRows: 100, rowHeight: 31, scrollTop: 310, clientHeight: 93, overscan: 2, frozenRowIndex: 0 }),
+    { start: 8, end: 15 },
+  );
+});
+
 test("getVisibleFastGridColumns returns visible columns with x positions", () => {
   const columns = [{ column_name: "id" }, { column_name: "name" }, { column_name: "email" }];
   assert.deepEqual(
@@ -48,6 +55,33 @@ test("getVisibleFastGridColumns returns visible columns with x positions", () =>
     [
       { column: columns[0], index: 0, x: 52, width: 80 },
       { column: columns[1], index: 1, x: 132, width: 120 },
+    ],
+  );
+});
+
+test("getVisibleFastGridColumns keeps frozen columns fixed while virtualizing scrollable columns", () => {
+  const columns = [
+    { column_name: "id" },
+    { column_name: "name" },
+    { column_name: "email" },
+    { column_name: "role" },
+  ];
+
+  assert.deepEqual(
+    getVisibleFastGridColumns({
+      columns,
+      scrollLeft: 260,
+      clientWidth: 220,
+      rowNumberWidth: 52,
+      getColumnWidth: (name) => ({ id: 80, name: 120, email: 180, role: 140 })[name],
+      frozenColumnName: "name",
+      overscan: 0,
+    }),
+    [
+      { column: columns[0], index: 0, x: 52, width: 80, frozen: true, edge: false },
+      { column: columns[1], index: 1, x: 132, width: 120, frozen: true, edge: true },
+      { column: columns[2], index: 2, x: 252, width: 180, frozen: false },
+      { column: columns[3], index: 3, x: 432, width: 140, frozen: false },
     ],
   );
 });
@@ -68,6 +102,48 @@ test("hitTestFastGrid maps viewport coordinates to row and column", () => {
       getColumnWidth: (name) => (name === "id" ? 80 : 120),
     }),
     { region: "cell", rowIndex: 2, columnIndex: 1, columnName: "name" },
+  );
+});
+
+test("hitTestFastGrid maps fixed frozen columns before scrolled columns", () => {
+  const columns = [{ column_name: "id" }, { column_name: "name" }, { column_name: "email" }];
+
+  assert.deepEqual(
+    hitTestFastGrid({
+      x: 150,
+      y: 70,
+      scrollLeft: 240,
+      scrollTop: 0,
+      rowHeight: 31,
+      headerHeight: 34,
+      rowNumberWidth: 52,
+      totalRows: 100,
+      columns,
+      getColumnWidth: (name) => ({ id: 80, name: 120, email: 180 })[name],
+      frozenColumnName: "name",
+    }),
+    { region: "cell", rowIndex: 1, columnIndex: 1, columnName: "name", frozenColumn: true },
+  );
+});
+
+test("hitTestFastGrid maps fixed frozen rows before scrolled rows", () => {
+  const columns = [{ column_name: "id" }];
+
+  assert.deepEqual(
+    hitTestFastGrid({
+      x: 70,
+      y: 70,
+      scrollLeft: 0,
+      scrollTop: 310,
+      rowHeight: 31,
+      headerHeight: 34,
+      rowNumberWidth: 52,
+      totalRows: 100,
+      columns,
+      getColumnWidth: () => 80,
+      frozenRowIndex: 1,
+    }),
+    { region: "cell", rowIndex: 1, columnIndex: 0, columnName: "id", frozenRow: true },
   );
 });
 
@@ -99,6 +175,25 @@ test("hitTestFastGridColumnResize detects header resize handles", () => {
       handleWidth: 6,
     }),
     null,
+  );
+});
+
+test("hitTestFastGridColumnResize detects frozen header edges without scroll offset", () => {
+  const columns = [{ column_name: "id" }, { column_name: "name" }, { column_name: "email" }];
+
+  assert.deepEqual(
+    hitTestFastGridColumnResize({
+      x: 250,
+      y: 18,
+      scrollLeft: 300,
+      columns,
+      rowNumberWidth: 52,
+      headerHeight: 34,
+      getColumnWidth: (name) => ({ id: 80, name: 120, email: 180 })[name],
+      handleWidth: 6,
+      frozenColumnName: "name",
+    }),
+    { columnIndex: 1, columnName: "name", edgeX: 252, frozenColumn: true },
   );
 });
 
@@ -178,6 +273,31 @@ test("buildFastGridDrawModel includes only visible cells", () => {
   ]);
 });
 
+test("buildFastGridDrawModel keeps frozen column cells fixed during horizontal scroll", () => {
+  const columns = [{ column_name: "id" }, { column_name: "name" }, { column_name: "email" }];
+  const rows = [{ id: "1", name: "Alice", email: "a@example.test" }];
+
+  const model = buildFastGridDrawModel({
+    rows,
+    rowStartIndex: 0,
+    visibleColumns: [
+      { column: columns[0], index: 0, x: 52, width: 80, frozen: true, edge: false },
+      { column: columns[1], index: 1, x: 132, width: 120, frozen: true, edge: true },
+      { column: columns[2], index: 2, x: 252, width: 180, frozen: false },
+    ],
+    rowHeight: 31,
+    headerHeight: 34,
+    scrollTop: 0,
+    scrollLeft: 200,
+  });
+
+  assert.deepEqual(model.cells, [
+    { rowIndex: 0, columnName: "id", text: "1", x: 52, y: 34, width: 80, height: 31, frozenColumn: true, frozenColumnEdge: false },
+    { rowIndex: 0, columnName: "name", text: "Alice", x: 132, y: 34, width: 120, height: 31, frozenColumn: true, frozenColumnEdge: true },
+    { rowIndex: 0, columnName: "email", text: "a@example.test", x: 52, y: 34, width: 180, height: 31 },
+  ]);
+});
+
 test("buildFastGridDrawModel marks focused and hit cells", () => {
   const columns = [{ column_name: "id" }];
   const model = buildFastGridDrawModel({
@@ -191,6 +311,96 @@ test("buildFastGridDrawModel marks focused and hit cells", () => {
 
   assert.equal(model.cells[0].focused, true);
   assert.equal(model.cells[0].hit, true);
+});
+
+test("buildFastGridDrawModel keeps frozen rows fixed during vertical scroll", () => {
+  const columns = [{ column_name: "id" }];
+  const rows = [{ id: "1" }, { id: "2" }, { id: "3" }];
+
+  const model = buildFastGridDrawModel({
+    rows,
+    rowStartIndex: 0,
+    visibleColumns: [{ column: columns[0], index: 0, x: 52, width: 80 }],
+    rowHeight: 31,
+    headerHeight: 34,
+    scrollTop: 62,
+    scrollLeft: 0,
+    frozenRowIndex: 1,
+  });
+
+  assert.deepEqual(model.cells, [
+    { rowIndex: 0, columnName: "id", text: "1", x: 52, y: 34, width: 80, height: 31, frozenRow: true, frozenRowEdge: false },
+    { rowIndex: 1, columnName: "id", text: "2", x: 52, y: 65, width: 80, height: 31, frozenRow: true, frozenRowEdge: true },
+    { rowIndex: 2, columnName: "id", text: "3", x: 52, y: 34, width: 80, height: 31 },
+  ]);
+});
+
+test("buildFastGridDrawModel marks frozen row and column intersections during horizontal scroll", () => {
+  const columns = [
+    { column_name: "ID" },
+    { column_name: "Name" },
+    { column_name: "Email" },
+  ];
+  const rows = [
+    { ID: "1", Name: "Alice", Email: "alice@example.test" },
+    { ID: "2", Name: "Bob", Email: "bob@example.test" },
+  ];
+  const visibleColumns = getVisibleFastGridColumns({
+    columns,
+    scrollLeft: 200,
+    clientWidth: 260,
+    rowNumberWidth: 52,
+    getColumnWidth: (name) => ({ ID: 80, Name: 120, Email: 180 })[name],
+    frozenColumnName: "Name",
+    overscan: 0,
+  });
+  const model = buildFastGridDrawModel({
+    rows,
+    visibleColumns,
+    rowHeight: 31,
+    headerHeight: 34,
+    scrollTop: 0,
+    scrollLeft: 200,
+    frozenRowIndex: 1,
+  });
+  const cell = (rowIndex, columnName) => model.cells.find((item) => item.rowIndex === rowIndex && item.columnName === columnName);
+
+  assert.equal(cell(0, "ID").frozenColumn, true);
+  assert.equal(cell(0, "ID").frozenRow, true);
+  assert.equal(cell(0, "Name").frozenColumn, true);
+  assert.equal(cell(0, "Name").frozenRow, true);
+  assert.equal(cell(1, "ID").frozenColumn, true);
+  assert.equal(cell(1, "ID").frozenRow, true);
+  assert.equal(cell(1, "Name").frozenColumn, true);
+  assert.equal(cell(1, "Name").frozenRow, true);
+  assert.equal(cell(0, "Email").frozenColumn, undefined);
+  assert.equal(cell(0, "Email").frozenRow, true);
+  assert.equal(cell(1, "Email").frozenColumn, undefined);
+  assert.equal(cell(1, "Email").frozenRow, true);
+  assert.equal(cell(0, "Email").x, cell(0, "ID").x);
+  assert.equal(cell(0, "Email").y, cell(0, "ID").y);
+});
+
+test("buildFastGridDrawModel uses explicit global row indexes for sparse frozen row sets", () => {
+  const columns = [{ column_name: "id" }];
+  const rows = [{ id: "1" }, { id: "11" }, { id: "12" }];
+
+  const model = buildFastGridDrawModel({
+    rows,
+    rowIndexes: [0, 10, 11],
+    visibleColumns: [{ column: columns[0], index: 0, x: 52, width: 80 }],
+    rowHeight: 31,
+    headerHeight: 34,
+    scrollTop: 310,
+    scrollLeft: 0,
+    frozenRowIndex: 0,
+  });
+
+  assert.deepEqual(model.cells, [
+    { rowIndex: 0, columnName: "id", text: "1", x: 52, y: 34, width: 80, height: 31, frozenRow: true, frozenRowEdge: true },
+    { rowIndex: 10, columnName: "id", text: "11", x: 52, y: 34, width: 80, height: 31 },
+    { rowIndex: 11, columnName: "id", text: "12", x: 52, y: 65, width: 80, height: 31 },
+  ]);
 });
 
 test("resolveFastGridCellScrollTarget maps a table-find match to viewport scroll and focus", () => {
@@ -210,6 +420,52 @@ test("resolveFastGridCellScrollTarget maps a table-find match to viewport scroll
       columnName: "email",
       scrollTop: 310,
       scrollLeft: 200,
+    },
+  );
+});
+
+test("resolveFastGridCellScrollTarget does not scroll horizontally for frozen columns", () => {
+  const columns = [{ column_name: "id" }, { column_name: "name" }, { column_name: "email" }];
+
+  assert.deepEqual(
+    resolveFastGridCellScrollTarget({
+      rowIndex: 10,
+      columnName: "name",
+      rowHeight: 31,
+      rowNumberWidth: 52,
+      columns,
+      getColumnWidth: (name) => ({ id: 80, name: 120, email: 180 })[name],
+      frozenColumnName: "name",
+      currentScrollLeft: 260,
+    }),
+    {
+      rowIndex: 10,
+      columnName: "name",
+      scrollTop: 310,
+      scrollLeft: 260,
+    },
+  );
+});
+
+test("resolveFastGridCellScrollTarget does not scroll vertically for frozen rows", () => {
+  const columns = [{ column_name: "id" }];
+
+  assert.deepEqual(
+    resolveFastGridCellScrollTarget({
+      rowIndex: 1,
+      columnName: "id",
+      rowHeight: 31,
+      rowNumberWidth: 52,
+      columns,
+      getColumnWidth: () => 80,
+      frozenRowIndex: 1,
+      currentScrollTop: 620,
+    }),
+    {
+      rowIndex: 1,
+      columnName: "id",
+      scrollTop: 620,
+      scrollLeft: 0,
     },
   );
 });
@@ -261,9 +517,12 @@ test("styles.css includes fast table grid viewport styles", async () => {
   assert.match(styles, /\.fast-table-grid\s*\{/);
   assert.match(fastGridRule, /--table-header-bg:\s*#e8f1fb/);
   assert.match(fastGridRule, /--table-body-bg:/);
-  assert.match(fastGridRule, /--table-row-header-bg:\s*var\(--table-body-bg\)/);
+  assert.match(fastGridRule, /--table-freeze-cell-bg:\s*#eef3fa/);
+  assert.match(fastGridRule, /--table-row-header-bg:\s*var\(--table-freeze-cell-bg\)/);
   assert.match(fastGridRule, /background:\s*var\(--table-body-bg\)/);
   assert.match(styles, /\.fast-table-grid__viewport\s*\{/);
+  assert.match(styles, /\.fast-table-grid__viewport::-webkit-scrollbar\s*\{[\s\S]*width:\s*18px;[\s\S]*height:\s*18px;/);
+  assert.match(styles, /\.fast-table-grid__viewport::-webkit-scrollbar-thumb\s*\{[\s\S]*min-height:\s*44px;[\s\S]*min-width:\s*44px;/);
   assert.match(styles, /\.fast-table-grid__canvas\s*\{/);
   assert.match(styles, /\.fast-table-grid__spacer\s*\{/);
   assert.doesNotMatch(fastGridRule, /--table-header-bg:\s*rgba\(226, 236, 248/);
@@ -274,12 +533,18 @@ test("styles.css includes fast table grid viewport styles", async () => {
 test("App.vue drawFastTableGrid uses visible ranges and draw model", async () => {
   const { readFile } = await import("node:fs/promises");
   const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
+  const drawStart = appVue.indexOf("function drawFastTableGrid()");
+  const drawEnd = appVue.indexOf("function readFastTableGridCssValue", drawStart);
+  const drawBody = appVue.slice(drawStart, drawEnd);
 
   assert.match(appVue, /getVisibleFastGridRows/);
   assert.match(appVue, /getVisibleFastGridColumns/);
   assert.match(appVue, /buildFastGridDrawModel/);
   assert.match(appVue, /fastTableGridFocus/);
   assert.match(appVue, /function getFastTableGridVisibleRows/);
+  assert.match(appVue, /function getFastTableGridFrozenRowIndexes/);
+  assert.match(drawBody, /const \{ rows, rowIndexes \} = getFastTableGridVisibleRows\(rowRange, getFastTableGridFrozenRowIndexes\(\)\)/);
+  assert.match(drawBody, /rowIndexes,/);
   assert.match(appVue, /function drawFastTableGridHeaders/);
   assert.match(appVue, /function drawFastTableGridRows/);
   assert.match(appVue, /context\.fillText/);
@@ -289,7 +554,7 @@ test("App.vue drawFastTableGrid uses visible ranges and draw model", async () =>
   assert.match(appVue, /getFastTableGridTheme\(canvas\)/);
   assert.match(appVue, /getComputedStyle\(canvas\)/);
   assert.match(appVue, /headerBackground: readFastTableGridCssValue\(styles, "--table-header-bg", readFastTableGridCssValue\(styles, "--surface-card-strong"/);
-  assert.match(appVue, /rowHeaderBackground: readFastTableGridCssValue\(styles, "--table-row-header-bg", readFastTableGridCssValue\(styles, "--bg-panel"/);
+  assert.match(appVue, /rowHeaderBackground: readFastTableGridCssValue\(styles, "--table-row-header-bg", readFastTableGridCssValue\(styles, "--table-freeze-cell-bg"/);
   assert.match(appVue, /cellBackground: readFastTableGridCssValue\(styles, "--table-body-bg", readFastTableGridCssValue\(styles, "--bg-panel"/);
   assert.match(appVue, /truncateFastGridText/);
   assert.doesNotMatch(appVue, /context\.fillText\([^\n]+, [^\n]+, [^\n]+, Math\.max/);
@@ -437,7 +702,7 @@ test("App.vue keeps edit mode on the DOM table path", async () => {
   assert.match(appVue, /v-if="editMode" class="edit-bottom-stack"/);
 });
 
-test("App.vue keeps freeze states on the DOM table path while allowing fullscreen fast grid", async () => {
+test("App.vue keeps frozen read-only browsing on the fast grid path", async () => {
   const { readFile } = await import("node:fs/promises");
   const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
   const guardStart = appVue.indexOf("const shouldUseFastTableGrid = computed");
@@ -447,9 +712,32 @@ test("App.vue keeps freeze states on the DOM table path while allowing fullscree
   assert.notEqual(guardStart, -1);
   assert.notEqual(guardEnd, -1);
   assert.match(guard, /!freezePickMode\.value/);
-  assert.match(guard, /!frozenColumnName\.value/);
-  assert.match(guard, /frozenRowIndex\.value === null/);
-  assert.doesNotMatch(guard, /!tableFullscreen\.value/);
+  assert.doesNotMatch(guard, /!frozenColumnName\.value/);
+  assert.doesNotMatch(guard, /frozenRowIndex\.value === null/);
+  assert.match(guard, /!editMode\.value/);
+});
+
+test("App.vue passes frozen boundaries into fast grid helpers", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
+  const visibleStart = appVue.indexOf("function drawFastTableGrid()");
+  const visibleEnd = appVue.indexOf("function readFastTableGridCssValue", visibleStart);
+  const drawBody = appVue.slice(visibleStart, visibleEnd);
+  const hitStart = appVue.indexOf("function resolveFastTableGridHit");
+  const hitEnd = appVue.indexOf("function onFastTableGridPointerDown", hitStart);
+  const hitBody = appVue.slice(hitStart, hitEnd);
+  const focusStart = appVue.indexOf("async function focusTableFindMatch");
+  const focusEnd = appVue.indexOf("async function runTableFind", focusStart);
+  const focusBody = appVue.slice(focusStart, focusEnd);
+
+  assert.match(drawBody, /frozenColumnName: frozenColumnName\.value/);
+  assert.match(drawBody, /frozenRowIndex: frozenRowIndex\.value/);
+  assert.match(hitBody, /frozenColumnName: frozenColumnName\.value/);
+  assert.match(hitBody, /frozenRowIndex: frozenRowIndex\.value/);
+  assert.match(focusBody, /frozenColumnName: frozenColumnName\.value/);
+  assert.match(focusBody, /frozenRowIndex: frozenRowIndex\.value/);
+  assert.match(focusBody, /currentScrollLeft: viewport instanceof HTMLElement \? viewport\.scrollLeft : fastTableGridScroll\.left/);
+  assert.match(focusBody, /currentScrollTop: viewport instanceof HTMLElement \? viewport\.scrollTop : fastTableGridScroll\.top/);
 });
 
 test("App.vue redraws the fast grid when canceling freeze pick mode", async () => {
@@ -470,6 +758,21 @@ test("App.vue redraws the fast grid when canceling freeze pick mode", async () =
   assert.match(cancelBody, /scheduleFastTableGridRefresh\(\)/);
 });
 
+test("App.vue redraws the fast grid after applying a freeze preview", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
+  const applyStart = appVue.indexOf("async function applyFreezePreview()");
+  const applyEnd = appVue.indexOf("async function toggleFreezePickMode", applyStart);
+  const applyBody = appVue.slice(applyStart, applyEnd);
+
+  assert.notEqual(applyStart, -1);
+  assert.notEqual(applyEnd, -1);
+  assert.match(applyBody, /frozenColumnName\.value = freezePreview\.columnName/);
+  assert.match(applyBody, /frozenRowIndex\.value = freezePreview\.rowIndex/);
+  assert.match(applyBody, /cancelFreezePickMode\(\)/);
+  assert.match(applyBody, /scheduleFastTableGridRefresh\(\)/);
+});
+
 test("App.vue draws fixed fast grid headers and the row-number gutter", async () => {
   const { readFile } = await import("node:fs/promises");
   const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
@@ -479,10 +782,53 @@ test("App.vue draws fixed fast grid headers and the row-number gutter", async ()
 
   assert.notEqual(drawStart, -1);
   assert.notEqual(drawEnd, -1);
-  assert.match(drawBody, /drawFastTableGridRows\(context, model\.cells, theme\);[\s\S]*drawFastTableGridRowHeaders\(context, rowRange, height, theme\);[\s\S]*drawFastTableGridHeaders\(context, visibleColumns, width, theme\);/);
+  assert.match(drawBody, /drawFastTableGridRows\(context, model\.cells, theme\);[\s\S]*drawFastTableGridRowHeaders\(context, rowIndexes, height, theme\);[\s\S]*drawFastTableGridHeaders\(context, visibleColumns, width, theme\);/);
   assert.match(appVue, /function drawFastTableGridRowHeaders/);
+  assert.match(appVue, /rowHeaderBackground: readFastTableGridCssValue\(styles, "--table-row-header-bg", readFastTableGridCssValue\(styles, "--table-freeze-cell-bg", "#eef3fa"\)\)/);
   assert.match(appVue, /TABLE_ROW_HANDLE_WIDTH/);
   assert.match(appVue, /String\(rowIndex \+ 1\)/);
+});
+
+test("App.vue keeps frozen fast-grid headers fixed and opaque during horizontal scroll", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
+  const headerStart = appVue.indexOf("function drawFastTableGridHeaders");
+  const headerEnd = appVue.indexOf("function drawFastTableGridRowHeaders", headerStart);
+  const headerBody = appVue.slice(headerStart, headerEnd);
+
+  assert.notEqual(headerStart, -1);
+  assert.notEqual(headerEnd, -1);
+  assert.match(headerBody, /const scrollableColumns = visibleColumns\.filter\(\(column\) => !column\.frozen\)/);
+  assert.match(headerBody, /const frozenColumns = visibleColumns\.filter\(\(column\) => column\.frozen\)/);
+  assert.ok(headerBody.indexOf("scrollableColumns.forEach") < headerBody.indexOf("frozenColumns.forEach"));
+  assert.ok(headerBody.lastIndexOf("context.fillRect(0, 0, rowHandleWidth, headerHeight)") > headerBody.indexOf("frozenColumns.forEach"));
+  assert.match(headerBody, /context\.fillStyle = frozen \? theme\.frozenHeaderBackground : theme\.headerBackground/);
+  assert.match(headerBody, /context\.fillStyle = theme\.frozenHeaderBackground;[\s\S]*context\.fillRect\(0, 0, rowHandleWidth, headerHeight\)/);
+  assert.match(headerBody, /const drawX = frozen \? x : x - fastTableGridScroll\.left/);
+});
+
+test("App.vue draws frozen fast-grid intersections above scrolling frozen panes", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const appVue = await readFile(new URL("./App.vue", import.meta.url), "utf8");
+  const rowsStart = appVue.indexOf("function drawFastTableGridRows");
+  const rowsEnd = appVue.indexOf("function onFastTableGridScroll", rowsStart);
+  const rowsBody = appVue.slice(rowsStart, rowsEnd);
+
+  assert.notEqual(rowsStart, -1);
+  assert.notEqual(rowsEnd, -1);
+  assert.match(rowsBody, /const scrollableCells = cells\.filter\(\(cell\) => !cell\.frozenColumn && !cell\.frozenRow\)/);
+  assert.match(rowsBody, /const frozenColumnCells = cells\.filter\(\(cell\) => cell\.frozenColumn && !cell\.frozenRow\)/);
+  assert.match(rowsBody, /const frozenRowCells = cells\.filter\(\(cell\) => cell\.frozenRow && !cell\.frozenColumn\)/);
+  assert.match(rowsBody, /const frozenIntersectionCells = cells\.filter\(\(cell\) => cell\.frozenColumn && cell\.frozenRow\)/);
+  assert.match(rowsBody, /scrollableCells\.forEach/);
+  assert.match(rowsBody, /frozenColumnCells\.forEach/);
+  assert.match(rowsBody, /frozenRowCells\.forEach/);
+  assert.match(rowsBody, /frozenIntersectionCells\.forEach/);
+  assert.ok(rowsBody.indexOf("scrollableCells.forEach") < rowsBody.indexOf("frozenColumnCells.forEach"));
+  assert.ok(rowsBody.indexOf("frozenColumnCells.forEach") < rowsBody.indexOf("frozenRowCells.forEach"));
+  assert.ok(rowsBody.indexOf("frozenRowCells.forEach") < rowsBody.indexOf("frozenIntersectionCells.forEach"));
+  assert.match(rowsBody, /cell\.frozenColumnEdge/);
+  assert.match(rowsBody, /cell\.frozenRowEdge/);
 });
 
 test("App.vue keeps seamless loading available for fast grid scrolling", async () => {

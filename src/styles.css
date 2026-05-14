@@ -3784,7 +3784,9 @@ mark {
 .fast-table-grid {
   --table-header-bg: #e8f1fb;
   --table-body-bg: color-mix(in srgb, var(--bg-panel) 98%, #eef6ff 2%);
-  --table-row-header-bg: var(--table-body-bg);
+  --table-freeze-cell-bg: #eef3fa;
+  --table-freeze-header-bg: #f0f5fc;
+  --table-row-header-bg: var(--table-freeze-cell-bg);
   position: relative;
   flex: 1;
   min-height: 140px;
@@ -3809,6 +3811,34 @@ mark {
   overflow: auto;
   scrollbar-width: auto;
   scrollbar-color: var(--scrollbar-thumb) transparent;
+}
+
+.fast-table-grid__viewport::-webkit-scrollbar {
+  width: 18px;
+  height: 18px;
+}
+
+.fast-table-grid__viewport::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 999px;
+}
+
+.fast-table-grid__viewport::-webkit-scrollbar-thumb {
+  min-height: 44px;
+  min-width: 44px;
+  background: var(--scrollbar-thumb);
+  border: 3px solid transparent;
+  background-clip: content-box;
+  border-radius: 999px;
+}
+
+.fast-table-grid__viewport::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover);
+  background-clip: content-box;
+}
+
+.fast-table-grid__viewport::-webkit-scrollbar-corner {
+  background: transparent;
 }
 
 .table-content-scale .fast-table-grid__viewport {
