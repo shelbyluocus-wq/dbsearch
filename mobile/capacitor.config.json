@@ -1,0 +1,8 @@
+{
+  "appId": "com.dbsearch.mobile",
+  "appName": "鹰捷数据",
+  "webDir": "dist",
+  "server": {
+    "androidScheme": "https"
+  }
+}

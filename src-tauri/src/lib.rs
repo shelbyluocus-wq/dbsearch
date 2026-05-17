@@ -1,4 +1,5 @@
 pub mod db_migration;
+pub mod mobile_proxy;
 pub mod sync_workspace;
 
 use crate::sync_workspace::{execute_sync_pipeline, SyncProfile, SyncRunOutcome};
@@ -6925,6 +6926,7 @@ pub fn run() {
                     }
                 });
             }
+            tokio::spawn(crate::mobile_proxy::start_proxy_server(9527));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
