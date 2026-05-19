@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
+import QRCode from "qrcode";
 import { getCurrentWindow, Window } from "@tauri-apps/api/window";
 import { ask, save, open } from "@tauri-apps/plugin-dialog";
 import { check as checkForAppUpdate } from "@tauri-apps/plugin-updater";
@@ -182,6 +183,16 @@ import {
   isQuickPasteMixedSnippet,
   isQuickPasteTextLikeSnippet,
 } from "./quickPasteCategories.js";
+import {
+  CODEX_PET_ATLAS,
+  CODEX_PET_STATE_BY_ID,
+  CODEX_PET_STATES,
+  JIEDI_PET,
+  getPetFrameStyle,
+  normalizePetSkin,
+  normalizePetState,
+  resolvePetState,
+} from "./petAtlas.js";
 import {
   normalizeFreezeBoundary,
   buildFrozenColumnMeta,
@@ -1276,6 +1287,10 @@ async function handleQuickPasteKeydown(event) {
 
 const settingsTab = ref(-1);
 const settingsOpen = ref(false);
+const showMobileProxyQr = ref(false);
+const mobileProxyQrDataUrl = ref("");
+const mobileProxyAddress = ref("");
+const mobileProxyQrError = ref("");
 const SETTINGS_TABS = [
   { id: 'connection', label: '连接', icon: '\u{1F5C4}' },
   { id: 'shortcuts',  label: '快捷键', icon: '\u2328' },
@@ -1579,16 +1594,7 @@ const config = reactive({
     table_default_view: "hits",
     pet_locked: false,
     pet_position: null,
-    idle_states: [
-      "float_breathe",
-      "sleep_zzz",
-      "look_around",
-      "ghost_fade",
-      "wave_hello",
-      "charge_spell",
-      "jump_play",
-      "spin_show",
-    ],
+    idle_states: [],
     export_hotkey: "Ctrl+E",
     batch_export_hotkey: "Ctrl+Shift+E",
     template_prev_hotkey: "Ctrl+Alt+Left",
@@ -1596,7 +1602,7 @@ const config = reactive({
     panel_shortcuts: {},
     reset_on_open_to_all_tables: true,
     always_on_top_hotkey: "P",
-    pet_skin: "eagle",
+    pet_skin: "jiedi",
     pet_scale: {},
     custom_font: null,
     weather_enabled: true,
@@ -1919,7 +1925,6 @@ let unlistenPetMoved = null;
 let unlistenSearchFound = null;
 let unlistenArtTextIndexProgress = null;
 let unlistenArtTextOcrInstallProgress = null;
-let unlistenPetIdleStatesChanged = null;
 let unlistenPetIdlePreview = null;
 let unlistenBatchImportProgress = null;
 let welcomeCloseTimer = null;
@@ -1927,9 +1932,13 @@ let copyToastTimer = null;
 let uiScalePersistTimer = null;
 
 const petIdleActive = ref(false);
-const currentIdleState = ref("float_breathe");
-const petIdlePreviewing = ref(false);
+const currentPetIdleKind = ref("waiting");
+const petStatePreview = ref("");
 const petFound = ref(false);
+const petFailed = ref(false);
+const petDragDirection = ref("");
+const petDragFacing = ref("right");
+const petFrame = ref(0);
 const tableModalRef = ref(null);
 const tableGridWrapRef = ref(null);
 const fastTableGridCanvasRef = ref(null);
@@ -1941,6 +1950,10 @@ const tableFullscreenMode = ref("none");
 const tableFullscreenRestoreMaximized = ref(false);
 let idleTimer = null;
 let idleStateTimer = null;
+let petAnimId = null;
+let petPreviewTimer = null;
+let petDragLastX = null;
+let petDragStillTimer = null;
 let resetIdleHandler = null;
 const columnWidthMap = reactive({});
 const renderedColumnWidthMap = reactive({});
@@ -1976,45 +1989,6 @@ const TABLE_AUTO_COLUMN_HORIZONTAL_PADDING = 28;
 const COLUMN_COLLAPSE_HORIZONTAL_PADDING = 16;
 const COLUMN_COLLAPSE_BADGE_ALLOWANCE = 20;
 const COLUMN_COLLAPSE_RESIZE_ALLOWANCE = 8;
-const ALLOWED_IDLE_STATES = [
-  "float_breathe",
-  "sleep_zzz",
-  "look_around",
-  "ghost_fade",
-  "wave_hello",
-  "charge_spell",
-  "jump_play",
-  "spin_show",
-];
-const DEFAULT_IDLE_LABELS = {
-  float_breathe: "漂浮呼吸",
-  sleep_zzz: "打盹(zzz)",
-  look_around: "左右张望",
-  ghost_fade: "半透明潜行",
-  wave_hello: "挥手问好",
-  charge_spell: "蓄力施法",
-  jump_play: "蹦跳庆祝",
-  spin_show: "旋转登场",
-};
-const SPRITE_SHEET_IDLE_STATES = {
-  knight: {
-    states: ["knight_idle", "knight_walk", "knight_run", "knight_attack", "knight_hurt"],
-    labels: {
-      knight_idle: "待命",
-      knight_walk: "巡逻",
-      knight_run: "冲刺",
-      knight_attack: "挥剑",
-      knight_hurt: "受击",
-    },
-    animMap: {
-      knight_idle: "idle",
-      knight_walk: "walk",
-      knight_run: "run",
-      knight_attack: "attack",
-      knight_hurt: "hurt",
-    },
-  },
-};
 const TABLE_TAB_LIMIT = 8;
 const TABLE_COMMAND_LIMIT = 12;
 const TABLE_ROW_HANDLE_WIDTH = 36;
@@ -2224,16 +2198,6 @@ const settingsDraft = reactive({
   quickPasteOutputHotkey: "F8",
   autoStart: false,
   tableDefaultView: "hits",
-  idleStates: [
-    "float_breathe",
-    "sleep_zzz",
-    "look_around",
-    "ghost_fade",
-    "wave_hello",
-    "charge_spell",
-    "jump_play",
-    "spin_show",
-  ],
   excludeTables: "^t_log_.*,^tmp_.*",
   perTableTimeoutSec: 10,
   perTableMaxRows: 50,
@@ -2246,7 +2210,7 @@ const settingsDraft = reactive({
   panelShortcuts: { ...PANEL_SHORTCUT_DEFAULTS },
   resetOnOpenToAllTables: true,
   templateName: "",
-  petSkin: "eagle",
+  petSkin: "jiedi",
   petScale: 1.0,
   customFont: null,
   weatherEnabled: true,
@@ -3146,21 +3110,6 @@ async function openSyncTargetDir() {
   }
 }
 
-// Custom skin editor state
-const skinEditorOpen = ref(false);
-const skinEditorStep = ref("import"); // "import" | "configure" | "preview"
-const skinEditorName = ref("");
-const skinEditorAnims = ref([]);
-// Each entry: { name, file, origPath, src, width, height, frameWidth, frameHeight, frameCount, fps }
-const skinEditorSearchAnim = ref("");
-const skinEditorFoundAnim = ref("");
-const skinEditorDefaultAnim = ref("");
-const skinEditorMsg = ref("");
-const skinEditorLoading = ref(false);
-const skinEditorEditingId = ref(null);
-const customSkins = ref([]);
-const skinEditorCanvasRefs = ref([]);
-
 const totalMetaCount = computed(() =>
   sortedSearchTableResults.value.length + results.column.length + results.comment.length,
 );
@@ -3678,151 +3627,37 @@ const resultZoomItems = computed(() => {
 });
 const petDragging = ref(false);
 const petHiddenForSession = ref(false);
-const petSpriteClasses = computed(() => ({
-  searching: progress.show,
-  found: petFound.value,
-  dragging: petDragging.value,
-  sleeping: petIdleActive.value && currentIdleState.value === "sleep_zzz",
-  "idle-float": petIdleActive.value && currentIdleState.value === "float_breathe",
-  "idle-look": petIdleActive.value && currentIdleState.value === "look_around",
-  "idle-ghost": petIdleActive.value && currentIdleState.value === "ghost_fade",
-  "idle-wave": petIdleActive.value && currentIdleState.value === "wave_hello",
-  "idle-charge": petIdleActive.value && currentIdleState.value === "charge_spell",
-  "idle-jump": petIdleActive.value && currentIdleState.value === "jump_play",
-  "idle-spin": petIdleActive.value && currentIdleState.value === "spin_show",
+const jiediSpritesheetUrl = new URL("./assets/pets/jiedi/spritesheet.webp", import.meta.url).href;
+const petPreviewOptions = CODEX_PET_STATES.map((state) => ({
+  value: state.id,
+  label: state.label,
 }));
-const isHdPetSkin = computed(() => false);
-const SPRITE_SHEET_SKINS = {
-  knight: {
-    animations: {
-      idle:      { src: null, frameWidth: 96, frameHeight: 84, frameCount: 7, fps: 8 },
-      run:       { src: null, frameWidth: 96, frameHeight: 84, frameCount: 8, fps: 10 },
-      walk:      { src: null, frameWidth: 96, frameHeight: 84, frameCount: 8, fps: 8 },
-      attack:    { src: null, frameWidth: 96, frameHeight: 84, frameCount: 6, fps: 10 },
-      hurt:      { src: null, frameWidth: 96, frameHeight: 84, frameCount: 4, fps: 8 },
-    },
-    defaultAnim: "idle",
-    searchAnim: "run",
-    foundAnim: "attack",
-    hurtAnim: "hurt",
-    idleMap: {
-      // Default idle states mapping (fallback for old configs)
-      sleep_zzz: "idle",
-      float_breathe: "idle",
-      look_around: "walk",
-      wave_hello: "idle",
-      jump_play: "run",
-      spin_show: "attack",
-      ghost_fade: "idle",
-      charge_spell: "attack",
-      // Knight-specific idle states
-      knight_idle: "idle",
-      knight_walk: "walk",
-      knight_run: "run",
-      knight_attack: "attack",
-      knight_hurt: "hurt",
-    },
-  },
-};
-// Lazy-load sprite sheet images
-function loadSpriteSheetImages() {
-  const skin = config.personal.pet_skin;
-  if (skin.startsWith("custom:")) return; // Custom skins already loaded via convertFileSrc
-  const knightModules = {
-    idle: new URL("./assets/sprites/knight/idle.png", import.meta.url).href,
-    run: new URL("./assets/sprites/knight/run.png", import.meta.url).href,
-    walk: new URL("./assets/sprites/knight/walk.png", import.meta.url).href,
-    attack: new URL("./assets/sprites/knight/attack.png", import.meta.url).href,
-    hurt: new URL("./assets/sprites/knight/hurt.png", import.meta.url).href,
-  };
-  for (const [anim, url] of Object.entries(knightModules)) {
-    SPRITE_SHEET_SKINS.knight.animations[anim].src = url;
-  }
-}
-// Register custom skins into SPRITE_SHEET_SKINS
-async function registerCustomSkins() {
-  // Clean old custom entries
-  for (const key of Object.keys(SPRITE_SHEET_SKINS)) {
-    if (key.startsWith("custom:")) delete SPRITE_SHEET_SKINS[key];
-  }
-  for (const key of Object.keys(SPRITE_SHEET_IDLE_STATES)) {
-    if (key.startsWith("custom:")) delete SPRITE_SHEET_IDLE_STATES[key];
-  }
-  for (const { id, manifest } of customSkins.value) {
-    const skinKey = `custom:${id}`;
-    try {
-      const basePath = await invoke("get_skin_base_path", { skinName: id });
-      const animations = {};
-      const idleStates = [];
-      const idleLabels = {};
-      const idleAnimMap = {};
-      const idleMapForSkin = {};
-      for (const [animName, animDef] of Object.entries(manifest.animations)) {
-        const filePath = basePath + "/" + animDef.file;
-        animations[animName] = {
-          src: convertFileSrc(filePath),
-          frameWidth: animDef.frameWidth,
-          frameHeight: animDef.frameHeight,
-          frameCount: animDef.frameCount,
-          fps: animDef.fps,
-        };
-        const idleKey = `${id}_${animName}`;
-        idleStates.push(idleKey);
-        idleLabels[idleKey] = animName;
-        idleAnimMap[idleKey] = animName;
-        idleMapForSkin[idleKey] = animName;
-      }
-      // Also map default generic idle states to defaultAnim
-      for (const genericState of ["float_breathe", "sleep_zzz", "look_around", "wave_hello", "jump_play", "spin_show", "ghost_fade", "charge_spell"]) {
-        idleMapForSkin[genericState] = manifest.defaultAnim;
-      }
-      SPRITE_SHEET_SKINS[skinKey] = {
-        animations,
-        defaultAnim: manifest.defaultAnim,
-        searchAnim: manifest.searchAnim,
-        foundAnim: manifest.foundAnim,
-        idleMap: idleMapForSkin,
-      };
-      SPRITE_SHEET_IDLE_STATES[skinKey] = {
-        states: idleStates,
-        labels: idleLabels,
-        animMap: idleAnimMap,
-      };
-    } catch (e) {
-      console.error(`Failed to register custom skin ${id}:`, e);
-    }
-  }
-}
-const isSpriteSheetSkin = computed(() => config.personal.pet_skin in SPRITE_SHEET_SKINS);
-const spriteSheetFrame = ref(0);
-let spriteSheetAnimId = null;
-const spriteSheetAnim = computed(() => {
-  if (!isSpriteSheetSkin.value) return null;
-  const skinDef = SPRITE_SHEET_SKINS[config.personal.pet_skin];
-  if (!skinDef) return null;
-  if (petFound.value) return skinDef.foundAnim || skinDef.defaultAnim;
-  if (progress.show) return skinDef.searchAnim || skinDef.defaultAnim;
-  if (petIdleActive.value && currentIdleState.value) {
-    return skinDef.idleMap?.[currentIdleState.value] || skinDef.defaultAnim;
-  }
-  return skinDef.defaultAnim;
-});
-const spriteSheetStyle = computed(() => {
-  if (!isSpriteSheetSkin.value) return {};
-  const skinDef = SPRITE_SHEET_SKINS[config.personal.pet_skin];
-  const animName = spriteSheetAnim.value || skinDef.defaultAnim;
-  const anim = skinDef.animations[animName];
-  if (!anim?.src) return {};
-  return {
-    width: anim.frameWidth + "px",
-    height: anim.frameHeight + "px",
-    backgroundImage: `url(${anim.src})`,
-    backgroundPosition: `-${spriteSheetFrame.value * anim.frameWidth}px 0`,
-    backgroundSize: `${anim.frameWidth * anim.frameCount}px ${anim.frameHeight}px`,
-    backgroundRepeat: "no-repeat",
-    imageRendering: "pixelated",
-  };
-});
+const currentPetState = computed(() => petStatePreview.value || resolvePetState({
+  dragging: petDragging.value,
+  dragDirection: petDragDirection.value,
+  fallbackDragDirection: petDragging.value ? petDragFacing.value : "",
+  searching: progress.show || syncWorkspaceRunning.value,
+  found: petFound.value,
+  failed: petFailed.value,
+  idleActive: petIdleActive.value,
+  idleKind: currentPetIdleKind.value,
+}));
+const currentPetStateDef = computed(() =>
+  CODEX_PET_STATE_BY_ID[normalizePetState(currentPetState.value)] || CODEX_PET_STATE_BY_ID.idle,
+);
+const petSpriteClasses = computed(() => ({
+  "is-dragging": petDragging.value,
+  "is-found": petFound.value,
+  "is-failed": petFailed.value,
+  "is-running": progress.show || syncWorkspaceRunning.value,
+}));
+const petSpriteStyle = computed(() =>
+  getPetFrameStyle({
+    stateId: currentPetState.value,
+    frame: petFrame.value,
+    imageUrl: jiediSpritesheetUrl,
+  }),
+);
 const hotkeyPlaceholder = "点击后按下快捷键";
 const quickDateHotkeyPlaceholder = "点击后按下快捷键";
 const reducedTransparencyEnabled = computed(() =>
@@ -4005,96 +3840,74 @@ function isEditableTarget(target) {
   return !!target.isContentEditable;
 }
 
-const ALL_VALID_IDLE_STATES = (() => {
-  const set = new Set(ALLOWED_IDLE_STATES);
-  for (const def of Object.values(SPRITE_SHEET_IDLE_STATES)) {
-    for (const s of def.states) set.add(s);
-  }
-  return set;
-})();
-function sanitizeIdleStates(states) {
-  const values = Array.isArray(states) ? states : [];
-  const normalized = [...new Set(values.filter((item) => ALL_VALID_IDLE_STATES.has(item)))];
-  return normalized.length > 0 ? normalized : ["float_breathe"];
-}
-
 function getDetailTerms() {
   const contextTerms = sanitizeTerms(detailHitContext.terms);
   if (contextTerms.length > 0) return contextTerms;
   return sanitizeTerms(splitKeywordTerms(keyword.value));
 }
 
-function pickNextIdleState() {
-  const enabled = sanitizeIdleStates(config.personal.idle_states);
-  if (enabled.length === 1) return enabled[0];
-  const pool = enabled.filter((state) => state !== currentIdleState.value);
-  const candidates = pool.length > 0 ? pool : enabled;
-  const index = Math.floor(Math.random() * candidates.length);
-  return candidates[index];
+function pickNextPetIdleKind() {
+  return currentPetIdleKind.value === "waiting" ? "review" : "waiting";
 }
 
 function scheduleIdleStateSwitch() {
   clearTimeout(idleStateTimer);
-  if (!petIdleActive.value || petIdlePreviewing.value) return;
+  if (!petIdleActive.value || petStatePreview.value) return;
   idleStateTimer = setTimeout(() => {
-    currentIdleState.value = pickNextIdleState();
+    currentPetIdleKind.value = pickNextPetIdleKind();
     scheduleIdleStateSwitch();
   }, IDLE_STATE_CHANGE_MS);
 }
 
-function startSpriteSheetAnimation() {
-  stopSpriteSheetAnimation();
-  if (!isSpriteSheetSkin.value) return;
-  let lastAnimName = "";
+function startPetAnimation() {
+  stopPetAnimation();
+  let lastState = "";
   let lastTime = 0;
   const tick = (timestamp) => {
-    const skinDef = SPRITE_SHEET_SKINS[config.personal.pet_skin];
-    if (!skinDef) return;
-    const animName = spriteSheetAnim.value || skinDef.defaultAnim;
-    const anim = skinDef.animations[animName];
-    if (!anim) return;
-    if (animName !== lastAnimName) {
-      spriteSheetFrame.value = 0;
-      lastAnimName = animName;
+    const stateId = normalizePetState(currentPetState.value);
+    const state = CODEX_PET_STATE_BY_ID[stateId] || CODEX_PET_STATE_BY_ID.idle;
+    if (stateId !== lastState) {
+      petFrame.value = 0;
+      lastState = stateId;
       lastTime = timestamp;
     }
-    const interval = 1000 / anim.fps;
+    const durations = state.durations || [140];
+    const interval = durations[petFrame.value] || durations[durations.length - 1] || 140;
     if (timestamp - lastTime >= interval) {
-      spriteSheetFrame.value = (spriteSheetFrame.value + 1) % anim.frameCount;
+      petFrame.value = (petFrame.value + 1) % state.frames;
       lastTime = timestamp;
     }
-    spriteSheetAnimId = requestAnimationFrame(tick);
+    petAnimId = requestAnimationFrame(tick);
   };
-  spriteSheetAnimId = requestAnimationFrame(tick);
+  petAnimId = requestAnimationFrame(tick);
 }
-function stopSpriteSheetAnimation() {
-  if (spriteSheetAnimId !== null) {
-    cancelAnimationFrame(spriteSheetAnimId);
-    spriteSheetAnimId = null;
+function stopPetAnimation() {
+  if (petAnimId !== null) {
+    cancelAnimationFrame(petAnimId);
+    petAnimId = null;
   }
 }
 
 function enterIdleMode() {
   petIdleActive.value = true;
-  currentIdleState.value = pickNextIdleState();
+  currentPetIdleKind.value = pickNextPetIdleKind();
   scheduleIdleStateSwitch();
 }
 
 function exitIdleMode() {
   petIdleActive.value = false;
-  petIdlePreviewing.value = false;
-  currentIdleState.value = "float_breathe";
+  currentPetIdleKind.value = "waiting";
   clearTimeout(idleStateTimer);
 }
 
-function previewIdleState(state) {
+function previewPetState(state) {
   if (!isTauriWindow) return;
-  emit("pet-idle-preview", { state }).catch(() => {});
+  emit("pet-state-preview", { state }).catch(() => {});
 }
 
-function clearIdlePreview() {
+function clearPetStatePreview() {
   if (!isTauriWindow) return;
-  emit("pet-idle-preview", { state: null }).catch(() => {});
+  emit("pet-state-preview", { state: null }).catch(() => {});
 }
 
 // ── 表整理：UI 交互 ──
@@ -4198,14 +4011,6 @@ function closeAllOrgMenus() {
   closeItemCtxMenu();
   closeFolderCtxMenu();
 }
-const availableIdleOptions = computed(() => {
-  const skin = settingsDraft.petSkin;
-  const ssDef = SPRITE_SHEET_IDLE_STATES[skin];
-  if (ssDef) {
-    return ssDef.states.map((s) => ({ value: s, label: ssDef.labels[s] || s }));
-  }
-  return ALLOWED_IDLE_STATES.map((s) => ({ value: s, label: DEFAULT_IDLE_LABELS[s] || s }));
-});
 const activeFolderName = computed(() => {
   if (activeFolder.value === "all") return "全部";
   if (activeFolder.value === "starred") return "星标";
@@ -5306,13 +5111,6 @@ onMounted(async () => {
   await refreshUpdateSettings();
   applyCustomFont();
   await startTableCommentAlignObserver();
-  // Load custom skins
-  if (isTauriWindow) {
-    try {
-      customSkins.value = await invoke("list_custom_skins");
-      await registerCustomSkins();
-    } catch (e) { console.error("Failed to load custom skins:", e); }
-  }
   tableDetailView.value = normalizeTableDefaultView(config.personal.table_default_view);
 
   if (isQuickPasteWindow.value) {
@@ -5422,8 +5220,6 @@ onMounted(async () => {
   }
 
   if (isPetWindow.value) {
-    config.personal.idle_states = sanitizeIdleStates(config.personal.idle_states);
-
     if (isTauriWindow) {
       const appWindow = getCurrentWindow();
       unlistenPetMoved = await appWindow.onMoved((event) => {
@@ -5431,6 +5227,17 @@ onMounted(async () => {
         if (typeof pos?.x !== "number" || typeof pos?.y !== "number") {
           return;
         }
+        if (typeof petDragLastX === "number" && Math.abs(pos.x - petDragLastX) > 1) {
+          const nextDirection = pos.x > petDragLastX ? "right" : "left";
+          petDragDirection.value = nextDirection;
+          petDragFacing.value = nextDirection;
+          clearTimeout(petDragStillTimer);
+          petDragStillTimer = setTimeout(() => {
+            petDragDirection.value = "";
+            petDragStillTimer = null;
+          }, 220);
+        }
+        petDragLastX = pos.x;
         invoke("save_pet_position", { x: Math.round(pos.x), y: Math.round(pos.y) }).catch(() => {});
       });
 
@@ -5452,27 +5259,21 @@ onMounted(async () => {
       setTimeout(() => { petFound.value = false; }, 800);
     });
 
-    unlistenPetIdleStatesChanged = await listen("pet-idle-states-changed", (event) => {
-      const payload = event.payload;
-      config.personal.idle_states = sanitizeIdleStates(payload?.idleStates);
-      if (petIdleActive.value && !petIdlePreviewing.value) {
-        currentIdleState.value = pickNextIdleState();
-        scheduleIdleStateSwitch();
-      }
-    });
-
-    unlistenPetIdlePreview = await listen("pet-idle-preview", (event) => {
+    unlistenPetIdlePreview = await listen("pet-state-preview", (event) => {
       const payload = event.payload;
       const state = payload?.state;
-      if (typeof state === "string" && ALL_VALID_IDLE_STATES.has(state)) {
-        petIdlePreviewing.value = true;
-        petIdleActive.value = true;
-        currentIdleState.value = state;
+      if (typeof state === "string" && CODEX_PET_STATE_BY_ID[state]) {
+        petStatePreview.value = state;
         clearTimeout(idleTimer);
         clearTimeout(idleStateTimer);
+        clearTimeout(petPreviewTimer);
+        petPreviewTimer = setTimeout(() => {
+          petStatePreview.value = "";
+          resetIdleHandler?.();
+        }, 1800);
         return;
       }
-      petIdlePreviewing.value = false;
+      petStatePreview.value = "";
       if (resetIdleHandler) {
         resetIdleHandler();
       } else {
@@ -5483,14 +5284,8 @@ onMounted(async () => {
     await listen("pet-skin-changed", (event) => {
       const skin = event.payload?.skin;
       if (typeof skin === "string") {
-        config.personal.pet_skin = skin;
-        if (skin in SPRITE_SHEET_SKINS) {
-          loadSpriteSheetImages();
-          nextTick(() => { startSpriteSheetAnimation(); setTimeout(syncPetWindowSize, 150); });
-        } else {
-          stopSpriteSheetAnimation();
-          nextTick(() => setTimeout(syncPetWindowSize, 150));
-        }
+        config.personal.pet_skin = normalizePetSkin(skin);
+        nextTick(() => setTimeout(syncPetWindowSize, 150));
       }
     });
 
@@ -5510,12 +5305,7 @@ onMounted(async () => {
     document.addEventListener("mousemove", resetIdleHandler);
     document.addEventListener("click", resetIdleHandler);
     resetIdleHandler();
-
-    // Initialize sprite sheet animation if skin is sprite-sheet type
-    if (isSpriteSheetSkin.value) {
-      loadSpriteSheetImages();
-      nextTick(() => startSpriteSheetAnimation());
-    }
+    startPetAnimation();
     return;
   }
 
@@ -5539,14 +5329,14 @@ onBeforeUnmount(() => {
     clearTimeout(welcomeCloseTimer);
     welcomeCloseTimer = null;
   }
-  stopSpriteSheetAnimation();
+  stopPetAnimation();
   destroyWeatherEngine();
   stopWeatherRefreshTimer();
   if (skyTimeTimer) { clearInterval(skyTimeTimer); skyTimeTimer = null; }
   if (tableSortFlashTimer) { clearTimeout(tableSortFlashTimer); tableSortFlashTimer = null; }
   if (isPanelWindow.value) {
     detachPanelListeners();
-    clearIdlePreview();
+    clearPetStatePreview();
   }
 
   if (unlistenProgress) {
@@ -5589,10 +5379,6 @@ onBeforeUnmount(() => {
     unlistenArtTextOcrInstallProgress();
     unlistenArtTextOcrInstallProgress = null;
   }
-  if (unlistenPetIdleStatesChanged) {
-    unlistenPetIdleStatesChanged();
-    unlistenPetIdleStatesChanged = null;
-  }
   if (unlistenPetIdlePreview) {
     unlistenPetIdlePreview();
     unlistenPetIdlePreview = null;
@@ -5608,6 +5394,8 @@ onBeforeUnmount(() => {
   }
   clearTimeout(idleTimer);
   clearTimeout(idleStateTimer);
+  clearTimeout(petPreviewTimer);
+  clearTimeout(petDragStillTimer);
   clearTimeout(copyToastTimer);
   clearTimeout(uiScalePersistTimer);
   stopPeriodicUpdateCheck();
@@ -5634,16 +5422,6 @@ onBeforeUnmount(() => {
   clearPanelTabDragState();
 });
 
-watch(() => settingsDraft.petSkin, (newSkin) => {
-  const ssDef = SPRITE_SHEET_IDLE_STATES[newSkin];
-  if (ssDef) {
-    settingsDraft.idleStates = [...ssDef.states];
-  } else {
-    settingsDraft.idleStates = [...ALLOWED_IDLE_STATES];
-  }
-  settingsDraft.petScale = getPetScale(newSkin);
-});
-
 watch(() => settingsDraft.backgroundOpacity, (val) => {
   if (settingsOpen.value) {
     config.personal.background_opacity = normalizeBackgroundOpacity(val);
@@ -5666,223 +5444,6 @@ watch(() => settingsDraft.weatherEnabled, (val) => {
     document.documentElement.dataset.theme = preferredThemeId.value
   }
 });
-
-// --- Skin Editor Functions ---
-function openSkinEditor(editId = null) {
-  skinEditorMsg.value = "";
-  skinEditorLoading.value = false;
-  skinEditorCanvasRefs.value = [];
-  if (editId) {
-    skinEditorEditingId.value = editId;
-    const cs = customSkins.value.find((s) => s.id === editId);
-    if (cs) {
-      const m = cs.manifest;
-      skinEditorName.value = m.name;
-      skinEditorSearchAnim.value = m.searchAnim;
-      skinEditorFoundAnim.value = m.foundAnim;
-      skinEditorDefaultAnim.value = m.defaultAnim;
-      // Reconstruct anims from manifest
-      const skinKey = `custom:${editId}`;
-      const skinDef = SPRITE_SHEET_SKINS[skinKey];
-      skinEditorAnims.value = Object.entries(m.animations).map(([name, def]) => ({
-        name,
-        file: def.file,
-        origPath: "",
-        src: skinDef?.animations?.[name]?.src || "",
-        width: def.frameWidth * def.frameCount,
-        height: def.frameHeight,
-        frameWidth: def.frameWidth,
-        frameHeight: def.frameHeight,
-        frameCount: def.frameCount,
-        fps: def.fps,
-      }));
-    }
-  } else {
-    skinEditorEditingId.value = null;
-    skinEditorName.value = "";
-    skinEditorAnims.value = [];
-    skinEditorSearchAnim.value = "";
-    skinEditorFoundAnim.value = "";
-    skinEditorDefaultAnim.value = "";
-  }
-  skinEditorStep.value = "import";
-  skinEditorOpen.value = true;
-}
-function closeSkinEditor() {
-  skinEditorOpen.value = false;
-  stopSkinEditorPreviews();
-}
-async function onSkinEditorFileSelect() {
-  try {
-    const result = await open({
-      multiple: true,
-      filters: [{ name: "PNG", extensions: ["png"] }],
-    });
-    if (!result) return;
-    const paths = Array.isArray(result) ? result : [result];
-    await importSkinFiles(paths);
-  } catch (e) {
-    skinEditorMsg.value = `导入失败: ${e}`;
-  }
-}
-async function importSkinFiles(paths) {
-  skinEditorLoading.value = true;
-  try {
-    for (const filePath of paths) {
-      const dims = await invoke("detect_sprite_dimensions", { filePath });
-      const fileName = filePath.split(/[/\\]/).pop() || "sprite.png";
-      const name = fileName.replace(/\.(png|PNG)$/, "");
-      const fh = dims.height;
-      const fw = fh; // square frames heuristic
-      const fc = Math.max(1, Math.floor(dims.width / fw));
-      skinEditorAnims.value.push({
-        name,
-        file: fileName,
-        origPath: filePath,
-        src: convertFileSrc(filePath),
-        width: dims.width,
-        height: dims.height,
-        frameWidth: fw,
-        frameHeight: fh,
-        frameCount: fc,
-        fps: 8,
-      });
-    }
-    if (!skinEditorName.value && skinEditorAnims.value.length > 0) {
-      skinEditorName.value = "自定义皮肤";
-    }
-    if (skinEditorAnims.value.length > 0 && !skinEditorDefaultAnim.value) {
-      skinEditorDefaultAnim.value = skinEditorAnims.value[0].name;
-    }
-    if (skinEditorAnims.value.length > 0 && !skinEditorSearchAnim.value) {
-      skinEditorSearchAnim.value = skinEditorAnims.value[0].name;
-    }
-    if (skinEditorAnims.value.length > 0 && !skinEditorFoundAnim.value) {
-      skinEditorFoundAnim.value = skinEditorAnims.value[0].name;
-    }
-    skinEditorMsg.value = "";
-  } catch (e) {
-    skinEditorMsg.value = `导入失败: ${e}`;
-  } finally {
-    skinEditorLoading.value = false;
-  }
-}
-function removeSkinEditorAnim(index) {
-  skinEditorAnims.value.splice(index, 1);
-}
-async function saveSkinEditor() {
-  if (!skinEditorName.value.trim()) {
-    skinEditorMsg.value = "请输入皮肤名称";
-    return;
-  }
-  if (skinEditorAnims.value.length === 0) {
-    skinEditorMsg.value = "请至少导入一个动画";
-    return;
-  }
-  if (!skinEditorDefaultAnim.value || !skinEditorSearchAnim.value || !skinEditorFoundAnim.value) {
-    skinEditorMsg.value = "请设置所有动作绑定";
-    return;
-  }
-  for (const anim of skinEditorAnims.value) {
-    if (!anim.frameWidth || !anim.frameHeight || !anim.frameCount) {
-      skinEditorMsg.value = `动画 "${anim.name}" 的帧参数无效`;
-      return;
-    }
-  }
-  skinEditorLoading.value = true;
-  skinEditorMsg.value = "";
-  try {
-    // Determine skin directory name
-    const skinName = skinEditorEditingId.value || skinEditorName.value.trim().replace(/[^a-zA-Z0-9_\u4e00-\u9fff-]/g, "_");
-    // Import sprite files (only those with origPath, meaning newly imported)
-    const newFiles = skinEditorAnims.value.filter((a) => a.origPath).map((a) => a.origPath);
-    if (newFiles.length > 0) {
-      await invoke("import_skin_sprites", { skinName, files: newFiles });
-    }
-    // Build manifest
-    const animations = {};
-    for (const anim of skinEditorAnims.value) {
-      animations[anim.name] = {
-        file: anim.file,
-        frameWidth: anim.frameWidth,
-        frameHeight: anim.frameHeight,
-        frameCount: anim.frameCount,
-        fps: anim.fps,
-      };
-    }
-    const manifest = {
-      name: skinEditorName.value.trim(),
-      animations,
-      searchAnim: skinEditorSearchAnim.value,
-      foundAnim: skinEditorFoundAnim.value,
-      defaultAnim: skinEditorDefaultAnim.value,
-    };
-    await invoke("save_skin_manifest", { skinName, manifest });
-    // Reload custom skins
-    customSkins.value = await invoke("list_custom_skins");
-    await registerCustomSkins();
-    // Auto-select the new skin
-    settingsDraft.petSkin = `custom:${skinName}`;
-    skinEditorMsg.value = "保存成功！";
-    setTimeout(() => closeSkinEditor(), 500);
-  } catch (e) {
-    skinEditorMsg.value = `保存失败: ${e}`;
-  } finally {
-    skinEditorLoading.value = false;
-  }
-}
-async function deleteSkinFromEditor(skinId) {
-  if (!confirm("确定删除此皮肤？此操作不可撤销。")) return;
-  try {
-    await invoke("delete_custom_skin", { skinName: skinId });
-    // Unregister
-    delete SPRITE_SHEET_SKINS[`custom:${skinId}`];
-    delete SPRITE_SHEET_IDLE_STATES[`custom:${skinId}`];
-    customSkins.value = await invoke("list_custom_skins");
-    if (settingsDraft.petSkin === `custom:${skinId}`) {
-      settingsDraft.petSkin = "eagle";
-    }
-    closeSkinEditor();
-  } catch (e) {
-    skinEditorMsg.value = `删除失败: ${e}`;
-  }
-}
-// Canvas-based animation preview for skin editor
-const skinEditorPreviewTimers = [];
-function startSkinEditorPreview(canvas, anim) {
-  if (!canvas || !anim.src) return;
-  const ctx = canvas.getContext("2d");
-  const img = new Image();
-  img.src = anim.src;
-  let frame = 0;
-  let lastTime = 0;
-  const interval = 1000 / (anim.fps || 8);
-  function tick(ts) {
-    if (!skinEditorOpen.value) return;
-    if (ts - lastTime >= interval) {
-      lastTime = ts;
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      if (img.complete && img.naturalWidth > 0) {
-        ctx.drawImage(
-          img,
-          frame * anim.frameWidth, 0, anim.frameWidth, anim.frameHeight,
-          0, 0, anim.frameWidth, anim.frameHeight
-        );
-      }
-      frame = (frame + 1) % (anim.frameCount || 1);
-    }
-    const id = requestAnimationFrame(tick);
-    skinEditorPreviewTimers.push(id);
-  }
-  const id = requestAnimationFrame(tick);
-  skinEditorPreviewTimers.push(id);
-}
-function stopSkinEditorPreviews() {
-  for (const id of skinEditorPreviewTimers) {
-    cancelAnimationFrame(id);
-  }
-  skinEditorPreviewTimers.length = 0;
-}
 
 watch(keyword, () => {
   if (!isPanelWindow.value) return;
@@ -6798,7 +6359,7 @@ function onQuickPasteOutputHotkeyInputKeydown(event) {
 async function panelClose() {
   if (!isTauriWindow) return;
   snapshotActiveTableTab();
-  clearIdlePreview();
+  clearPetStatePreview();
   await invoke("hide_panel_window").catch(() => {});
 }
 
@@ -6888,6 +6449,20 @@ function switchSettingsTab(index) {
   settingsTab.value = index;
 }
 
+async function openMobileProxyQr() {
+  mobileProxyQrError.value = "";
+  try {
+    const host = await invoke("get_local_ip_address");
+    const payload = { type: "dbscout-mobile-proxy", apiHost: host, apiPort: 19527 };
+    mobileProxyAddress.value = `${host}:19527`;
+    mobileProxyQrDataUrl.value = await QRCode.toDataURL(JSON.stringify(payload), { margin: 1, width: 220 });
+    showMobileProxyQr.value = true;
+  } catch (error) {
+    mobileProxyQrError.value = `生成手机连接二维码失败：${String(error)}`;
+    showMobileProxyQr.value = true;
+  }
+}
+
 function openSettings(target = null) {
   const targetIndex = target === null ? -1 : (typeof target === "number"
     ? target
@@ -6902,7 +6477,6 @@ function openSettings(target = null) {
   settingsDraft.quickPasteOutputHotkey = normalizeHotkeyDisplay(config.personal.quick_paste?.output_hotkey || "F8");
   settingsDraft.autoStart = config.personal.auto_start;
   settingsDraft.tableDefaultView = normalizeTableDefaultView(config.personal.table_default_view);
-  settingsDraft.idleStates = [...sanitizeIdleStates(config.personal.idle_states)];
   settingsDraft.excludeTables = (config.shared.search.exclude_tables || []).join(",");
   settingsDraft.perTableTimeoutSec = config.shared.search.per_table_timeout_sec;
   settingsDraft.perTableMaxRows = config.shared.search.per_table_max_rows;
@@ -6921,7 +6495,7 @@ function openSettings(target = null) {
   settingsDraft.panelShortcuts = normalizePanelShortcuts(config.personal.panel_shortcuts);
   settingsDraft.resetOnOpenToAllTables = config.personal.reset_on_open_to_all_tables !== false;
   settingsDraft.templateName = "";
-  settingsDraft.petSkin = config.personal.pet_skin || "eagle";
+  settingsDraft.petSkin = normalizePetSkin(config.personal.pet_skin);
   settingsDraft.petScale = getPetScale(settingsDraft.petSkin);
   settingsDraft.customFont = config.personal.custom_font || null;
   settingsDraft.weatherEnabled = config.personal.weather_enabled !== false;
@@ -6950,7 +6524,7 @@ let _weatherPreviewBeforeSettings = "";
 let _skyTimeOverrideBeforeSettings = null;
 
 function closeSettings() {
-  clearIdlePreview();
+  clearPetStatePreview();
   config.personal.background_opacity = _opacityBeforeSettings;
   config.personal.reduce_transparency_mode = _reduceTransparencyBeforeSettings;
   // Restore weather state if toggled during settings without saving
@@ -7079,7 +6653,6 @@ async function saveSettings() {
     output_hotkey: normalizeHotkeyDisplay(settingsDraft.quickPasteOutputHotkey.trim() || "F8"),
     snippets: previousQuickPasteConfig.snippets,
   };
-  config.personal.idle_states = sanitizeIdleStates(settingsDraft.idleStates);
   config.personal.table_default_view = normalizeTableDefaultView(settingsDraft.tableDefaultView);
   config.personal.export_hotkey = normalizeHotkeyDisplay(settingsDraft.exportHotkey.trim() || "Ctrl+E");
   config.personal.batch_export_hotkey = normalizeHotkeyDisplay(settingsDraft.batchExportHotkey.trim() || "Ctrl+Shift+E");
@@ -7167,7 +6740,7 @@ async function saveSettings() {
   config.shared.search.per_table_timeout_sec = Number(settingsDraft.perTableTimeoutSec) || 10;
   config.shared.search.per_table_max_rows = Number(settingsDraft.perTableMaxRows) || 50;
   config.personal.reset_on_open_to_all_tables = !!settingsDraft.resetOnOpenToAllTables;
-  config.personal.pet_skin = settingsDraft.petSkin || "eagle";
+  config.personal.pet_skin = normalizePetSkin(settingsDraft.petSkin);
   setPetScale(settingsDraft.petSkin, settingsDraft.petScale);
   config.personal.custom_font = settingsDraft.customFont || null;
   config.personal.weather_enabled = !!settingsDraft.weatherEnabled;
@@ -7287,9 +6860,6 @@ async function saveSettings() {
     return;
   }
   if (isTauriWindow) {
-    emit("pet-idle-states-changed", {
-      idleStates: config.personal.idle_states,
-    }).catch(() => {});
     emit("pet-skin-changed", {
       skin: config.personal.pet_skin,
     }).catch(() => {});
@@ -7306,7 +6876,7 @@ async function saveSettings() {
   _weatherPreviewBeforeSettings = weatherPreviewCategory.value;
   _skyTimeOverrideBeforeSettings = skyTimeOverride.value;
   applyCustomFont();
-  clearIdlePreview();
+  clearPetStatePreview();
   settingsOpen.value = false;
   settingsSaving.value = false;
 
@@ -11733,7 +11303,8 @@ async function loadConfig() {
   } catch {
     // keep default
   }
-  config.personal.idle_states = sanitizeIdleStates(config.personal.idle_states);
+  config.personal.idle_states = [];
+  config.personal.pet_skin = normalizePetSkin(config.personal.pet_skin);
   config.personal.ui_scale = normalizeUiScale(config.personal.ui_scale);
   config.personal.table_default_view = normalizeTableDefaultView(config.personal.table_default_view);
   config.personal.quick_date_hotkey = normalizeQuickDateHotkey(config.personal.quick_date_hotkey);
@@ -11906,25 +11477,26 @@ function petPointerDown(event) {
 
   const endDrag = () => {
     petDragging.value = false;
+    petDragDirection.value = "";
+    clearTimeout(petDragStillTimer);
+    petDragStillTimer = null;
     document.removeEventListener('pointerup', endDrag);
-    window.removeEventListener('blur', endDrag);
     clearTimeout(fallback);
   };
   document.addEventListener('pointerup', endDrag, { once: true });
-  window.addEventListener('blur', endDrag, { once: true });
   const fallback = setTimeout(endDrag, 5000);
 
   getCurrentWindow().startDragging().catch(() => {});
 }
 
 // ── 宠物窗口尺寸同步 ──
-const PET_WINDOW_PADDING = 16; // px padding around sprite
+const PET_WINDOW_PADDING = Math.round(CODEX_PET_ATLAS.cellWidth / 12);
 
 function syncPetWindowSize() {
   if (!isPetWindow.value || !isTauriWindow) return;
   const sprite = document.getElementById("eagleSprite");
   if (!sprite) return;
-  const container = sprite.closest(".eagle-container") || sprite.closest(".spritesheet-container");
+  const container = sprite.closest(".codex-pet-container");
   const el = container || sprite;
   const rect = el.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return;
@@ -13370,6 +12942,7 @@ function escapeHtml(str) {
             <span class="header-weather-temp">{{ weatherTemp }}°</span>
           </button>
           <div class="header-actions footer-actions">
+            <button class="icon-btn icon-btn-subtle" title="手机扫码连接" @click="openMobileProxyQr">▣</button>
             <button class="icon-btn icon-btn-subtle" title="设置" @click="openSettings()">⚙</button>
           </div>
         </div>
@@ -13389,55 +12962,15 @@ function escapeHtml(str) {
       @contextmenu="openContextMenu"
       @pointerdown="petPointerDown"
     >
-      <template v-if="isSpriteSheetSkin">
-        <div class="spritesheet-container">
-          <div id="eagleSprite" class="spritesheet-sprite" :style="spriteSheetStyle"></div>
-        </div>
-      </template>
-      <template v-else>
-      <div class="eagle-container" :class="{ 'hd-container': isHdPetSkin }">
-        <div id="eagleSprite" class="eagle-sprite" :class="[petSpriteClasses, `skin-${config.personal.pet_skin}`, { 'hd-skin': isHdPetSkin }]">
-          <template v-if="isHdPetSkin">
-            <div class="hd-pet" :class="`hd-${config.personal.pet_skin}`">
-              <div class="hd-halo" v-if="config.personal.pet_skin === 'spirit'"></div>
-              <div class="hd-orbit">
-                <span></span>
-                <span></span>
-                <span></span>
-              </div>
-              <div class="hd-tail" v-if="config.personal.pet_skin === 'lion'">
-                <div class="hd-tail-core"></div>
-                <div class="hd-tail-tip"></div>
-              </div>
-              <div class="hd-sprout" v-if="config.personal.pet_skin === 'lion'"></div>
-              <div class="hd-orb" v-if="config.personal.pet_skin === 'spirit'"></div>
-              <div class="hd-body"></div>
-              <div class="hd-arm hd-arm-left"></div>
-              <div class="hd-arm hd-arm-right"></div>
-              <div class="hd-leg hd-leg-left"></div>
-              <div class="hd-leg hd-leg-right"></div>
-              <div class="hd-face">
-                <span class="hd-eye hd-eye-left"></span>
-                <span class="hd-eye hd-eye-right"></span>
-                <span class="hd-mouth"></span>
-              </div>
-            </div>
-            <template v-if="petIdleActive && currentIdleState === 'sleep_zzz'">
-              <div class="hd-zzz">z</div>
-              <div class="hd-zzz">z</div>
-            </template>
-          </template>
-          <template v-else>
-            <div class="blink-overlay"></div>
-            <template v-if="petIdleActive && currentIdleState === 'sleep_zzz'">
-              <div class="pixel-zzz">z</div>
-              <div class="pixel-zzz">z</div>
-            </template>
-          </template>
-        </div>
-        <div class="eagle-shadow"></div>
+      <div class="codex-pet-container" :class="petSpriteClasses">
+        <div
+          id="eagleSprite"
+          class="codex-pet-sprite"
+          :style="petSpriteStyle"
+          :aria-label="`${JIEDI_PET.displayName} · ${currentPetStateDef.label}`"
+        ></div>
+        <div class="codex-pet-shadow"></div>
       </div>
-      </template>
     </div>
   </div>
 
@@ -14964,6 +14497,24 @@ function escapeHtml(str) {
     </section>
   </div>
 
+  <div v-if="showMobileProxyQr && isPanelWindow" class="dialog-mask" @click.self="showMobileProxyQr = false">
+    <section class="modal-card mobile-proxy-qr-dialog">
+      <header class="modal-header">
+        <h3>手机扫码连接</h3>
+        <button class="icon-btn" @click="showMobileProxyQr = false">✕</button>
+      </header>
+      <div class="mobile-proxy-qr-body">
+        <img v-if="mobileProxyQrDataUrl" :src="mobileProxyQrDataUrl" alt="手机连接二维码" class="mobile-proxy-qr-image" />
+        <p v-if="mobileProxyAddress">备用地址：{{ mobileProxyAddress }}</p>
+        <p v-if="mobileProxyQrError" class="settings-msg err">{{ mobileProxyQrError }}</p>
+      </div>
+      <footer class="modal-footer">
+        <button class="small-btn" @click="copyText(mobileProxyAddress)">复制备用地址</button>
+        <button class="primary-btn" @click="showMobileProxyQr = false">关闭</button>
+      </footer>
+    </section>
+  </div>
+
   <div v-if="settingsOpen" class="dialog-mask-v2" @click.self="closeSettings" @dragover.prevent @drop.prevent="onDropConfig">
     <section class="settings-modal-v2">
       <!-- Header -->
@@ -15197,23 +14748,8 @@ function escapeHtml(str) {
               <div class="glass-form-grid">
                 <label class="glass-form-label">皮肤
                   <select v-model="settingsDraft.petSkin" class="glass-select">
-                    <option value="eagle">鹰（默认）</option>
-                    <option value="cat">猫</option>
-                    <option value="bunny">兔</option>
-                    <option value="fox">狐狸</option>
-                    <option value="panda">熊猫</option>
-                    <option value="spirit">灵童（像素参考）</option>
-                    <option value="lion">狮橙（像素参考）</option>
-                    <option value="knight">骑士（Sprite Sheet）</option>
-                    <optgroup v-if="customSkins.length" label="自定义皮肤">
-                      <option v-for="cs in customSkins" :key="cs.id" :value="'custom:' + cs.id">
-                        {{ cs.manifest.name }}
-                      </option>
-                    </optgroup>
+                    <option value="jiedi">Jiedi</option>
                   </select>
-                </label>
-                <label class="glass-form-label" style="justify-content:flex-end">
-                  <button class="glass-btn-secondary" @click="openSkinEditor()">皮肤编辑器</button>
                 </label>
               </div>
               <div style="margin-top:12px">
@@ -15223,11 +14759,11 @@ function escapeHtml(str) {
               </div>
             </div>
             <div class="glass-card">
-              <h4 class="glass-card-title">待机状态</h4>
-              <div style="display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px">
-                <div v-for="st in availableIdleOptions" :key="st.value" class="glass-idle-item">
-                  <label><input v-model="settingsDraft.idleStates" type="checkbox" :value="st.value" />{{ st.label }}</label>
-                  <button class="idle-play-btn" title="播放预览" @click="previewIdleState(st.value)">▶</button>
+              <h4 class="glass-card-title">动作预览</h4>
+              <div class="pet-preview-grid">
+                <div v-for="st in petPreviewOptions" :key="st.value" class="glass-idle-item">
+                  <span class="pet-preview-label">{{ st.label }}</span>
+                  <button class="idle-play-btn" title="播放预览" @click="previewPetState(st.value)">▶</button>
                 </div>
               </div>
             </div>
@@ -15259,97 +14795,6 @@ function escapeHtml(str) {
         <button class="glass-btn-primary" :disabled="settingsSaving" @click="saveSettings">{{ settingsSaving ? '保存中...' : '保存设置' }}</button>
       </footer>
       <input id="importFile" class="hidden" type="file" accept="application/json" @change="onImportConfig" />
-    </section>
-  </div>
-
-  <!-- 皮肤编辑器弹窗 -->
-  <div v-if="skinEditorOpen" class="dialog-mask" @click.self="closeSkinEditor">
-    <section class="modal-card skin-editor-modal">
-      <header class="modal-header" @pointerdown="modalHeaderPointerDown">
-        <h3>{{ skinEditorEditingId ? '编辑皮肤' : '创建自定义皮肤' }}</h3>
-        <button class="icon-btn" @click="closeSkinEditor">✕</button>
-      </header>
-      <div class="modal-body" style="overflow-y:auto;max-height:560px;padding:12px 16px">
-        <!-- Section 1: Name + Import -->
-        <div class="form-group" style="margin-bottom:12px">
-          <label>皮肤名称
-            <input v-model="skinEditorName" type="text" placeholder="例如：我的骑士" style="width:100%" />
-          </label>
-        </div>
-        <div class="form-group" style="margin-bottom:12px">
-          <h4>导入 Sprite Sheet（PNG）</h4>
-          <div class="skin-import-dropzone" @click="onSkinEditorFileSelect">
-            <span v-if="skinEditorLoading">正在导入...</span>
-            <span v-else>点击选择 PNG 文件（每个动画一张 Sprite Sheet）</span>
-          </div>
-        </div>
-
-        <!-- Imported animations list -->
-        <div v-if="skinEditorAnims.length" class="form-group" style="margin-bottom:12px">
-          <h4>动画配置</h4>
-          <div v-for="(anim, idx) in skinEditorAnims" :key="idx" class="skin-anim-row">
-            <div class="skin-anim-preview">
-              <canvas
-                :ref="(el) => { if (el) { skinEditorCanvasRefs[idx] = el; nextTick(() => startSkinEditorPreview(el, anim)); } }"
-                :width="anim.frameWidth"
-                :height="anim.frameHeight"
-                style="image-rendering:pixelated;max-width:96px;max-height:96px;border:1px solid var(--border);background:#1a1a2e"
-              ></canvas>
-            </div>
-            <div class="skin-anim-inputs">
-              <label>名称
-                <input v-model="anim.name" type="text" style="width:100%" />
-              </label>
-              <label>帧宽
-                <input v-model.number="anim.frameWidth" type="number" min="1" @change="anim.frameCount = Math.max(1, Math.floor(anim.width / anim.frameWidth))" />
-              </label>
-              <label>帧高
-                <input v-model.number="anim.frameHeight" type="number" min="1" />
-              </label>
-              <label>帧数
-                <input v-model.number="anim.frameCount" type="number" min="1" />
-              </label>
-              <label>FPS
-                <input v-model.number="anim.fps" type="number" min="1" max="60" />
-              </label>
-              <div class="skin-anim-info">
-                <span class="muted">{{ anim.width }}×{{ anim.height }}px · {{ anim.file }}</span>
-                <button class="icon-btn" style="color:var(--red)" @click="removeSkinEditorAnim(idx)">✕</button>
-              </div>
-            </div>
-          </div>
-
-      </div>
-
-        <!-- Section 3: Action Binding -->
-        <div v-if="skinEditorAnims.length" class="form-group" style="margin-bottom:12px">
-          <h4>动作绑定</h4>
-          <div class="form-grid">
-            <label>默认待机
-              <select v-model="skinEditorDefaultAnim">
-                <option v-for="a in skinEditorAnims" :key="a.name" :value="a.name">{{ a.name }}</option>
-              </select>
-            </label>
-            <label>搜索时播放
-              <select v-model="skinEditorSearchAnim">
-                <option v-for="a in skinEditorAnims" :key="a.name" :value="a.name">{{ a.name }}</option>
-              </select>
-            </label>
-            <label>找到结果时
-              <select v-model="skinEditorFoundAnim">
-                <option v-for="a in skinEditorAnims" :key="a.name" :value="a.name">{{ a.name }}</option>
-              </select>
-            </label>
-          </div>
-        </div>
-      </div>
-      <footer class="modal-footer" style="gap:8px">
-        <span v-if="skinEditorMsg" class="settings-msg" :class="{ ok: skinEditorMsg.includes('成功'), err: skinEditorMsg.includes('失败') || skinEditorMsg.includes('请') }">{{ skinEditorMsg }}</span>
-        <button v-if="skinEditorEditingId" class="small-btn" style="color:var(--red)" @click="deleteSkinFromEditor(skinEditorEditingId)">删除皮肤</button>
-        <div style="flex:1"></div>
-        <button class="small-btn" @click="closeSkinEditor">取消</button>
-        <button class="primary-btn" :disabled="skinEditorLoading" @click="saveSkinEditor">保存皮肤</button>
-      </footer>
     </section>
   </div>
 

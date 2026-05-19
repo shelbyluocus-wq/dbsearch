@@ -1,11 +1,11 @@
 apply plugin: 'com.android.application'
 
 android {
-    namespace = "com.dbsearch.mobile"
+    namespace = "com.dbsearch.mobile.test"
     compileSdk = rootProject.ext.compileSdkVersion
     buildToolsVersion = "35.0.1"
     defaultConfig {
-        applicationId "com.dbsearch.mobile"
+        applicationId "com.dbsearch.mobile.test"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

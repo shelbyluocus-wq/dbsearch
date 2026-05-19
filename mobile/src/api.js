@@ -19,9 +19,19 @@ async function request(path, options = {}) {
   })
   if (!resp.ok) {
     const text = await resp.text()
-    throw new Error(text || `请求失败: ${resp.status}`)
+    try {
+      const parsed = JSON.parse(text)
+      throw new Error(parsed.error || parsed.message || `请求失败: ${resp.status}`)
+    } catch (e) {
+      if (e instanceof SyntaxError) throw new Error(text || `请求失败: ${resp.status}`)
+      throw e
+    }
   }
   return resp.json()
+}
+
+export async function testProxy() {
+  return request('/api/health', { method: 'GET' })
 }
 
 export async function testConnection(config) {

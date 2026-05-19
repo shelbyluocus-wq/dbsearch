@@ -21,6 +21,7 @@ mobile/android/app/build/
 mobile/android/app/src/main/assets/public/
 mobile/android/app/src/main/assets/capacitor.config.json
 mobile/android/local.properties
+mobile/mysql_model/
 *.apk
 *.aab
 

@@ -3,6 +3,10 @@ import initSqlJs from 'sql.js'
 let db = null
 let SQL = null
 
+function quoteIdentifier(identifier) {
+  return `"${String(identifier).replace(/"/g, '""')}"`
+}
+
 async function getSQL() {
   if (!SQL) {
     SQL = await initSqlJs({
@@ -47,6 +51,24 @@ export function exec(sql, params = []) {
 export function execRaw(sql) {
   if (!db) throw new Error('数据库未打开')
   return db.exec(sql)
+}
+
+export function insertRows(tableName, columns, rows = []) {
+  if (!db) throw new Error('数据库未打开')
+  if (!columns?.length || !rows?.length) return
+  const table = quoteIdentifier(tableName)
+  const colList = columns.map(quoteIdentifier).join(', ')
+  const placeholders = columns.map(() => '?').join(', ')
+  const stmt = db.prepare(`INSERT INTO ${table} (${colList}) VALUES (${placeholders})`)
+  try {
+    for (const row of rows) {
+      stmt.bind(columns.map(c => row?.[c] ?? null))
+      stmt.step()
+      stmt.reset()
+    }
+  } finally {
+    stmt.free()
+  }
 }
 
 export function getTableList() {

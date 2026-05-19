@@ -44,6 +44,14 @@ function sliceTauriFunction(name) {
   return tauriLibSource.slice(start, end);
 }
 
+function sliceVueFunction(name) {
+  const start = appVueSource.indexOf(`function ${name}`);
+  const end = appVueSource.indexOf("\n}", start);
+  assert.notEqual(start, -1);
+  assert.notEqual(end, -1);
+  return appVueSource.slice(start, end + 2);
+}
+
 test("pet menu exposes one sync center entry instead of separate sync entries", () => {
   const petMenuMarkup = slicePetMenuMarkup();
 
@@ -53,6 +61,37 @@ test("pet menu exposes one sync center entry instead of separate sync entries", 
   assert.doesNotMatch(petMenuMarkup, /contextAction\('db_sync'\)/);
   assert.doesNotMatch(petMenuMarkup, />文件同步</);
   assert.doesNotMatch(petMenuMarkup, />数据库同步</);
+});
+
+test("pet settings expose only the Codex jiedi pet controls", () => {
+  assert.match(appVueSource, /value="jiedi"/);
+  assert.match(appVueSource, />Jiedi</);
+  assert.match(appVueSource, /previewPetState\(st\.value\)/);
+  assert.doesNotMatch(appVueSource, /皮肤编辑器/);
+  assert.doesNotMatch(appVueSource, /value="eagle"/);
+  assert.doesNotMatch(appVueSource, /value="knight"/);
+  assert.doesNotMatch(appVueSource, /settingsDraft\.idleStates/);
+});
+
+test("pet drag keeps the Codex run direction while the pointer is held", () => {
+  const petPointerDownSource = sliceVueFunction("petPointerDown");
+
+  assert.match(appVueSource, /const petDragFacing = ref\("right"\)/);
+  assert.match(appVueSource, /fallbackDragDirection:\s*petDragging\.value \? petDragFacing\.value : ""/);
+  assert.match(appVueSource, /const nextDirection = pos\.x > petDragLastX \? "right" : "left"/);
+  assert.match(appVueSource, /petDragDirection\.value = nextDirection;\s*petDragFacing\.value = nextDirection;/);
+  assert.match(appVueSource, /petDragging\.value = false;\s*petDragDirection\.value = "";/);
+  assert.doesNotMatch(petPointerDownSource, /addEventListener\(['"]blur['"]/);
+});
+
+test("legacy custom sprite skin backend commands are removed", () => {
+  assert.doesNotMatch(tauriLibSource, /struct SkinManifest/);
+  assert.doesNotMatch(tauriLibSource, /detect_sprite_dimensions/);
+  assert.doesNotMatch(tauriLibSource, /import_skin_sprites/);
+  assert.doesNotMatch(tauriLibSource, /save_skin_manifest/);
+  assert.doesNotMatch(tauriLibSource, /list_custom_skins/);
+  assert.doesNotMatch(tauriLibSource, /delete_custom_skin/);
+  assert.doesNotMatch(tauriLibSource, /get_skin_base_path/);
 });
 
 test("sync workspace switches modes only from the left sidebar", () => {

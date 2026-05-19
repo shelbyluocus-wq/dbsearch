@@ -2,6 +2,6 @@
 <resources>
     <string name="app_name">鹰捷数据</string>
     <string name="title_activity_main">鹰捷数据</string>
-    <string name="package_name">com.dbsearch.mobile</string>
-    <string name="custom_url_scheme">com.dbsearch.mobile</string>
+    <string name="package_name">com.dbsearch.mobile.test</string>
+    <string name="custom_url_scheme">com.dbsearch.mobile.test</string>
 </resources>

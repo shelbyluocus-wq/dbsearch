@@ -2,16 +2,12 @@ pub mod db_migration;
 pub mod mobile_proxy;
 pub mod sync_workspace;
 
-use crate::sync_workspace::{execute_sync_pipeline, SyncProfile, SyncRunOutcome};
 use crate::db_migration::{
-    connect_db_migration_server as connect_db_migration_server_impl,
-    filter_user_databases,
-    run_db_migration as run_db_migration_impl,
-    DbMigrationLoginParams,
-    DbMigrationLoginResult,
-    DbMigrationOutcome,
-    DbMigrationRequest,
+    connect_db_migration_server as connect_db_migration_server_impl, filter_user_databases,
+    run_db_migration as run_db_migration_impl, DbMigrationLoginParams, DbMigrationLoginResult,
+    DbMigrationOutcome, DbMigrationRequest,
 };
+use crate::sync_workspace::{execute_sync_pipeline, SyncProfile, SyncRunOutcome};
 use chrono::{DateTime, Local, Utc};
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use mouse_position::mouse_position::Mouse;
@@ -195,9 +191,7 @@ fn close_request_action_for_window(label: &str) -> WindowCloseAction {
         | SYNC_WORKSPACE_WINDOW_LABEL
         | DB_MIGRATION_WORKSPACE_WINDOW_LABEL
         | ART_TEXT_SEARCH_WINDOW_LABEL
-        | QUICK_PASTE_WINDOW_LABEL => {
-            WindowCloseAction::HideToTray
-        }
+        | QUICK_PASTE_WINDOW_LABEL => WindowCloseAction::HideToTray,
         _ => WindowCloseAction::HideWindow,
     }
 }
@@ -386,7 +380,7 @@ fn default_db_migration_window_hotkey() -> String {
     DEFAULT_DB_MIGRATION_WINDOW_HOTKEY.into()
 }
 fn default_pet_skin() -> String {
-    "eagle".into()
+    "jiedi".into()
 }
 fn default_startup_welcome_text() -> String {
     "Louis".into()
@@ -447,7 +441,10 @@ fn sanitize_quick_paste_config(mut config: QuickPasteConfig) -> QuickPasteConfig
     config
 }
 
-fn validate_quick_paste_hotkeys(personal: &PersonalConfig, next: &QuickPasteConfig) -> Result<(), String> {
+fn validate_quick_paste_hotkeys(
+    personal: &PersonalConfig,
+    next: &QuickPasteConfig,
+) -> Result<(), String> {
     let open = next.open_hotkey.trim();
     let output = next.output_hotkey.trim();
     if open.is_empty() || output.is_empty() {
@@ -545,7 +542,14 @@ fn build_db_migration_profile_default_name(profile: &DbMigrationProfile, index: 
 
     let host = profile.host.trim();
     if !host.is_empty() {
-        return format!("{host}:{}", if profile.port == 0 { 3306 } else { profile.port });
+        return format!(
+            "{host}:{}",
+            if profile.port == 0 {
+                3306
+            } else {
+                profile.port
+            }
+        );
     }
 
     format!("迁移模板 {}", index + 1)
@@ -556,7 +560,11 @@ fn sanitize_db_migration_profile(profile: DbMigrationProfile, index: usize) -> D
         id: profile.id.trim().to_string(),
         name: profile.name.trim().to_string(),
         host: profile.host.trim().to_string(),
-        port: if profile.port == 0 { 3306 } else { profile.port },
+        port: if profile.port == 0 {
+            3306
+        } else {
+            profile.port
+        },
         username: profile.username.trim().to_string(),
         password: profile.password,
         source_database: profile.source_database.trim().to_string(),
@@ -752,7 +760,10 @@ fn resolve_db_migration_window_size_from_cache(state: &AppState) -> DbMigrationW
 
 fn resolve_db_migration_window_size(app: &tauri::AppHandle) -> DbMigrationWindowSize {
     let state = app.state::<AppState>();
-    clamp_db_migration_window_size_to_monitor(app, resolve_db_migration_window_size_from_cache(&state))
+    clamp_db_migration_window_size_to_monitor(
+        app,
+        resolve_db_migration_window_size_from_cache(&state),
+    )
 }
 impl Default for PersonalConfig {
     fn default() -> Self {
@@ -785,7 +796,7 @@ impl Default for PersonalConfig {
             panel_shortcuts: std::collections::HashMap::new(),
             reset_on_open_to_all_tables: true,
             always_on_top_hotkey: "P".into(),
-            pet_skin: "eagle".into(),
+            pet_skin: "jiedi".into(),
             pet_scale: std::collections::HashMap::new(),
             custom_font: None,
             weather_enabled: true,
@@ -992,30 +1003,6 @@ impl Default for DbConfig {
 struct DbTemplate {
     name: String,
     db: DbConfig,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SkinAnimationDef {
-    file: String,
-    #[serde(rename = "frameWidth")]
-    frame_width: u32,
-    #[serde(rename = "frameHeight")]
-    frame_height: u32,
-    #[serde(rename = "frameCount")]
-    frame_count: u32,
-    fps: u32,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct SkinManifest {
-    name: String,
-    animations: HashMap<String, SkinAnimationDef>,
-    #[serde(rename = "searchAnim")]
-    search_anim: String,
-    #[serde(rename = "foundAnim")]
-    found_anim: String,
-    #[serde(rename = "defaultAnim")]
-    default_anim: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -1253,6 +1240,14 @@ fn validate_db_server_config(config: &DbConfig) -> Result<(), String> {
     Ok(())
 }
 
+#[tauri::command]
+fn get_local_ip_address() -> Result<String, String> {
+    let socket = std::net::UdpSocket::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+    socket.connect("8.8.8.8:80").map_err(|e| e.to_string())?;
+    let addr = socket.local_addr().map_err(|e| e.to_string())?;
+    Ok(addr.ip().to_string())
+}
+
 fn build_db_server_connect_options(config: &DbConfig) -> MySqlConnectOptions {
     MySqlConnectOptions::new()
         .host(config.host.trim())
@@ -1355,9 +1350,7 @@ async fn list_databases(state: State<'_, AppState>) -> Result<Vec<String>, Strin
         if rt.fake_db_connected {
             return Ok(fake_database_names());
         }
-        rt.pool
-            .clone()
-            .ok_or_else(|| "数据库未连接".to_string())?
+        rt.pool.clone().ok_or_else(|| "数据库未连接".to_string())?
     };
     let rows = sqlx::query("SHOW DATABASES")
         .fetch_all(&pool)
@@ -1510,7 +1503,11 @@ async fn search(
         vec![]
     };
     if let Some(targets) = &target_filter {
-        meta_results.retain(|item| targets.iter().any(|target| item.table_name.eq_ignore_ascii_case(target)));
+        meta_results.retain(|item| {
+            targets
+                .iter()
+                .any(|target| item.table_name.eq_ignore_ascii_case(target))
+        });
     }
     if params.scope == SearchScope::DataOnly {
         meta_results.clear();
@@ -1519,7 +1516,11 @@ async fn search(
     if params.scope != SearchScope::MetaOnly {
         let mut tables = schema.tables.clone();
         if let Some(targets) = &target_filter {
-            tables.retain(|t| targets.iter().any(|target| t.table_name.eq_ignore_ascii_case(target)));
+            tables.retain(|t| {
+                targets
+                    .iter()
+                    .any(|target| t.table_name.eq_ignore_ascii_case(target))
+            });
         }
         let patterns = compile_patterns(&cfg.shared.search.exclude_tables);
         tables.retain(|t| !patterns.iter().any(|p| p.is_match(&t.table_name)));
@@ -1707,7 +1708,10 @@ async fn save_table_changes(
     let mut updated: u64 = 0;
     let mut inserted: u64 = 0;
 
-    let mut tx = pool.begin().await.map_err(|e| format!("开启事务失败: {e}"))?;
+    let mut tx = pool
+        .begin()
+        .await
+        .map_err(|e| format!("开启事务失败: {e}"))?;
 
     // --- DELETE ---
     for del_row in &changeset.deletes {
@@ -1728,7 +1732,10 @@ async fn save_table_changes(
         for v in &where_vals {
             q = q.bind(v);
         }
-        let result = q.execute(&mut *tx).await.map_err(|e| format!("删除失败: {e}"))?;
+        let result = q
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("删除失败: {e}"))?;
         deleted += result.rows_affected();
         if !has_pk {
             warnings.push(format!("无主键表删除使用全列匹配 LIMIT 1"));
@@ -1776,7 +1783,10 @@ async fn save_table_changes(
         for v in &where_vals {
             q = q.bind(v);
         }
-        let result = q.execute(&mut *tx).await.map_err(|e| format!("更新失败: {e}"))?;
+        let result = q
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("更新失败: {e}"))?;
         updated += result.rows_affected();
         if !has_pk {
             warnings.push(format!("无主键表更新使用全列匹配 LIMIT 1"));
@@ -1788,7 +1798,10 @@ async fn save_table_changes(
         if ins_row.is_empty() {
             continue;
         }
-        let cols: Vec<String> = ins_row.keys().map(|k| format!("`{}`", escape_ident(k))).collect();
+        let cols: Vec<String> = ins_row
+            .keys()
+            .map(|k| format!("`{}`", escape_ident(k)))
+            .collect();
         let placeholders: Vec<&str> = ins_row.keys().map(|_| "?").collect();
         let vals: Vec<&String> = ins_row.values().collect();
         let sql = format!(
@@ -1801,11 +1814,16 @@ async fn save_table_changes(
         for v in &vals {
             q = q.bind(*v);
         }
-        let result = q.execute(&mut *tx).await.map_err(|e| format!("插入失败: {e}"))?;
+        let result = q
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| format!("插入失败: {e}"))?;
         inserted += result.rows_affected();
     }
 
-    tx.commit().await.map_err(|e| format!("提交事务失败: {e}"))?;
+    tx.commit()
+        .await
+        .map_err(|e| format!("提交事务失败: {e}"))?;
 
     // Deduplicate warnings
     warnings.sort();
@@ -1838,9 +1856,7 @@ fn build_where_from_keys(
     Ok((parts.join(" AND "), vals))
 }
 
-fn build_where_from_all(
-    row: &HashMap<String, String>,
-) -> Result<(String, Vec<String>), String> {
+fn build_where_from_all(row: &HashMap<String, String>) -> Result<(String, Vec<String>), String> {
     let mut parts = Vec::new();
     let mut vals = Vec::new();
     for (col, val) in row {
@@ -1919,7 +1935,11 @@ fn find_duplicate_import_targets(targets: &[String]) -> Vec<String> {
         let normalized = target.to_lowercase();
         if seen.contains_key(&normalized) {
             if emitted.insert(normalized.clone()) {
-                duplicates.push(seen.get(&normalized).cloned().unwrap_or_else(|| target.clone()));
+                duplicates.push(
+                    seen.get(&normalized)
+                        .cloned()
+                        .unwrap_or_else(|| target.clone()),
+                );
             }
         } else {
             seen.insert(normalized, target.clone());
@@ -1999,7 +2019,10 @@ fn read_batch_import_xlsx(path: &str) -> Result<ParsedBatchImportFile, String> {
     let header_row = rows_iter
         .next()
         .ok_or_else(|| "Excel 文件缺少字段表头".to_string())?;
-    let headers = header_row.iter().map(xlsx_cell_to_string).collect::<Vec<_>>();
+    let headers = header_row
+        .iter()
+        .map(xlsx_cell_to_string)
+        .collect::<Vec<_>>();
     if headers.is_empty() || headers.iter().all(|header| header.is_empty()) {
         return Err("Excel 文件第一行没有字段表头".into());
     }
@@ -2007,7 +2030,12 @@ fn read_batch_import_xlsx(path: &str) -> Result<ParsedBatchImportFile, String> {
     let mut rows = Vec::new();
     for source_row in rows_iter {
         let values = (0..headers.len())
-            .map(|index| source_row.get(index).map(xlsx_cell_to_string).unwrap_or_default())
+            .map(|index| {
+                source_row
+                    .get(index)
+                    .map(xlsx_cell_to_string)
+                    .unwrap_or_default()
+            })
             .collect::<Vec<_>>();
         if values.iter().all(|value| value.is_empty()) {
             continue;
@@ -2174,12 +2202,17 @@ async fn preview_batch_import_xlsx(
         }
         if duplicate_targets.contains(&table_name.to_lowercase()) {
             item.status = "error".into();
-            item.errors.push(format!("目标表 `{table_name}` 被多个文件选择"));
+            item.errors
+                .push(format!("目标表 `{table_name}` 被多个文件选择"));
             files.push(item);
             continue;
         }
 
-        let Some(table) = schema.tables.iter().find(|table| table.table_name == table_name) else {
+        let Some(table) = schema
+            .tables
+            .iter()
+            .find(|table| table.table_name == table_name)
+        else {
             item.status = "error".into();
             item.errors.push(format!("目标表 `{table_name}` 不存在"));
             files.push(item);
@@ -2341,9 +2374,7 @@ async fn export_tables_xlsx(
     let (pool, schema) = {
         let rt = state.runtime.lock().await;
         (
-            rt.pool
-                .clone()
-                .ok_or_else(|| "数据库未连接".to_string())?,
+            rt.pool.clone().ok_or_else(|| "数据库未连接".to_string())?,
             rt.schema_cache.clone(),
         )
     };
@@ -2387,11 +2418,7 @@ async fn export_tables_xlsx(
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!(
-            "SELECT {} FROM `{}`",
-            select_cols,
-            escape_ident(table_name)
-        );
+        let sql = format!("SELECT {} FROM `{}`", select_cols, escape_ident(table_name));
         let rows = sqlx::query(&sql)
             .fetch_all(&pool)
             .await
@@ -2430,9 +2457,7 @@ async fn export_tables_xlsx_batch(
     let (pool, schema) = {
         let rt = state.runtime.lock().await;
         (
-            rt.pool
-                .clone()
-                .ok_or_else(|| "数据库未连接".to_string())?,
+            rt.pool.clone().ok_or_else(|| "数据库未连接".to_string())?,
             rt.schema_cache.clone(),
         )
     };
@@ -2473,11 +2498,7 @@ async fn export_tables_xlsx_batch(
             })
             .collect::<Vec<_>>()
             .join(", ");
-        let sql = format!(
-            "SELECT {} FROM `{}`",
-            select_cols,
-            escape_ident(table_name)
-        );
+        let sql = format!("SELECT {} FROM `{}`", select_cols, escape_ident(table_name));
         let rows = sqlx::query(&sql)
             .fetch_all(&pool)
             .await
@@ -2494,7 +2515,11 @@ async fn export_tables_xlsx_batch(
             }
         }
 
-        let file_path = format!("{}/{}.xlsx", dir_path.trim_end_matches(['/', '\\']), table_name);
+        let file_path = format!(
+            "{}/{}.xlsx",
+            dir_path.trim_end_matches(['/', '\\']),
+            table_name
+        );
         workbook
             .save(&file_path)
             .map_err(|e| format!("保存文件 {} 失败: {e}", file_path))?;
@@ -2514,7 +2539,9 @@ async fn get_config(state: State<'_, AppState>) -> Result<AppConfig, String> {
 #[tauri::command]
 async fn get_quick_paste_config(state: State<'_, AppState>) -> Result<QuickPasteConfig, String> {
     let rt = state.runtime.lock().await;
-    Ok(sanitize_quick_paste_config(rt.config.personal.quick_paste.clone()))
+    Ok(sanitize_quick_paste_config(
+        rt.config.personal.quick_paste.clone(),
+    ))
 }
 
 #[tauri::command]
@@ -2612,7 +2639,9 @@ async fn save_quick_paste_image(
     data_url: String,
     file_name: String,
 ) -> Result<String, String> {
-    let comma = data_url.find(',').ok_or_else(|| "图片数据格式无效".to_string())?;
+    let comma = data_url
+        .find(',')
+        .ok_or_else(|| "图片数据格式无效".to_string())?;
     let meta = &data_url[..comma];
     let payload = &data_url[comma + 1..];
     if !meta.starts_with("data:image/") || !meta.contains(";base64") {
@@ -2654,7 +2683,8 @@ async fn upsert_quick_paste_snippet(
     state: State<'_, AppState>,
     snippet: QuickPasteSnippet,
 ) -> Result<Vec<QuickPasteSnippet>, String> {
-    let mut snippet = sanitize_quick_paste_snippet(snippet).ok_or_else(|| "请填写标题和文本内容".to_string())?;
+    let mut snippet =
+        sanitize_quick_paste_snippet(snippet).ok_or_else(|| "请填写标题和文本内容".to_string())?;
     let now = now_rfc3339();
     let mut rt = state.runtime.lock().await;
     let snippets = &mut rt.config.personal.quick_paste.snippets;
@@ -2691,7 +2721,11 @@ fn collect_quick_paste_local_image_paths(snippet: &QuickPasteSnippet) -> Vec<Pat
     let img_re = Regex::new(r#"<img\b[^>]*(?:data-path|src)=["']([^"']+)["'][^>]*>"#).unwrap();
     for caps in img_re.captures_iter(&snippet.content) {
         if let Some(src) = caps.get(1).map(|m| m.as_str().trim()) {
-            if !src.starts_with("data:") && !src.starts_with("http://") && !src.starts_with("https://") && !src.starts_with("asset:") {
+            if !src.starts_with("data:")
+                && !src.starts_with("http://")
+                && !src.starts_with("https://")
+                && !src.starts_with("asset:")
+            {
                 paths.push(PathBuf::from(src));
             }
         }
@@ -2700,7 +2734,11 @@ fn collect_quick_paste_local_image_paths(snippet: &QuickPasteSnippet) -> Vec<Pat
 }
 
 fn remove_quick_paste_owned_images(app: &tauri::AppHandle, snippet: &QuickPasteSnippet) {
-    let Ok(image_dir) = app.path().app_data_dir().map(|dir| dir.join("quick-paste-images")) else {
+    let Ok(image_dir) = app
+        .path()
+        .app_data_dir()
+        .map(|dir| dir.join("quick-paste-images"))
+    else {
         return;
     };
     let Ok(image_dir) = image_dir.canonicalize() else {
@@ -2732,7 +2770,11 @@ async fn delete_quick_paste_snippet(
         .filter(|snippet| snippet.id == id)
         .cloned()
         .collect();
-    rt.config.personal.quick_paste.snippets.retain(|snippet| snippet.id != id);
+    rt.config
+        .personal
+        .quick_paste
+        .snippets
+        .retain(|snippet| snippet.id != id);
     for snippet in &removed {
         remove_quick_paste_owned_images(&app, snippet);
     }
@@ -2827,11 +2869,7 @@ async fn prepare_startup_update_check(
     let current_version = app.package_info().version.to_string();
     let now = Utc::now();
     let mut rt = state.runtime.lock().await;
-    let mut plan = build_update_check_plan(
-        rt.config.personal.auto_check_updates,
-        now,
-        false,
-    );
+    let mut plan = build_update_check_plan(rt.config.personal.auto_check_updates, now, false);
     plan.current_version = current_version;
 
     if let Some(checked_at) = plan.checked_at.clone() {
@@ -2850,11 +2888,7 @@ async fn check_for_updates_now(
     let current_version = app.package_info().version.to_string();
     let now = Utc::now();
     let mut rt = state.runtime.lock().await;
-    let mut plan = build_update_check_plan(
-        rt.config.personal.auto_check_updates,
-        now,
-        true,
-    );
+    let mut plan = build_update_check_plan(rt.config.personal.auto_check_updates, now, true);
     plan.current_version = current_version;
 
     if let Some(checked_at) = plan.checked_at.clone() {
@@ -2921,7 +2955,14 @@ async fn register_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
-    let (previous, quick_date, sync_window_hotkey, db_migration_window_hotkey, quick_paste_open, quick_paste_output) = {
+    let (
+        previous,
+        quick_date,
+        sync_window_hotkey,
+        db_migration_window_hotkey,
+        quick_paste_open,
+        quick_paste_output,
+    ) = {
         let rt = state.runtime.lock().await;
         (
             rt.registered_hotkey.clone(),
@@ -2966,7 +3007,14 @@ async fn register_quick_date_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
-    let (previous, panel_hotkey, sync_window_hotkey, db_migration_window_hotkey, quick_paste_open, quick_paste_output) = {
+    let (
+        previous,
+        panel_hotkey,
+        sync_window_hotkey,
+        db_migration_window_hotkey,
+        quick_paste_open,
+        quick_paste_output,
+    ) = {
         let rt = state.runtime.lock().await;
         (
             rt.registered_quick_date_hotkey.clone(),
@@ -3011,7 +3059,14 @@ async fn register_sync_window_hotkey(
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let normalized = normalize_hotkey_for_plugin(&hotkey)?;
-    let (previous, panel_hotkey, quick_date_hotkey, db_migration_window_hotkey, quick_paste_open, quick_paste_output) = {
+    let (
+        previous,
+        panel_hotkey,
+        quick_date_hotkey,
+        db_migration_window_hotkey,
+        quick_paste_open,
+        quick_paste_output,
+    ) = {
         let rt = state.runtime.lock().await;
         (
             rt.registered_sync_window_hotkey.clone(),
@@ -3062,7 +3117,14 @@ async fn register_db_migration_window_hotkey(
         normalize_hotkey_for_plugin(&hotkey)?
     };
 
-    let (previous, panel_hotkey, quick_date_hotkey, sync_window_hotkey, quick_paste_open, quick_paste_output) = {
+    let (
+        previous,
+        panel_hotkey,
+        quick_date_hotkey,
+        sync_window_hotkey,
+        quick_paste_open,
+        quick_paste_output,
+    ) = {
         let rt = state.runtime.lock().await;
         (
             rt.registered_db_migration_window_hotkey.clone(),
@@ -3152,7 +3214,14 @@ async fn register_quick_paste_hotkeys(
         return Err("打开快捷粘贴和输出默认文本不能使用同一个快捷键".into());
     }
 
-    let (previous_open, previous_output, panel_hotkey, quick_date_hotkey, sync_window_hotkey, db_migration_window_hotkey) = {
+    let (
+        previous_open,
+        previous_output,
+        panel_hotkey,
+        quick_date_hotkey,
+        sync_window_hotkey,
+        db_migration_window_hotkey,
+    ) = {
         let rt = state.runtime.lock().await;
         (
             rt.registered_quick_paste_open_hotkey.clone(),
@@ -3169,7 +3238,11 @@ async fn register_quick_paste_hotkeys(
         sync_window_hotkey.as_deref(),
         db_migration_window_hotkey.as_deref(),
     ];
-    if conflicts.iter().flatten().any(|existing| *existing == open || *existing == output) {
+    if conflicts
+        .iter()
+        .flatten()
+        .any(|existing| *existing == open || *existing == output)
+    {
         return Err("快捷粘贴快捷键不能与其他全局快捷键重复".into());
     }
 
@@ -3224,29 +3297,37 @@ async fn register_quick_paste_hotkeys(
     drop(rt);
 
     if errors.is_empty() {
-        let _ = app.emit("quick-paste-toast", format!("快捷粘贴快捷键已注册：打开 {open}，输出 {output}"));
+        let _ = app.emit(
+            "quick-paste-toast",
+            format!("快捷粘贴快捷键已注册：打开 {open}，输出 {output}"),
+        );
         Ok(())
     } else {
         let message = errors.join("；");
         let _ = app.emit("quick-paste-toast", message.clone());
         Err(message)
     }
-
 }
 
 #[tauri::command]
 async fn show_quick_paste_window(app: tauri::AppHandle) -> Result<(), String> {
     let window = ensure_quick_paste_window(&app)?;
-    window.show().map_err(|e| format!("显示快捷粘贴窗口失败: {e}"))?;
+    window
+        .show()
+        .map_err(|e| format!("显示快捷粘贴窗口失败: {e}"))?;
     let _ = window.unminimize();
-    window.set_focus().map_err(|e| format!("聚焦快捷粘贴窗口失败: {e}"))?;
+    window
+        .set_focus()
+        .map_err(|e| format!("聚焦快捷粘贴窗口失败: {e}"))?;
     Ok(())
 }
 
 #[tauri::command]
 async fn hide_quick_paste_window(app: tauri::AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(QUICK_PASTE_WINDOW_LABEL) {
-        window.hide().map_err(|e| format!("隐藏快捷粘贴窗口失败: {e}"))?;
+        window
+            .hide()
+            .map_err(|e| format!("隐藏快捷粘贴窗口失败: {e}"))?;
     }
     Ok(())
 }
@@ -3256,18 +3337,28 @@ async fn toggle_quick_paste_window(app: tauri::AppHandle) -> Result<(), String> 
     let window = ensure_quick_paste_window(&app)?;
     let visible = window.is_visible().map_err(|e| e.to_string())?;
     if visible {
-        window.hide().map_err(|e| format!("隐藏快捷粘贴窗口失败: {e}"))?;
+        window
+            .hide()
+            .map_err(|e| format!("隐藏快捷粘贴窗口失败: {e}"))?;
     } else {
-        window.show().map_err(|e| format!("显示快捷粘贴窗口失败: {e}"))?;
+        window
+            .show()
+            .map_err(|e| format!("显示快捷粘贴窗口失败: {e}"))?;
         let _ = window.unminimize();
-        window.set_focus().map_err(|e| format!("聚焦快捷粘贴窗口失败: {e}"))?;
+        window
+            .set_focus()
+            .map_err(|e| format!("聚焦快捷粘贴窗口失败: {e}"))?;
     }
     Ok(())
 }
 
 fn emit_sync_center_mode(app: &tauri::AppHandle, mode: &str) {
     let mode = mode.to_string();
-    let _ = app.emit_to(SYNC_WORKSPACE_WINDOW_LABEL, "sync-center-open-mode", mode.clone());
+    let _ = app.emit_to(
+        SYNC_WORKSPACE_WINDOW_LABEL,
+        "sync-center-open-mode",
+        mode.clone(),
+    );
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(160)).await;
@@ -3366,9 +3457,9 @@ async fn save_db_migration_workspace_state(
     );
     let remembered_connection = db_migration_profile_to_remembered_connection(
         last_used_profile_id
-        .as_ref()
-        .and_then(|profile_id| profiles.iter().find(|profile| &profile.id == profile_id))
-        .or_else(|| profiles.first()),
+            .as_ref()
+            .and_then(|profile_id| profiles.iter().find(|profile| &profile.id == profile_id))
+            .or_else(|| profiles.first()),
     );
 
     rt.config.personal.db_migration_profiles = profiles;
@@ -3476,7 +3567,10 @@ fn inspect_art_text_ocr_model_dir(models_dir: &Path) -> ArtTextOcrModelStatus {
     ArtTextOcrModelStatus {
         ready: missing.is_empty(),
         path: models_dir.to_string_lossy().to_string(),
-        required: OCR_MODEL_FILES.iter().map(|name| (*name).to_string()).collect(),
+        required: OCR_MODEL_FILES
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect(),
         missing,
     }
 }
@@ -3705,7 +3799,9 @@ fn discover_art_text_dirs(root: &std::path::Path, depth: u8, out: &mut Vec<PathB
     if depth > 3 {
         return;
     }
-    let Ok(entries) = fs::read_dir(root) else { return };
+    let Ok(entries) = fs::read_dir(root) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
         if !path.is_dir() {
@@ -3957,7 +4053,10 @@ async fn build_art_text_index(
     // Count removed files
     let removed_count = path_to_old.len() + hash_to_old.len()
         - kept_entries.len()
-        - files_to_ocr.iter().filter(|(p, _, _)| path_to_old.contains_key(&p.to_string_lossy().to_string())).count();
+        - files_to_ocr
+            .iter()
+            .filter(|(p, _, _)| path_to_old.contains_key(&p.to_string_lossy().to_string()))
+            .count();
 
     // Phase 2: OCR only new/changed files
     let ocr_total = files_to_ocr.len() as u64;
@@ -4098,7 +4197,10 @@ async fn install_art_text_ocr_models(
     download_ocr_models(&app, &models_dir).await?;
     let status = inspect_art_text_ocr_model_dir(&models_dir);
     if !status.ready {
-        return Err(format!("OCR 模型安装不完整，缺少: {}", status.missing.join(", ")));
+        return Err(format!(
+            "OCR 模型安装不完整，缺少: {}",
+            status.missing.join(", ")
+        ));
     }
     Ok(status)
 }
@@ -4451,10 +4553,7 @@ async fn hide_pet_menu(app: tauri::AppHandle) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn hide_pet_window(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), String> {
+async fn hide_pet_window(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     state.runtime.lock().await.pet_hidden_this_session = true;
     if let Some(menu) = app.get_webview_window(PET_MENU_WINDOW_LABEL) {
         let _ = menu.hide();
@@ -4495,11 +4594,7 @@ async fn save_pet_position(
 }
 
 #[tauri::command]
-async fn resize_pet_window(
-    app: tauri::AppHandle,
-    width: f64,
-    height: f64,
-) -> Result<(), String> {
+async fn resize_pet_window(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
     if let Some(main_window) = app.get_webview_window(MAIN_WINDOW_LABEL) {
         main_window
             .set_size(Size::Logical(LogicalSize::new(width, height)))
@@ -4509,10 +4604,7 @@ async fn resize_pet_window(
 }
 
 #[tauri::command]
-async fn update_pet_hitbox(
-    state: State<'_, AppState>,
-    hitbox: PetHitbox,
-) -> Result<(), String> {
+async fn update_pet_hitbox(state: State<'_, AppState>, hitbox: PetHitbox) -> Result<(), String> {
     *state.pet_hitbox.write().unwrap() = Some(hitbox);
     Ok(())
 }
@@ -4759,10 +4851,7 @@ async fn persist_db_migration_window_size(
     Ok(())
 }
 
-async fn persist_panel_window_size(
-    app: tauri::AppHandle,
-    state: AppState,
-) -> Result<(), String> {
+async fn persist_panel_window_size(app: tauri::AppHandle, state: AppState) -> Result<(), String> {
     let Some(window) = app.get_webview_window(PANEL_WINDOW_LABEL) else {
         return Ok(());
     };
@@ -4802,10 +4891,7 @@ fn schedule_panel_window_size_save(app: tauri::AppHandle) {
 
 fn schedule_db_migration_window_size_save(app: tauri::AppHandle) {
     let state = app.state::<AppState>().inner().clone();
-    let seq = state
-        .db_migration_resize_seq
-        .fetch_add(1, Ordering::SeqCst)
-        + 1;
+    let seq = state.db_migration_resize_seq.fetch_add(1, Ordering::SeqCst) + 1;
 
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(std::time::Duration::from_millis(220)).await;
@@ -5082,10 +5168,7 @@ fn open_panel_from_global_shortcut(app: tauri::AppHandle) {
     });
 }
 
-async fn show_pet_window_from_tray(
-    app: tauri::AppHandle,
-    state: AppState,
-) -> Result<(), String> {
+async fn show_pet_window_from_tray(app: tauri::AppHandle, state: AppState) -> Result<(), String> {
     {
         let mut runtime = state.runtime.lock().await;
         runtime.pet_hidden_this_session = false;
@@ -5115,8 +5198,8 @@ fn create_system_tray(app: &tauri::AppHandle) -> Result<(), String> {
     let exit_app = MenuItemBuilder::with_id(TRAY_MENU_EXIT_ID, "退出")
         .build(app)
         .map_err(|e| e.to_string())?;
-    let menu = Menu::with_items(app, &[&open_panel, &show_pet, &exit_app])
-        .map_err(|e| e.to_string())?;
+    let menu =
+        Menu::with_items(app, &[&open_panel, &show_pet, &exit_app]).map_err(|e| e.to_string())?;
     let icon = app
         .default_window_icon()
         .cloned()
@@ -5157,7 +5240,8 @@ fn create_system_tray(app: &tauri::AppHandle) -> Result<(), String> {
                     let app_handle = tray.app_handle().clone();
                     tauri::async_runtime::spawn(async move {
                         let state = app_handle.state::<AppState>().inner().clone();
-                        let always_on_top = state.runtime.lock().await.config.personal.always_on_top;
+                        let always_on_top =
+                            state.runtime.lock().await.config.personal.always_on_top;
                         let _ = activate_panel_window(&app_handle, always_on_top);
                     });
                 }
@@ -5310,14 +5394,16 @@ fn is_quick_paste_window_visible(app: &tauri::AppHandle) -> bool {
 }
 
 fn input_text_globally(text: &str) -> Result<(), String> {
-    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| format!("failed to init input driver: {e}"))?;
+    let mut enigo = Enigo::new(&Settings::default())
+        .map_err(|e| format!("failed to init input driver: {e}"))?;
     enigo
         .text(text)
         .map_err(|e| format!("failed to input text: {e}"))
 }
 
 fn paste_clipboard_globally() -> Result<(), String> {
-    let mut enigo = Enigo::new(&Settings::default()).map_err(|e| format!("failed to init input driver: {e}"))?;
+    let mut enigo = Enigo::new(&Settings::default())
+        .map_err(|e| format!("failed to init input driver: {e}"))?;
     enigo
         .key(Key::Control, Direction::Press)
         .map_err(|e| format!("failed to press paste shortcut: {e}"))?;
@@ -5379,12 +5465,19 @@ fn inline_quick_paste_html_images(content: &str) -> Result<String, String> {
         let src = caps.get(2).map(|m| m.as_str()).unwrap_or("");
         let data_src = if src.starts_with("data:image/") {
             src.to_string()
-        } else if src.starts_with("http://") || src.starts_with("https://") || src.starts_with("asset:") {
+        } else if src.starts_with("http://")
+            || src.starts_with("https://")
+            || src.starts_with("asset:")
+        {
             src.to_string()
         } else {
             let bytes = fs::read(src).map_err(|e| format!("读取富文本图片失败: {e}"))?;
             let encoded = base64_encode(&bytes);
-            format!("data:{};base64,{}", quick_paste_image_mime_from_path(src), encoded)
+            format!(
+                "data:{};base64,{}",
+                quick_paste_image_mime_from_path(src),
+                encoded
+            )
         };
         output.push_str("<img src=\"");
         output.push_str(&data_src);
@@ -5420,7 +5513,9 @@ async fn run_quick_paste_output_steps(
             QuickPasteOutputStep::CopyImageToClipboard => copy_image_to_clipboard(content)?,
             QuickPasteOutputStep::CopyHtmlToClipboard => copy_html_to_clipboard(content)?,
             QuickPasteOutputStep::CopyTextToClipboard => copy_text_to_clipboard(content)?,
-            QuickPasteOutputStep::HideQuickPasteWindow => hide_quick_paste_window(app.clone()).await?,
+            QuickPasteOutputStep::HideQuickPasteWindow => {
+                hide_quick_paste_window(app.clone()).await?
+            }
             QuickPasteOutputStep::PauseBeforeGlobalInput => pause_before_global_text_input().await,
             QuickPasteOutputStep::PasteClipboard => paste_clipboard_globally()?,
             QuickPasteOutputStep::InputTextGlobally => input_text_globally(content)?,
@@ -5431,7 +5526,9 @@ async fn run_quick_paste_output_steps(
 
 fn copy_image_to_clipboard(content: &str) -> Result<(), String> {
     let img_data: Vec<u8> = if content.starts_with("data:image/") {
-        let comma = content.find(',').ok_or_else(|| "图片数据格式无效".to_string())?;
+        let comma = content
+            .find(',')
+            .ok_or_else(|| "图片数据格式无效".to_string())?;
         let meta = &content[..comma];
         let payload = &content[comma + 1..];
         if !meta.contains(";base64") {
@@ -5490,7 +5587,10 @@ async fn output_default_quick_paste_text(
         (content, category)
     };
 
-    eprintln!("[F8] category={effective_category}, content_len={}", output_content.len());
+    eprintln!(
+        "[F8] category={effective_category}, content_len={}",
+        output_content.len()
+    );
 
     let steps = quick_paste_output_steps(&effective_category, is_quick_paste_window_visible(&app));
     run_quick_paste_output_steps(app, steps, &output_content).await
@@ -5802,7 +5902,13 @@ fn mock_schema_cache() -> SchemaCache {
     }
 }
 
-fn demo_column(name: &str, column_type: &str, comment: &str, primary: bool, nullable: bool) -> ColumnMeta {
+fn demo_column(
+    name: &str,
+    column_type: &str,
+    comment: &str,
+    primary: bool,
+    nullable: bool,
+) -> ColumnMeta {
     ColumnMeta {
         column_name: name.into(),
         column_type: column_type.into(),
@@ -5815,20 +5921,94 @@ fn demo_column(name: &str, column_type: &str, comment: &str, primary: bool, null
 fn demo_feature_test_table_meta() -> TableMeta {
     TableMeta {
         table_name: DEMO_FEATURE_TEST_TABLE.into(),
-        table_comment: "离线功能测试演示表：覆盖搜索、备注、分页、单击编辑、插入、删除和 JSON 长文本查看".into(),
+        table_comment:
+            "离线功能测试演示表：覆盖搜索、备注、分页、单击编辑、插入、删除和 JSON 长文本查看"
+                .into(),
         columns: vec![
-            ColumnMeta { column_name: "id".into(), column_type: "int(11)".into(), column_comment: "主键ID，用于稳定保存和删除演示行".into(), is_primary_key: true, is_nullable: false },
-            ColumnMeta { column_name: "feature_name".into(), column_type: "varchar(80)".into(), column_comment: "功能名称，可直接单击编辑".into(), is_primary_key: false, is_nullable: false },
-            ColumnMeta { column_name: "owner".into(), column_type: "varchar(40)".into(), column_comment: "负责人或测试角色".into(), is_primary_key: false, is_nullable: false },
-            ColumnMeta { column_name: "priority".into(), column_type: "int(11)".into(), column_comment: "优先级数字，验证数字列编辑".into(), is_primary_key: false, is_nullable: false },
-            ColumnMeta { column_name: "enabled".into(), column_type: "tinyint(1)".into(), column_comment: "是否启用，1 表示启用，0 表示停用".into(), is_primary_key: false, is_nullable: false },
-            ColumnMeta { column_name: "due_date".into(), column_type: "date".into(), column_comment: "计划验证日期，覆盖日期格式展示".into(), is_primary_key: false, is_nullable: false },
-            ColumnMeta { column_name: "updated_at".into(), column_type: "datetime".into(), column_comment: "最后更新时间，覆盖时间列展示".into(), is_primary_key: false, is_nullable: false },
-            ColumnMeta { column_name: "remark".into(), column_type: "text".into(), column_comment: "详细备注，包含较长文本用于测试列宽和搜索".into(), is_primary_key: false, is_nullable: false },
-            ColumnMeta { column_name: "payload_json".into(), column_type: "json".into(), column_comment: "JSON 配置片段，用于测试大文本查看器和高亮".into(), is_primary_key: false, is_nullable: false },
-            ColumnMeta { column_name: "category".into(), column_type: "varchar(40)".into(), column_comment: "功能分类，如 UI、性能、安全".into(), is_primary_key: false, is_nullable: false },
-            ColumnMeta { column_name: "progress".into(), column_type: "int(11)".into(), column_comment: "完成进度百分比 0-100".into(), is_primary_key: false, is_nullable: false },
-            ColumnMeta { column_name: "version".into(), column_type: "varchar(20)".into(), column_comment: "目标版本号".into(), is_primary_key: false, is_nullable: false },
+            ColumnMeta {
+                column_name: "id".into(),
+                column_type: "int(11)".into(),
+                column_comment: "主键ID，用于稳定保存和删除演示行".into(),
+                is_primary_key: true,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "feature_name".into(),
+                column_type: "varchar(80)".into(),
+                column_comment: "功能名称，可直接单击编辑".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "owner".into(),
+                column_type: "varchar(40)".into(),
+                column_comment: "负责人或测试角色".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "priority".into(),
+                column_type: "int(11)".into(),
+                column_comment: "优先级数字，验证数字列编辑".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "enabled".into(),
+                column_type: "tinyint(1)".into(),
+                column_comment: "是否启用，1 表示启用，0 表示停用".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "due_date".into(),
+                column_type: "date".into(),
+                column_comment: "计划验证日期，覆盖日期格式展示".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "updated_at".into(),
+                column_type: "datetime".into(),
+                column_comment: "最后更新时间，覆盖时间列展示".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "remark".into(),
+                column_type: "text".into(),
+                column_comment: "详细备注，包含较长文本用于测试列宽和搜索".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "payload_json".into(),
+                column_type: "json".into(),
+                column_comment: "JSON 配置片段，用于测试大文本查看器和高亮".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "category".into(),
+                column_type: "varchar(40)".into(),
+                column_comment: "功能分类，如 UI、性能、安全".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "progress".into(),
+                column_type: "int(11)".into(),
+                column_comment: "完成进度百分比 0-100".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
+            ColumnMeta {
+                column_name: "version".into(),
+                column_type: "varchar(20)".into(),
+                column_comment: "目标版本号".into(),
+                is_primary_key: false,
+                is_nullable: false,
+            },
         ],
     }
 }
@@ -5836,12 +6016,26 @@ fn demo_feature_test_table_meta() -> TableMeta {
 fn demo_customer_profiles_table_meta() -> TableMeta {
     TableMeta {
         table_name: "demo_customer_profiles".into(),
-        table_comment: "测试客户档案表：姓名、城市、会员等级、余额和标签，适合测试中文备注与客户关键字搜索".into(),
+        table_comment:
+            "测试客户档案表：姓名、城市、会员等级、余额和标签，适合测试中文备注与客户关键字搜索"
+                .into(),
         columns: vec![
             demo_column("customer_id", "bigint", "客户ID，主键", true, false),
-            demo_column("customer_name", "varchar(80)", "客户姓名，可搜索中文姓名", false, false),
+            demo_column(
+                "customer_name",
+                "varchar(80)",
+                "客户姓名，可搜索中文姓名",
+                false,
+                false,
+            ),
             demo_column("city", "varchar(40)", "所在城市", false, false),
-            demo_column("tier", "varchar(20)", "会员等级，例如 gold、silver、trial", false, false),
+            demo_column(
+                "tier",
+                "varchar(20)",
+                "会员等级，例如 gold、silver、trial",
+                false,
+                false,
+            ),
             demo_column("balance", "decimal(10,2)", "账户余额", false, false),
             demo_column("tags", "varchar(200)", "客户标签，逗号分隔", false, true),
             demo_column("created_at", "datetime", "开户注册时间", false, false),
@@ -5849,7 +6043,13 @@ fn demo_customer_profiles_table_meta() -> TableMeta {
             demo_column("email", "varchar(80)", "电子邮箱", false, true),
             demo_column("gender", "varchar(10)", "性别", false, true),
             demo_column("birth_date", "date", "出生日期", false, true),
-            demo_column("status", "varchar(20)", "账户状态：active、inactive、suspended", false, false),
+            demo_column(
+                "status",
+                "varchar(20)",
+                "账户状态：active、inactive、suspended",
+                false,
+                false,
+            ),
         ],
     }
 }
@@ -5857,12 +6057,20 @@ fn demo_customer_profiles_table_meta() -> TableMeta {
 fn demo_orders_table_meta() -> TableMeta {
     TableMeta {
         table_name: "demo_orders".into(),
-        table_comment: "测试订单表：订单状态、金额、渠道、收货城市，适合测试 order、paid、refund 等关键词".into(),
+        table_comment:
+            "测试订单表：订单状态、金额、渠道、收货城市，适合测试 order、paid、refund 等关键词"
+                .into(),
         columns: vec![
             demo_column("order_id", "bigint", "订单ID，主键", true, false),
             demo_column("customer_id", "bigint", "关联客户ID", false, false),
             demo_column("order_no", "varchar(40)", "订单编号", false, false),
-            demo_column("status", "varchar(20)", "订单状态：paid、pending、refunded", false, false),
+            demo_column(
+                "status",
+                "varchar(20)",
+                "订单状态：paid、pending、refunded",
+                false,
+                false,
+            ),
             demo_column("amount", "decimal(10,2)", "订单金额", false, false),
             demo_column("channel", "varchar(30)", "下单渠道", false, false),
             demo_column("shipping_city", "varchar(40)", "收货城市", false, true),
@@ -5878,7 +6086,8 @@ fn demo_orders_table_meta() -> TableMeta {
 fn demo_support_tickets_table_meta() -> TableMeta {
     TableMeta {
         table_name: "demo_support_tickets".into(),
-        table_comment: "测试工单表：问题类型、优先级、处理人和摘要，适合测试客服、bug、退款等数据搜索".into(),
+        table_comment:
+            "测试工单表：问题类型、优先级、处理人和摘要，适合测试客服、bug、退款等数据搜索".into(),
         columns: vec![
             demo_column("ticket_id", "bigint", "工单ID，主键", true, false),
             demo_column("customer_id", "bigint", "关联客户ID", false, false),
@@ -5889,7 +6098,13 @@ fn demo_support_tickets_table_meta() -> TableMeta {
             demo_column("resolved", "tinyint(1)", "是否已解决", false, false),
             demo_column("created_at", "datetime", "工单创建时间", false, false),
             demo_column("updated_at", "datetime", "最后更新时间", false, true),
-            demo_column("source", "varchar(30)", "来源渠道：web、email、phone、chat", false, false),
+            demo_column(
+                "source",
+                "varchar(30)",
+                "来源渠道：web、email、phone、chat",
+                false,
+                false,
+            ),
             demo_column("sla", "varchar(20)", "SLA 等级", false, false),
             demo_column("attachment_count", "int(11)", "附件数量", false, false),
         ],
@@ -5899,7 +6114,8 @@ fn demo_support_tickets_table_meta() -> TableMeta {
 fn demo_audit_logs_table_meta() -> TableMeta {
     TableMeta {
         table_name: "demo_audit_logs".into(),
-        table_comment: "测试审计日志表：操作人、动作、IP、JSON 明细，适合测试日志和 JSON 内容检索".into(),
+        table_comment: "测试审计日志表：操作人、动作、IP、JSON 明细，适合测试日志和 JSON 内容检索"
+            .into(),
         columns: vec![
             demo_column("log_id", "bigint", "日志ID，主键", true, false),
             demo_column("actor", "varchar(60)", "操作人", false, false),
@@ -5908,10 +6124,22 @@ fn demo_audit_logs_table_meta() -> TableMeta {
             demo_column("detail_json", "json", "操作明细 JSON", false, true),
             demo_column("created_at", "datetime", "发生时间", false, false),
             demo_column("module", "varchar(40)", "功能模块", false, false),
-            demo_column("level", "varchar(20)", "日志级别：info、warn、error", false, false),
+            demo_column(
+                "level",
+                "varchar(20)",
+                "日志级别：info、warn、error",
+                false,
+                false,
+            ),
             demo_column("user_agent", "varchar(200)", "用户代理字符串", false, true),
             demo_column("duration_ms", "int(11)", "操作耗时毫秒", false, true),
-            demo_column("status_code", "int(11)", "HTTP 状态码或业务状态码", false, true),
+            demo_column(
+                "status_code",
+                "int(11)",
+                "HTTP 状态码或业务状态码",
+                false,
+                true,
+            ),
         ],
     }
 }
@@ -5933,9 +6161,24 @@ fn hash_u64(seed: u64) -> u64 {
 }
 
 fn generate_feature_test_rows(count: usize) -> Vec<HashMap<String, String>> {
-    let owners = ["产品测试", "前端联调", "搜索验证", "回归测试", "安全验证", "Schema 检查", "性能组", "DevOps", "数据组", "设计组"];
-    let categories = ["UI", "性能", "安全", "数据", "集成", "工具", "文档", "测试", "运维", "架构"];
-    let versions = ["v1.0", "v1.1", "v1.2", "v2.0", "v2.1", "v3.0", "v3.1", "v4.0"];
+    let owners = [
+        "产品测试",
+        "前端联调",
+        "搜索验证",
+        "回归测试",
+        "安全验证",
+        "Schema 检查",
+        "性能组",
+        "DevOps",
+        "数据组",
+        "设计组",
+    ];
+    let categories = [
+        "UI", "性能", "安全", "数据", "集成", "工具", "文档", "测试", "运维", "架构",
+    ];
+    let versions = [
+        "v1.0", "v1.1", "v1.2", "v2.0", "v2.1", "v3.0", "v3.1", "v4.0",
+    ];
     let remarks = [
         "用于验证进入编辑模式后单击单元格立即聚焦，Enter 保存并移动到下一行。",
         "双击在非编辑模式打开详情；编辑模式使用 Ctrl+Enter 打开完整内容。",
@@ -5968,15 +6211,24 @@ fn generate_feature_test_rows(count: usize) -> Vec<HashMap<String, String>> {
             m.insert("feature_name".into(), format!("功能项-{}", i));
             m.insert("owner".into(), pick_by_index(i, &owners).to_string());
             m.insert("priority".into(), ((h % 5 + 1) as i32).to_string());
-            m.insert("enabled".into(), if h % 7 == 0 { "0".into() } else { "1".into() });
+            m.insert(
+                "enabled".into(),
+                if h % 7 == 0 { "0".into() } else { "1".into() },
+            );
             let day = (h % 28 + 1) as i32;
             let month = (h % 12 + 1) as i32;
             m.insert("due_date".into(), format!("2026-{:02}-{:02}", month, day));
             let hh = (h % 24) as i32;
             let mm = (h % 60) as i32;
-            m.insert("updated_at".into(), format!("2026-{:02}-{:02} {:02}:{:02}:00", month, day, hh, mm));
+            m.insert(
+                "updated_at".into(),
+                format!("2026-{:02}-{:02} {:02}:{:02}:00", month, day, hh, mm),
+            );
             m.insert("remark".into(), pick_by_index(i, &remarks).to_string());
-            m.insert("payload_json".into(), payload_tpls[i % payload_tpls.len()].to_string());
+            m.insert(
+                "payload_json".into(),
+                payload_tpls[i % payload_tpls.len()].to_string(),
+            );
             m.insert("category".into(), pick_by_index(i, &categories).to_string());
             m.insert("progress".into(), ((h % 101) as i32).to_string());
             m.insert("version".into(), pick_by_index(i, &versions).to_string());
@@ -5986,14 +6238,45 @@ fn generate_feature_test_rows(count: usize) -> Vec<HashMap<String, String>> {
 }
 
 fn generate_customer_rows(count: usize) -> Vec<HashMap<String, String>> {
-    let surnames = ["林", "周", "王", "李", "张", "刘", "陈", "杨", "赵", "黄", "吴", "徐", "孙", "马", "朱"];
-    let names = ["晚晴", "明", "一诺", "思远", "子涵", "雨桐", "浩然", "欣怡", "梓轩", "梦琪", "博文", "雅婷", "俊杰", "晓萱", "睿渊"];
-    let cities = ["上海", "杭州", "深圳", "北京", "广州", "成都", "武汉", "西安", "南京", "苏州", "重庆", "天津", "郑州", "长沙", "青岛"];
+    let surnames = [
+        "林", "周", "王", "李", "张", "刘", "陈", "杨", "赵", "黄", "吴", "徐", "孙", "马", "朱",
+    ];
+    let names = [
+        "晚晴", "明", "一诺", "思远", "子涵", "雨桐", "浩然", "欣怡", "梓轩", "梦琪", "博文",
+        "雅婷", "俊杰", "晓萱", "睿渊",
+    ];
+    let cities = [
+        "上海", "杭州", "深圳", "北京", "广州", "成都", "武汉", "西安", "南京", "苏州", "重庆",
+        "天津", "郑州", "长沙", "青岛",
+    ];
     let tiers = ["gold", "silver", "trial", "platinum", "bronze"];
-    let tags_pool = ["高价值", "企业微信", "复购", "退款关注", "移动端", "英文资料", "潜在客户", "VIP", "发票", "合同", "新品试用", "活动敏感", "老客召回", "沉默用户", "高活跃"];
+    let tags_pool = [
+        "高价值",
+        "企业微信",
+        "复购",
+        "退款关注",
+        "移动端",
+        "英文资料",
+        "潜在客户",
+        "VIP",
+        "发票",
+        "合同",
+        "新品试用",
+        "活动敏感",
+        "老客召回",
+        "沉默用户",
+        "高活跃",
+    ];
     let genders = ["男", "女", "未知"];
     let statuses = ["active", "inactive", "suspended"];
-    let domains = ["qq.com", "163.com", "gmail.com", "outlook.com", "company.com", "foxmail.com"];
+    let domains = [
+        "qq.com",
+        "163.com",
+        "gmail.com",
+        "outlook.com",
+        "company.com",
+        "foxmail.com",
+    ];
     (1..=count)
         .map(|i| {
             let h = hash_u64(i as u64);
@@ -6005,7 +6288,13 @@ fn generate_customer_rows(count: usize) -> Vec<HashMap<String, String>> {
             let tag1 = pick_by_index(i, &tags_pool);
             let tag2 = pick_by_index(i + 3, &tags_pool);
             let tag3 = pick_by_index(i + 7, &tags_pool);
-            let tags = if h % 3 == 0 { format!("{},{},{}", tag1, tag2, tag3) } else if h % 3 == 1 { format!("{},{}", tag1, tag2) } else { tag1.to_string() };
+            let tags = if h % 3 == 0 {
+                format!("{},{},{}", tag1, tag2, tag3)
+            } else if h % 3 == 1 {
+                format!("{},{}", tag1, tag2)
+            } else {
+                tag1.to_string()
+            };
             let day = (h % 28 + 1) as i32;
             let month = (h % 12 + 1) as i32;
             let hh = (h % 24) as i32;
@@ -6038,10 +6327,39 @@ fn generate_customer_rows(count: usize) -> Vec<HashMap<String, String>> {
 }
 
 fn generate_order_rows(count: usize) -> Vec<HashMap<String, String>> {
-    let channels = ["web", "miniapp", "sales", "app", "partner", "offline", "livestream", "sms"];
-    let cities = ["上海", "杭州", "深圳", "北京", "广州", "成都", "武汉", "西安", "南京", "苏州"];
-    let products = ["无线降噪耳机", "智能手表 Pro", "便携蓝牙音箱", "机械键盘 RGB", "4K 显示器", "人体工学椅", "Type-C 扩展坞", "氮化镓充电器", "智能台灯", "空气净化器"];
-    let statuses = ["paid", "pending", "refunded", "shipped", "cancelled", "completed"];
+    let channels = [
+        "web",
+        "miniapp",
+        "sales",
+        "app",
+        "partner",
+        "offline",
+        "livestream",
+        "sms",
+    ];
+    let cities = [
+        "上海", "杭州", "深圳", "北京", "广州", "成都", "武汉", "西安", "南京", "苏州",
+    ];
+    let products = [
+        "无线降噪耳机",
+        "智能手表 Pro",
+        "便携蓝牙音箱",
+        "机械键盘 RGB",
+        "4K 显示器",
+        "人体工学椅",
+        "Type-C 扩展坞",
+        "氮化镓充电器",
+        "智能台灯",
+        "空气净化器",
+    ];
+    let statuses = [
+        "paid",
+        "pending",
+        "refunded",
+        "shipped",
+        "cancelled",
+        "completed",
+    ];
     (1..=count)
         .map(|i| {
             let h = hash_u64(i as u64);
@@ -6052,7 +6370,11 @@ fn generate_order_rows(count: usize) -> Vec<HashMap<String, String>> {
             let city = pick_by_index(i, &cities);
             let product = pick_by_index(i, &products);
             let quantity = ((h % 5 + 1) as i32).to_string();
-            let discount = if h % 3 == 0 { format!("{:.2}", (h % 2000) as f64 / 100.0) } else { "0.00".into() };
+            let discount = if h % 3 == 0 {
+                format!("{:.2}", (h % 2000) as f64 / 100.0)
+            } else {
+                "0.00".into()
+            };
             let day = (h % 28 + 1) as i32;
             let month = (h % 12 + 1) as i32;
             let hh = (h % 24) as i32;
@@ -6062,7 +6384,11 @@ fn generate_order_rows(count: usize) -> Vec<HashMap<String, String>> {
             } else {
                 "".into()
             };
-            let notes = if h % 5 == 0 { format!("客户要求发票抬头为公司名称，订单编号：ORD-{:06}", i) } else { "".into() };
+            let notes = if h % 5 == 0 {
+                format!("客户要求发票抬头为公司名称，订单编号：ORD-{:06}", i)
+            } else {
+                "".into()
+            };
             let mut m = HashMap::new();
             m.insert("order_id".into(), (90000 + i).to_string());
             m.insert("customer_id".into(), customer_id.to_string());
@@ -6082,9 +6408,22 @@ fn generate_order_rows(count: usize) -> Vec<HashMap<String, String>> {
 }
 
 fn generate_ticket_rows(count: usize) -> Vec<HashMap<String, String>> {
-    let categories = ["退款", "bug", "发票", "咨询", "投诉", "建议", "账户", "支付", "物流", "其他"];
+    let categories = [
+        "退款", "bug", "发票", "咨询", "投诉", "建议", "账户", "支付", "物流", "其他",
+    ];
     let priorities = ["high", "medium", "low", "urgent", "critical"];
-    let assignees = ["客服-小夏", "前端-阿杰", "财务-宁宁", "运维-老周", "产品-小林", "测试-阿伟", "后端-大刘", "数据-小赵", "设计-阿美", "运营-小孙"];
+    let assignees = [
+        "客服-小夏",
+        "前端-阿杰",
+        "财务-宁宁",
+        "运维-老周",
+        "产品-小林",
+        "测试-阿伟",
+        "后端-大刘",
+        "数据-小赵",
+        "设计-阿美",
+        "运营-小孙",
+    ];
     let sources = ["web", "email", "phone", "chat", "app", "wechat"];
     let slas = ["P0-1h", "P1-4h", "P2-24h", "P3-72h", "P4-1w"];
     let summaries = [
@@ -6114,7 +6453,10 @@ fn generate_ticket_rows(count: usize) -> Vec<HashMap<String, String>> {
             let mm = (h % 60) as i32;
             let created_at = format!("2026-{:02}-{:02} {:02}:{:02}:00", month, day, hh, mm);
             let updated_day = (day + (h % 5) as i32 - 1) % 28 + 1;
-            let updated_at = format!("2026-{:02}-{:02} {:02}:{:02}:00", month, updated_day, hh, mm);
+            let updated_at = format!(
+                "2026-{:02}-{:02} {:02}:{:02}:00",
+                month, updated_day, hh, mm
+            );
             let source = pick_by_index(i, &sources);
             let sla = pick_by_index(i, &slas);
             let attachment_count = ((h % 5) as i32).to_string();
@@ -6137,9 +6479,44 @@ fn generate_ticket_rows(count: usize) -> Vec<HashMap<String, String>> {
 }
 
 fn generate_audit_rows(count: usize) -> Vec<HashMap<String, String>> {
-    let actors = ["admin", "operator.li", "system", "user.001", "user.042", "api.gateway", "batch.job", "audit.bot", "dev.team", "ops.oncall"];
-    let actions = ["login", "export", "sync_failed", "create", "update", "delete", "query", "download", "upload", "approve", "reject", "logout"];
-    let modules = ["auth", "order", "user", "product", "report", "system", "api", "config", "notification", "billing"];
+    let actors = [
+        "admin",
+        "operator.li",
+        "system",
+        "user.001",
+        "user.042",
+        "api.gateway",
+        "batch.job",
+        "audit.bot",
+        "dev.team",
+        "ops.oncall",
+    ];
+    let actions = [
+        "login",
+        "export",
+        "sync_failed",
+        "create",
+        "update",
+        "delete",
+        "query",
+        "download",
+        "upload",
+        "approve",
+        "reject",
+        "logout",
+    ];
+    let modules = [
+        "auth",
+        "order",
+        "user",
+        "product",
+        "report",
+        "system",
+        "api",
+        "config",
+        "notification",
+        "billing",
+    ];
     let levels = ["info", "warn", "error", "debug"];
     let user_agents = [
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -6157,7 +6534,12 @@ fn generate_audit_rows(count: usize) -> Vec<HashMap<String, String>> {
             let actor = pick_by_index(i, &actors);
             let action = pick_by_index(i, &actions);
             let ip = format!("10.0.{}. {}", (h % 256) as i32, (h % 256) as i32);
-            let detail = format!(r#"{{"id":{},"module":"demo_{}","rows":{},"format":"xlsx"}}"#, i, pick_by_index(i, &modules), (h % 500 + 1) as i32);
+            let detail = format!(
+                r#"{{"id":{},"module":"demo_{}","rows":{},"format":"xlsx"}}"#,
+                i,
+                pick_by_index(i, &modules),
+                (h % 500 + 1) as i32
+            );
             let day = (h % 28 + 1) as i32;
             let month = (h % 12 + 1) as i32;
             let hh = (h % 24) as i32;
@@ -6204,11 +6586,23 @@ const DEMO_ROW_COUNT: usize = 500;
 
 fn default_demo_rows() -> HashMap<String, Vec<HashMap<String, String>>> {
     let mut out = HashMap::new();
-    out.insert(DEMO_FEATURE_TEST_TABLE.into(), generate_feature_test_rows(DEMO_ROW_COUNT));
-    out.insert("demo_customer_profiles".into(), generate_customer_rows(DEMO_ROW_COUNT));
+    out.insert(
+        DEMO_FEATURE_TEST_TABLE.into(),
+        generate_feature_test_rows(DEMO_ROW_COUNT),
+    );
+    out.insert(
+        "demo_customer_profiles".into(),
+        generate_customer_rows(DEMO_ROW_COUNT),
+    );
     out.insert("demo_orders".into(), generate_order_rows(DEMO_ROW_COUNT));
-    out.insert("demo_support_tickets".into(), generate_ticket_rows(DEMO_ROW_COUNT));
-    out.insert("demo_audit_logs".into(), generate_audit_rows(DEMO_ROW_COUNT));
+    out.insert(
+        "demo_support_tickets".into(),
+        generate_ticket_rows(DEMO_ROW_COUNT),
+    );
+    out.insert(
+        "demo_audit_logs".into(),
+        generate_audit_rows(DEMO_ROW_COUNT),
+    );
     out
 }
 
@@ -6236,9 +6630,9 @@ fn ensure_demo_rows(
 
 fn row_matches_keys(row: &HashMap<String, String>, keys: &HashMap<String, String>) -> bool {
     !keys.is_empty()
-        && keys
-            .iter()
-            .all(|(column, expected)| row.get(column).map(String::as_str) == Some(expected.as_str()))
+        && keys.iter().all(|(column, expected)| {
+            row.get(column).map(String::as_str) == Some(expected.as_str())
+        })
 }
 
 fn next_demo_id(rows: &[HashMap<String, String>]) -> String {
@@ -6256,19 +6650,20 @@ fn normalize_demo_insert_row(
 ) -> HashMap<String, String> {
     let mut out = HashMap::new();
     for column in demo_feature_test_table_meta().columns {
-        let value = row
-            .get(&column.column_name)
-            .cloned()
-            .unwrap_or_else(|| {
-                if column.column_name == "id" {
-                    next_demo_id(existing_rows)
-                } else {
-                    String::new()
-                }
-            });
+        let value = row.get(&column.column_name).cloned().unwrap_or_else(|| {
+            if column.column_name == "id" {
+                next_demo_id(existing_rows)
+            } else {
+                String::new()
+            }
+        });
         out.insert(column.column_name, value);
     }
-    if out.get("id").map(|value| value.trim().is_empty()).unwrap_or(true) {
+    if out
+        .get("id")
+        .map(|value| value.trim().is_empty())
+        .unwrap_or(true)
+    {
         out.insert("id".into(), next_demo_id(existing_rows));
     }
     out
@@ -6296,7 +6691,12 @@ fn save_table_changes_to_demo_rows(
             changeset
                 .primary_keys
                 .iter()
-                .filter_map(|column| update.where_keys.get(column).map(|value| (column.clone(), value.clone())))
+                .filter_map(|column| {
+                    update
+                        .where_keys
+                        .get(column)
+                        .map(|value| (column.clone(), value.clone()))
+                })
                 .collect::<HashMap<_, _>>()
         } else {
             update.where_keys.clone()
@@ -6314,7 +6714,11 @@ fn save_table_changes_to_demo_rows(
             changeset
                 .primary_keys
                 .iter()
-                .filter_map(|column| delete.get(column).map(|value| (column.clone(), value.clone())))
+                .filter_map(|column| {
+                    delete
+                        .get(column)
+                        .map(|value| (column.clone(), value.clone()))
+                })
                 .collect::<HashMap<_, _>>()
         } else {
             delete.clone()
@@ -6374,135 +6778,6 @@ fn load_config_from_disk(app: &tauri::AppHandle) -> Result<AppConfig, String> {
     serde_json::from_str(&fs::read_to_string(p).map_err(|e| format!("读取配置失败: {e}"))?)
         .map_err(|e| format!("解析配置失败: {e}"))
 }
-fn custom_skins_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_config_dir()
-        .map_err(|e| format!("配置目录失败: {e}"))?
-        .join("custom_skins");
-    fs::create_dir_all(&dir).map_err(|e| format!("创建目录失败: {e}"))?;
-    Ok(dir)
-}
-
-#[tauri::command]
-async fn detect_sprite_dimensions(file_path: String) -> Result<HashMap<String, u32>, String> {
-    let (w, h) = image::image_dimensions(&file_path)
-        .map_err(|e| format!("读取图片尺寸失败: {e}"))?;
-    let mut map = HashMap::new();
-    map.insert("width".into(), w);
-    map.insert("height".into(), h);
-    Ok(map)
-}
-
-#[tauri::command]
-async fn import_skin_sprites(
-    skin_name: String,
-    files: Vec<String>,
-    app: tauri::AppHandle,
-) -> Result<Vec<HashMap<String, serde_json::Value>>, String> {
-    let dir = custom_skins_dir(&app)?.join(&skin_name);
-    fs::create_dir_all(&dir).map_err(|e| format!("创建皮肤目录失败: {e}"))?;
-    let mut result = Vec::new();
-    for src_path in &files {
-        let src = std::path::Path::new(src_path);
-        let file_name = src
-            .file_name()
-            .ok_or("无效文件名")?
-            .to_string_lossy()
-            .to_string();
-        let dest = dir.join(&file_name);
-        fs::copy(src, &dest).map_err(|e| format!("复制文件失败: {e}"))?;
-        let (w, h) = image::image_dimensions(&dest)
-            .map_err(|e| format!("读取图片尺寸失败: {e}"))?;
-        let mut entry = HashMap::new();
-        entry.insert("name".into(), serde_json::Value::String(
-            file_name.trim_end_matches(".png").trim_end_matches(".PNG").to_string(),
-        ));
-        entry.insert("file".into(), serde_json::Value::String(file_name));
-        entry.insert("width".into(), serde_json::Value::Number(w.into()));
-        entry.insert("height".into(), serde_json::Value::Number(h.into()));
-        result.push(entry);
-    }
-    Ok(result)
-}
-
-#[tauri::command]
-async fn save_skin_manifest(
-    skin_name: String,
-    manifest: SkinManifest,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    let dir = custom_skins_dir(&app)?.join(&skin_name);
-    fs::create_dir_all(&dir).map_err(|e| format!("创建皮肤目录失败: {e}"))?;
-    let json = serde_json::to_string_pretty(&manifest).map_err(|e| e.to_string())?;
-    fs::write(dir.join("manifest.json"), json).map_err(|e| format!("保存清单失败: {e}"))
-}
-
-#[tauri::command]
-async fn list_custom_skins(
-    app: tauri::AppHandle,
-) -> Result<Vec<HashMap<String, serde_json::Value>>, String> {
-    let dir = custom_skins_dir(&app)?;
-    let mut skins = Vec::new();
-    let entries = fs::read_dir(&dir).map_err(|e| format!("读取目录失败: {e}"))?;
-    for entry in entries {
-        let entry = entry.map_err(|e| format!("读取条目失败: {e}"))?;
-        let path = entry.path();
-        if !path.is_dir() {
-            continue;
-        }
-        let manifest_path = path.join("manifest.json");
-        if !manifest_path.exists() {
-            continue;
-        }
-        let content =
-            fs::read_to_string(&manifest_path).map_err(|e| format!("读取清单失败: {e}"))?;
-        let manifest: SkinManifest =
-            serde_json::from_str(&content).map_err(|e| format!("解析清单失败: {e}"))?;
-        let id = path
-            .file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .to_string();
-        let mut entry_map = HashMap::new();
-        entry_map.insert("id".into(), serde_json::Value::String(id));
-        entry_map.insert(
-            "manifest".into(),
-            serde_json::to_value(&manifest).map_err(|e| e.to_string())?,
-        );
-        skins.push(entry_map);
-    }
-    Ok(skins)
-}
-
-#[tauri::command]
-async fn delete_custom_skin(
-    skin_name: String,
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    let dir = custom_skins_dir(&app)?.join(&skin_name);
-    if dir.exists() {
-        fs::remove_dir_all(&dir).map_err(|e| format!("删除皮肤失败: {e}"))?;
-    }
-    let mut rt = state.runtime.lock().await;
-    let current_skin = &rt.config.personal.pet_skin;
-    if current_skin == &format!("custom:{}", skin_name) {
-        rt.config.personal.pet_skin = "eagle".into();
-        save_config_to_disk(&app, &rt.config)?;
-    }
-    Ok(())
-}
-
-#[tauri::command]
-async fn get_skin_base_path(
-    skin_name: String,
-    app: tauri::AppHandle,
-) -> Result<String, String> {
-    let dir = custom_skins_dir(&app)?.join(&skin_name);
-    Ok(dir.to_string_lossy().to_string())
-}
-
 #[tauri::command]
 async fn set_autostart(enable: bool, app: tauri::AppHandle) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
@@ -6926,7 +7201,7 @@ pub fn run() {
                     }
                 });
             }
-            tokio::spawn(crate::mobile_proxy::start_proxy_server(9527));
+            tauri::async_runtime::spawn(crate::mobile_proxy::start_proxy_server(19527));
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -6934,6 +7209,7 @@ pub fn run() {
             disconnect_db,
             get_connection_status,
             list_databases,
+            get_local_ip_address,
             select_database,
             refresh_schema,
             search,
@@ -7008,12 +7284,6 @@ pub fn run() {
             list_system_fonts,
             resize_pet_window,
             update_pet_hitbox,
-            detect_sprite_dimensions,
-            import_skin_sprites,
-            save_skin_manifest,
-            list_custom_skins,
-            delete_custom_skin,
-            get_skin_base_path,
             get_weather
         ])
         .run(tauri::generate_context!())
@@ -7023,6 +7293,11 @@ pub fn run() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pet_skin_defaults_to_jiedi() {
+        assert_eq!(AppConfig::default().personal.pet_skin, "jiedi");
+    }
 
     #[test]
     fn database_server_config_allows_empty_selected_database() {
@@ -7047,7 +7322,10 @@ mod tests {
             database: "app".into(),
         };
 
-        assert_eq!(validate_db_server_config(&config), Err("请填写数据库主机".into()));
+        assert_eq!(
+            validate_db_server_config(&config),
+            Err("请填写数据库主机".into())
+        );
     }
 
     #[test]
@@ -7087,8 +7365,10 @@ mod tests {
 
         assert!(!status.ready);
         assert_eq!(status.missing, vec!["rec.onnx", "ppocr_keys_v1.txt"]);
-        assert!(status.path.ends_with("dbsearch-ocr-model-missing-test-")
-            || status.path.contains("dbsearch-ocr-model-missing-test-"));
+        assert!(
+            status.path.ends_with("dbsearch-ocr-model-missing-test-")
+                || status.path.contains("dbsearch-ocr-model-missing-test-")
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -7155,9 +7435,18 @@ mod tests {
 
     #[test]
     fn tray_left_click_opens_the_panel() {
-        assert!(tray_click_opens_panel(MouseButton::Left, MouseButtonState::Up));
-        assert!(!tray_click_opens_panel(MouseButton::Right, MouseButtonState::Up));
-        assert!(!tray_click_opens_panel(MouseButton::Left, MouseButtonState::Down));
+        assert!(tray_click_opens_panel(
+            MouseButton::Left,
+            MouseButtonState::Up
+        ));
+        assert!(!tray_click_opens_panel(
+            MouseButton::Right,
+            MouseButtonState::Up
+        ));
+        assert!(!tray_click_opens_panel(
+            MouseButton::Left,
+            MouseButtonState::Down
+        ));
     }
 
     #[test]
@@ -7223,7 +7512,10 @@ mod tests {
 
         assert!(plan.should_check);
         assert_eq!(plan.reason, "startup-due");
-        assert_eq!(plan.checked_at.as_deref(), Some("2026-03-20T08:00:00+00:00"));
+        assert_eq!(
+            plan.checked_at.as_deref(),
+            Some("2026-03-20T08:00:00+00:00")
+        );
     }
 
     #[test]
@@ -7235,7 +7527,10 @@ mod tests {
 
         assert!(plan.should_check);
         assert_eq!(plan.reason, "startup-due");
-        assert_eq!(plan.checked_at.as_deref(), Some("2026-03-20T08:00:00+00:00"));
+        assert_eq!(
+            plan.checked_at.as_deref(),
+            Some("2026-03-20T08:00:00+00:00")
+        );
     }
 
     #[test]
@@ -7247,7 +7542,10 @@ mod tests {
 
         assert!(plan.should_check);
         assert_eq!(plan.reason, "manual");
-        assert_eq!(plan.checked_at.as_deref(), Some("2026-03-20T08:00:00+00:00"));
+        assert_eq!(
+            plan.checked_at.as_deref(),
+            Some("2026-03-20T08:00:00+00:00")
+        );
     }
 
     #[test]
@@ -7259,7 +7557,10 @@ mod tests {
 
         assert!(plan.should_check);
         assert_eq!(plan.reason, "startup-due");
-        assert_eq!(plan.checked_at.as_deref(), Some("2026-03-20T08:00:00+00:00"));
+        assert_eq!(
+            plan.checked_at.as_deref(),
+            Some("2026-03-20T08:00:00+00:00")
+        );
     }
 
     #[test]
@@ -7399,8 +7700,14 @@ mod tests {
             updated_at: "".into(),
         };
 
-        assert_eq!(collect_quick_paste_local_image_paths(&image_snippet).len(), 1);
-        assert_eq!(collect_quick_paste_local_image_paths(&rich_snippet).len(), 1);
+        assert_eq!(
+            collect_quick_paste_local_image_paths(&image_snippet).len(),
+            1
+        );
+        assert_eq!(
+            collect_quick_paste_local_image_paths(&rich_snippet).len(),
+            1
+        );
     }
 
     #[test]
@@ -7460,7 +7767,10 @@ mod tests {
             .all(|column| !column.column_comment.trim().is_empty()));
 
         let rows = mock_rows_for_table("demo_feature_test");
-        assert!(rows.len() >= 5, "demo table should have enough rows to test editing");
+        assert!(
+            rows.len() >= 5,
+            "demo table should have enough rows to test editing"
+        );
         for (row_index, row) in rows.iter().enumerate() {
             for column in &table.columns {
                 let value = row
@@ -7586,7 +7896,10 @@ mod tests {
         assert_eq!(profiles.len(), 1);
         assert_eq!(profiles[0].id, "db-migration-profile-1");
         assert_eq!(profiles[0].name, "source_a -> target_b");
-        assert_eq!(last_used_profile_id.as_deref(), Some("db-migration-profile-1"));
+        assert_eq!(
+            last_used_profile_id.as_deref(),
+            Some("db-migration-profile-1")
+        );
     }
 
     #[test]
