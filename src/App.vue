@@ -1,4 +1,4 @@
-﻿<script setup>
+<script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from "vue";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { listen, emit } from "@tauri-apps/api/event";
@@ -13318,8 +13318,8 @@ function escapeHtml(str) {
 
     <!-- Settings Sheet -->
     <Transition name="sync-center-settings">
-      <div v-if="syncSettingsOpen" class="sw-settings-overlay sync-center-settings-overlay" @click.self="closeSyncSettings">
-        <section class="sw-settings-sheet sync-center-settings-sheet">
+      <div v-if="syncSettingsOpen" :class="['sw-settings-overlay', 'sync-center-settings-overlay', { 'reduced-transparency': reducedTransparencyEnabled }]" @click.self="closeSyncSettings">
+        <section :class="['sw-settings-sheet', 'sync-center-settings-sheet', { 'reduced-transparency': reducedTransparencyEnabled }]">
           <header class="sw-settings-header sync-center-settings-header">
             <div>
               <h2>同步中心设置</h2>
@@ -14515,8 +14515,8 @@ function escapeHtml(str) {
     </section>
   </div>
 
-  <div v-if="settingsOpen" class="dialog-mask-v2" @click.self="closeSettings" @dragover.prevent @drop.prevent="onDropConfig">
-    <section class="settings-modal-v2">
+  <div v-if="settingsOpen" :class="['dialog-mask-v2', { 'reduced-transparency': reducedTransparencyEnabled }]" @click.self="closeSettings" @dragover.prevent @drop.prevent="onDropConfig">
+    <section :class="['settings-modal-v2', { 'reduced-transparency': reducedTransparencyEnabled }]">
       <!-- Header -->
       <header class="settings-header-v2" @pointerdown="modalHeaderPointerDown">
         <div style="display:flex;align-items:center;gap:8px">
